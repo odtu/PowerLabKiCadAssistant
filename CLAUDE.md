@@ -15,6 +15,16 @@ Problem reports from the panel arrive as public issues on odtu/PowerLabKiCadAssi
    Add `-f close=true` to close the issue too. Use `-F body=@file`: Windows PowerShell 5.1 mangles quotes in inline arguments. After the run, check the comment author is `github-actions[bot]`.
 4. Issues and replies are public. Never quote project, board, sheet or part names, net names or file contents from a user's design in a reply.
 
+## Automatic issue fixing
+
+`.github/workflows/auto-fix.yml` runs Claude (claude-code-action) on GitHub when:
+- a member or collaborator opens an issue, or
+- a maintainer adds the `auto-fix` label to anyone's issue.
+
+Claude reproduces the bug with a test, fixes it and runs the tests. The workflow then opens a pull request (`Fixes #N`) and comments on the issue as `github-actions[bot]`. Its changes are limited to `plugin/`, `tests/`, `tools/`, `README.md` and the install scripts.
+
+A maintainer still reviews and merges the PR, then releases (below) and replies with the version. Bugs that need the KiCad window can't be verified on the runner; Claude lists them under "Needs a human".
+
 ## Releasing
 
 Users only learn about fixes through releases: the panel offers an update when the latest GitHub release is newer than its `VERSION`.

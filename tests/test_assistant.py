@@ -7,9 +7,25 @@ import os
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Outside KiCad (e.g. GitHub Actions) there's no pcbnew or wx. The code under test
+# only needs them at import time, so stand-ins are enough.
+try:
+    import pcbnew  # noqa: F401
+except ImportError:
+    pcbnew = types.ModuleType("pcbnew")
+    pcbnew.ActionPlugin = type("ActionPlugin", (), {"register": lambda self: None})
+    sys.modules["pcbnew"] = pcbnew
+try:
+    import wx  # noqa: F401
+except ImportError:
+    wx = types.ModuleType("wx")
+    wx.FindWindowByName = lambda *args: None
+    sys.modules["wx"] = wx
 os.environ["POWERLAB_ASSISTANT_STANDALONE"] = "1"  # don't register the PCB plugin
 sys.path.insert(0, os.path.join(ROOT, "plugin"))
 sys.path.insert(0, os.path.join(ROOT, "tools"))
