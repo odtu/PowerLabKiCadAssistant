@@ -1,6 +1,6 @@
 """Plugin update check: is there a newer release of PowerLab KiCad Assistant?
 
-At most once a day the panel asks GitHub for the latest release of the public
+At most every few hours the panel asks GitHub for the latest release of the public
 repository. The request is anonymous and carries nothing about the user or their
 projects (GitHub sees an IP address, like any download).
 """
@@ -14,7 +14,9 @@ import urllib.request
 from . import config
 from .common import open_console
 
-CHECK_EVERY = 24 * 60 * 60  # seconds
+# A day was too long: a fix released right after a check stayed invisible until
+# the next day (a 0.1.1 panel cached "latest = 0.1.1" and missed 0.1.2).
+CHECK_EVERY = 3 * 60 * 60  # seconds
 LATEST_URL = f"https://api.github.com/repos/{config.REPORT_REPO}/releases/latest"
 RELEASES_URL = f"https://github.com/{config.REPORT_REPO}/releases"
 
@@ -45,7 +47,7 @@ def fetch_latest(timeout=10):
 
 def check(settings, force=False, fetch=fetch_latest):
     """Return {'available', 'version', 'summary', 'url'} for the latest release,
-    reusing the last answer if GitHub was asked less than a day ago. Network: call
+    reusing the last answer if GitHub was asked less than CHECK_EVERY ago. Network: call
     from a worker thread. Updates `settings` (caller saves it)."""
     cached = settings.get("update_cache") or {}
     if force or time.time() - settings.get("update_checked", 0) >= CHECK_EVERY or not cached:

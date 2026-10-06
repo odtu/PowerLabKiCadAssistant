@@ -28,7 +28,7 @@ It runs [Claude Code](https://docs.claude.com/claude-code) on your computer with
 | Library parts you choose to share | A pull request to [odtu/PowerLabKiCadLibraries](https://github.com/odtu/PowerLabKiCadLibraries), from your GitHub account | Only when you press **Share** and confirm the file list |
 | Problem reports | A **public** issue on this repository | Only when you press **Submit** after reviewing the report |
 | Library updates | Anonymous read from GitHub (`git fetch`) | When the panel opens, at most every 10 minutes |
-| Plugin update check | Anonymous request to GitHub for this repository's latest release number | When the panel opens, at most once a day |
+| Plugin update check | Anonymous request to GitHub for this repository's latest release number | When the panel opens, at most every 3 hours |
 
 **Nothing else is sent to METU Power Lab.** The panel has no analytics, telemetry or tracking.
 

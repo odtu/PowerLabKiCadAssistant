@@ -232,15 +232,21 @@ class UpdateCheckTests(unittest.TestCase):
     def release(self, tag, body="## 0.9.0\n\n- Fixes library Share\n- Other things"):
         return lambda: {"tag_name": tag, "body": body, "html_url": f"https://example.invalid/{tag}"}
 
-    def test_newer_release_is_offered_once_a_day(self):
+    def test_newer_release_is_offered_and_answer_cached_briefly(self):
         settings = {}
         result = updates.check(settings, fetch=self.release("v99.0.0"))
         self.assertTrue(result["available"])
         self.assertEqual(result["version"], "99.0.0")
         self.assertEqual(result["summary"], "Fixes library Share")
-        # Within a day the cached answer is reused: GitHub isn't asked again.
-        again = updates.check(settings, fetch=lambda: self.fail("asked GitHub twice in a day"))
+        # Shortly after, the cached answer is reused: GitHub isn't asked again.
+        again = updates.check(settings, fetch=lambda: self.fail("asked GitHub again within CHECK_EVERY"))
         self.assertTrue(again["available"])
+
+    def test_release_published_after_a_check_is_seen_within_hours(self):
+        settings = {}
+        updates.check(settings, fetch=self.release(f"v{config.VERSION}"))  # nothing newer yet
+        settings["update_checked"] -= 4 * 60 * 60  # four hours later, a release came out
+        self.assertTrue(updates.check(settings, fetch=self.release("v99.0.0"))["available"])
 
     def test_same_or_older_release_is_not_offered(self):
         for tag in (f"v{config.VERSION}", "v0.0.1", "not-a-version"):
