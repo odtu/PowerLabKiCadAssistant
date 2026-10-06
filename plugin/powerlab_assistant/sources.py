@@ -13,8 +13,12 @@ import re
 import time
 from dataclasses import dataclass, field
 
-from . import kicad_window
 from .library import library_context
+
+if os.name == "nt":
+    from . import kicad_window
+else:  # the panel only runs on Windows; this keeps the module importable for tests on Linux CI
+    kicad_window = None
 from .pcb import board_state, build_context
 
 

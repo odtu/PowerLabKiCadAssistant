@@ -6,6 +6,10 @@ import subprocess
 
 from . import config
 
+# Windows-only process flags (0 elsewhere, so tests also run on Linux CI).
+CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+CREATE_NEW_CONSOLE = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+
 CLAUDE_CANDIDATES = [
     os.path.expandvars(r"%USERPROFILE%\.local\bin\claude.exe"),  # native installer
     os.path.expandvars(r"%APPDATA%\npm\claude.cmd"),  # npm install -g
@@ -52,7 +56,7 @@ def clean_env():
 def open_console(args, cwd=None):
     """Run a command in a new console window the user can see and type into."""
     subprocess.Popen(args, cwd=cwd or os.path.expanduser("~"), env=clean_env(),
-                     creationflags=subprocess.CREATE_NEW_CONSOLE)
+                     creationflags=CREATE_NEW_CONSOLE)
 
 
 def open_terminal(claude, cwd, context, session_id=None):
@@ -70,7 +74,7 @@ def run_quiet(args, cwd=None, timeout=60, extra_env=None):
     try:
         proc = subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True,
                               encoding="utf-8", errors="replace", timeout=timeout,
-                              creationflags=subprocess.CREATE_NO_WINDOW)
+                              creationflags=CREATE_NO_WINDOW)
         # rstrip only: leading spaces can be meaningful (git status columns).
         return proc.returncode, (proc.stdout + proc.stderr).rstrip()
     except (OSError, subprocess.TimeoutExpired) as exc:
