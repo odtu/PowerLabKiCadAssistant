@@ -21,12 +21,13 @@ permissions:
   id-token: write
   actions: write  # to start tests.yml on the fix branch (PRs opened by GITHUB_TOKEN don't trigger it)
 
-concurrency:
-  group: auto-fix-${{ github.event.issue.number }}
-  cancel-in-progress: false
-
 jobs:
   fix:
+    # Job-level, so events that don't run the job (e.g. adding the "bug" label) don't
+    # queue behind, or cancel, a real run for the same issue.
+    concurrency:
+      group: auto-fix-${{ github.event.issue.number }}
+      cancel-in-progress: false
     if: >-
       (github.event.action == 'opened' &&
        contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.issue.author_association)) ||
@@ -63,6 +64,13 @@ jobs:
         if: steps.creds.outputs.ok == 'true'
         shell: bash
         run: |
+          # Already handled? (e.g. a member opened it and someone also added "auto-fix")
+          open_fix=$(gh pr list --state open --json headRefName \
+                       --jq "[.[] | select(.headRefName | startswith(\"auto-fix/issue-${ISSUE}-\"))] | length")
+          if [ "$open_fix" -gt 0 ]; then
+            echo "::notice::Issue #$ISSUE already has an open auto-fix pull request; not running again."
+            exit 0
+          fi
           # Count earlier runs in the last 24 h whose Claude step succeeded or is still running.
           # Skipped runs (no credentials, this limit) and failed ones (e.g. install or sign-in
           # errors, which use next to no usage) don't count.
