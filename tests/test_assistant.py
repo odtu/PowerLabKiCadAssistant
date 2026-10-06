@@ -111,6 +111,48 @@ class LibraryCommitTests(unittest.TestCase):
         self.assertEqual(self.git("status", "--porcelain"), before)  # working copy untouched
 
 
+class ContributeCommandTests(unittest.TestCase):
+    """The Share flow's gh/git commands, with gh and the network mocked out."""
+
+    def test_fork_push_and_pr_commands(self):
+        calls = []
+
+        def fake_run(args, cwd=None, timeout=60, extra_env=None):
+            calls.append(args)
+            if args[1:3] == ["pr", "create"]:
+                return 0, "https://github.com/odtu/PowerLabKiCadLibraries/pull/99"
+            return 0, ""
+
+        saved = (library.run_quiet, library.find_gh, library.build_commit, config.library_path)
+        library.run_quiet = fake_run
+        library.find_gh = lambda: r"C:\Program Files\GitHub CLI\gh.exe"
+        library.build_commit = lambda path, paths, message, login: (True, "abc123")
+        config.library_path = lambda: "C:/lib"
+        try:
+            ok, url = library.contribute("Add X", "desc", [{"status": "??", "path": "symbols/METUPowerLab_X.kicad_sym"}], "someone")
+        finally:
+            library.run_quiet, library.find_gh, library.build_commit, config.library_path = saved
+
+        self.assertTrue(ok, url)
+        self.assertTrue(url.endswith("/pull/99"))
+        fork = next(c for c in calls if c[1:3] == ["repo", "fork"])
+        # gh rejects --remote together with a repository argument (issue #2).
+        self.assertFalse(any(a.startswith("--remote") for a in fork), fork)
+        self.assertIn("--clone=false", fork)
+        push = next(c for c in calls if "push" in c)
+        self.assertEqual(push[-2], "https://github.com/someone/PowerLabKiCadLibraries.git")
+        self.assertTrue(push[-1].startswith("abc123:refs/heads/library/someone-"))
+        pr = next(c for c in calls if c[1:3] == ["pr", "create"])
+        self.assertIn("someone:" + push[-1].split("refs/heads/")[1], pr)
+
+    def test_error_line_skips_usage_text(self):
+        out = ("the `--remote` flag is unsupported when a repository argument is provided\n\n"
+               "Usage:  gh repo fork [<repository>] [-- <gitflags>...] [flags]\n\nFlags:\n"
+               "  --clone   Clone the fork\n  --remote  Add a git remote for the fork\n")
+        self.assertEqual(library.error_line(out),
+                         "the `--remote` flag is unsupported when a repository argument is provided")
+
+
 class LibTableTests(unittest.TestCase):
     def test_repoints_pcm_entries_and_adds_missing(self):
         with tempfile.TemporaryDirectory() as lib, tempfile.TemporaryDirectory() as cfg:

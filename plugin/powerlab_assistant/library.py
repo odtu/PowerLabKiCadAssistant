@@ -219,6 +219,16 @@ def build_commit(path, paths, message, login):
     return True, commit.strip()
 
 
+def error_line(output):
+    """The line that says what went wrong. gh prints the error first and its usage text
+    after it, so the end of the output (what this used to show) is just usage."""
+    for line in output.splitlines():
+        line = line.strip()
+        if line and not line.startswith(("Usage:", "Flags:", "-", "Create a fork")):
+            return line[:300]
+    return output.strip()[:300] or "unknown error"
+
+
 def contribute(title, description, files, login):
     """Open a PR to the lab library with exactly `files`. Runs git + gh (network):
     call from a worker thread. Returns (ok, url-or-error)."""
@@ -228,9 +238,10 @@ def contribute(title, description, files, login):
     branch = f"library/{login}-{stamp}"
     paths = [f["path"] for f in files]
 
-    code, out = run_quiet([gh, "repo", "fork", config.LIBRARY_REPO, "--clone=false", "--remote=false"], timeout=120)
+    # No --remote flag: gh rejects it whenever a repository argument is given (issue #2).
+    code, out = run_quiet([gh, "repo", "fork", config.LIBRARY_REPO, "--clone=false"], timeout=120)
     if code != 0 and "already exists" not in out:
-        return False, f"Couldn't create your fork: {out[-300:]}"
+        return False, f"Couldn't create your fork: {error_line(out)}"
     repo_name = config.LIBRARY_REPO.split("/")[1]
     fork_url = f"https://github.com/{login}/{repo_name}.git"
 
@@ -243,7 +254,7 @@ def contribute(title, description, files, login):
     code, out = git(path, "-c", "credential.helper=", "-c", f"credential.helper={helper}",
                     "push", fork_url, f"{commit}:refs/heads/{branch}", timeout=300)
     if code != 0:
-        return False, f"Couldn't push to your fork: {out[-300:]}"
+        return False, f"Couldn't push to your fork: {error_line(out)}"
 
     body = (f"{description}\n\n**Files**\n" + "\n".join(f"- `{p}`" for p in paths) +
             "\n\nShared from PowerLab KiCad Assistant. Please check against "
@@ -251,6 +262,6 @@ def contribute(title, description, files, login):
     code, out = run_quiet([gh, "pr", "create", "-R", config.LIBRARY_REPO, "--base", "main",
                            "--head", f"{login}:{branch}", "--title", title, "--body", body], timeout=120)
     if code != 0:
-        return False, f"Pushed, but couldn't open the pull request: {out[-300:]}"
+        return False, f"Pushed, but couldn't open the pull request: {error_line(out)}"
     url = out.strip().splitlines()[-1]
     return True, url
