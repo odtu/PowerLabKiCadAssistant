@@ -1,0 +1,42 @@
+# Posts a maintainer reply on an issue as github-actions[bot], so replies written
+# by the maintainers' Claude Code sessions don't appear under a personal account.
+#   gh workflow run reply-to-issue.yml -R odtu/PowerLabKiCadAssistant -f issue=1 -F body=@reply.md [-f close=true]
+name: Reply to issue
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: Issue number
+        required: true
+        type: number
+      body:
+        description: Comment (Markdown)
+        required: true
+        type: string
+      close:
+        description: Close the issue as completed after replying
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  issues: write
+
+jobs:
+  reply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        env:
+          # Passed as data, never interpolated into the script.
+          BODY: ${{ inputs.body }}
+          ISSUE: ${{ inputs.issue }}
+          CLOSE: ${{ inputs.close }}
+        with:
+          script: |
+            const issue_number = Number(process.env.ISSUE);
+            await github.rest.issues.createComment({ ...context.repo, issue_number, body: process.env.BODY });
+            if (process.env.CLOSE === 'true') {
+              await github.rest.issues.update({ ...context.repo, issue_number, state: 'closed', state_reason: 'completed' });
+            }
