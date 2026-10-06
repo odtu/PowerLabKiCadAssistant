@@ -32,8 +32,6 @@ def build_context(board_path, selected_refs):
     if selected_refs:
         lines.append("Footprints currently selected in the PCB editor: " + ", ".join(selected_refs))
     lines += [
-        "kicad-cli is on PATH: run it by name (`kicad-cli pcb render ...`), never via `&` or its "
-        "full path, one command per call; write outputs inside the project folder.",
         "KiCad has this board open: the user must save in KiCad before you read it, and after "
         "you modify the board file, tell them to use File > Revert in KiCad to load your changes.",
     ]

@@ -43,6 +43,31 @@ function Ask($question, $default = "Y") {
     if ([string]::IsNullOrWhiteSpace($answer)) { $answer = $default }
     return $answer.Trim().ToUpper().StartsWith("Y")
 }
+function Probe($exe, [string[]]$arguments) {
+    # Runs a check whose output we don't need and returns its exit code. Windows
+    # PowerShell 5.1 turns redirected stderr into a terminating error under "Stop",
+    # and tools like gh/claude report "not signed in / not found" on stderr.
+    $saved = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try { & $exe @arguments *> $null; return $LASTEXITCODE }
+    catch { return 1 }
+    finally { $ErrorActionPreference = $saved }
+}
+function Save-Config {
+    # Written after each step, so an interrupted install still leaves usable settings.
+    New-Item -ItemType Directory -Force $AppData | Out-Null
+    $path = Join-Path $AppData "config.json"
+    $config = @{}
+    if (Test-Path $path) {
+        (Get-Content $path -Raw | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $config[$_.Name] = $_.Value }
+    }
+    if ($script:KiCadBin) { $config["kicad_bin"] = $script:KiCadBin }
+    if ($script:McpReady) { $config["mcp_path"] = $script:McpDir }
+    if ($script:Library) { $config["library_path"] = $script:Library }
+    if (-not $config.ContainsKey("extra_dirs")) { $config["extra_dirs"] = @() }
+    $config | ConvertTo-Json | Set-Content -Encoding UTF8 $path
+    return $path
+}
 function Run($exe, [string[]]$arguments, $where = $null) {
     # Runs a native command; stops the install if it fails.
     if ($where) { Push-Location $where }
@@ -117,9 +142,9 @@ if (-not $SkipMcp) {
     # KiCad's Python puts --user packages in its own 3rdparty folder; no admin rights needed.
     Run $KiCadPython @("-m", "pip", "install", "--user", "--quiet", "--disable-pip-version-check", "-r", (Join-Path $McpDir "requirements.txt"))
     Ok "Python packages installed into KiCad's Python"
+    $McpReady = $true
 
-    & $Claude mcp get kicad *> $null
-    $exists = ($LASTEXITCODE -eq 0)
+    $exists = ((Probe $Claude @("mcp", "get", "kicad")) -eq 0)
     if (-not $exists -or (Ask "Claude Code already has a 'kicad' tool server. Replace it with this one?")) {
         if ($exists) { & $Claude mcp remove kicad -s user | Out-Null }
         $sitePackages = Join-Path $KiCadBin "Lib\site-packages"
@@ -146,6 +171,7 @@ foreach ($pair in @(@("plugin\powerlab_assistant", $PanelDest), @("plugin\powerl
 }
 Ok "PCB editor panel   -> $PanelDest"
 Ok "Schematic button   -> $ButtonDest"
+$null = Save-Config
 
 # ---- 5. Library ------------------------------------------------------------
 $Library = ""
@@ -162,6 +188,7 @@ if (-not $SkipLibrary) {
         Ok "Cloned to $LibraryPath"
     }
     if (Test-Path (Join-Path $LibraryPath ".git")) { $Library = (Resolve-Path $LibraryPath).Path }
+    $null = Save-Config
 }
 
 $configure = @((Join-Path $Root "tools\configure_kicad.py"), "--kicad-bin", $KiCadBin)
@@ -188,23 +215,12 @@ if (-not $Gh -and (Ask "Install GitHub CLI (gh) with winget?" "N")) {
     $Gh = "$env:ProgramFiles\GitHub CLI\gh.exe"
 }
 if ($Gh -and (Test-Path $Gh)) {
-    & $Gh auth status --hostname github.com *> $null
-    if ($LASTEXITCODE -ne 0 -and (Ask "Sign in to GitHub now? (opens your browser)" "N")) { & $Gh auth login --hostname github.com --web }
-    else { Ok "GitHub CLI ready" }
+    if ((Probe $Gh @("auth", "status", "--hostname", "github.com")) -eq 0) { Ok "GitHub CLI ready and signed in" }
+    elseif (Ask "Sign in to GitHub now? (opens your browser)" "N") { & $Gh auth login --hostname github.com --web }
 } else { Warn "No GitHub CLI: reports open as a pre-filled form in your browser instead. You can connect later from the panel." }
 
 # ---- Settings (local only) -------------------------------------------------
-New-Item -ItemType Directory -Force $AppData | Out-Null
-$configPath = Join-Path $AppData "config.json"
-$config = @{}
-if (Test-Path $configPath) {
-    (Get-Content $configPath -Raw | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $config[$_.Name] = $_.Value }
-}
-$config["kicad_bin"] = $KiCadBin
-$config["mcp_path"] = $McpDir
-if ($Library) { $config["library_path"] = $Library }
-if (-not $config.ContainsKey("extra_dirs")) { $config["extra_dirs"] = @() }
-$config | ConvertTo-Json | Set-Content -Encoding UTF8 $configPath
+$configPath = Save-Config
 Ok "Settings saved to $configPath (stays on this computer)"
 
 Write-Host ""
