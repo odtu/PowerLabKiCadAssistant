@@ -15,8 +15,9 @@ import shutil
 import sys
 import time
 
-KICAD_CONFIG = os.path.join(os.environ["APPDATA"], "kicad", "10.0")
-BACKUP_ROOT = os.path.join(os.environ["APPDATA"], "PowerLabKiCadAssistant", "backup")
+APPDATA = os.environ.get("APPDATA", os.path.expanduser("~"))  # Windows; fallback keeps tests importable on Linux
+KICAD_CONFIG = os.path.join(APPDATA, "kicad", "10.0")
+BACKUP_ROOT = os.path.join(APPDATA, "PowerLabKiCadAssistant", "backup")
 LIB_PREFIX = "METUPowerLab_"
 TABLES = (
     ("sym-lib-table", "symbols", ".kicad_sym", "METUPOWERLAB_SYMBOLS"),
