@@ -25,6 +25,11 @@ Claude reproduces the bug with a test, fixes it and runs the tests. The workflow
 
 A maintainer still reviews and merges the PR, then releases (below) and replies with the version. Bugs that need the KiCad window can't be verified on the runner; Claude lists them under "Needs a human".
 
+**Limits.** Runs use the maintainer's Claude subscription (the `CLAUDE_CODE_OAUTH_TOKEN` secret), so they count against the same usage limits as their own Claude use.
+- **Model:** Opus 5.5 at high effort.
+- **Per run:** up to 60 turns and 60 minutes.
+- **Per day:** at most `DAILY_LIMIT` (3) successful or running Claude runs in 24 hours. Over the limit, the bot says so on the issue; re-add the `auto-fix` label later to retry.
+
 ## Releasing
 
 Users only learn about fixes through releases: the panel offers an update when the latest GitHub release is newer than its `VERSION`.

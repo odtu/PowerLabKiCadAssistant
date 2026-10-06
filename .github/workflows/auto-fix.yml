@@ -38,6 +38,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       ISSUE: ${{ github.event.issue.number }}
+      DAILY_LIMIT: 3  # Claude runs per 24 hours; they use the maintainer's Claude subscription
     steps:
       - uses: actions/checkout@v5
         with:
@@ -57,9 +58,33 @@ jobs:
           if [ -n "$OAUTH$APIKEY" ]; then echo "ok=true" >> "$GITHUB_OUTPUT"
           else echo "::notice::No CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY secret yet; skipping auto-fix."; fi
 
+      - name: Check the daily limit
+        id: quota
+        if: steps.creds.outputs.ok == 'true'
+        shell: bash
+        run: |
+          # Count earlier runs in the last 24 h whose Claude step succeeded or is still running.
+          # Skipped runs (no credentials, this limit) and failed ones (e.g. install or sign-in
+          # errors, which use next to no usage) don't count.
+          since=$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)
+          used=0
+          for id in $(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/auto-fix.yml/runs?created=>=$since&per_page=100" \
+                        --jq ".workflow_runs[] | select(.id != $GITHUB_RUN_ID) | .id"); do
+            n=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs" \
+                  --jq '[.jobs[].steps[]? | select(.name == "Claude investigates and fixes") | select(.conclusion == "success" or .conclusion == null)] | length')
+            used=$((used + n))
+          done
+          echo "Claude runs in the last 24 h: $used of $DAILY_LIMIT"
+          if [ "$used" -lt "$DAILY_LIMIT" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            printf 'The daily limit of %s automatic fixes is reached, so I did not look into this yet. A maintainer can start it later by removing and re-adding the `auto-fix` label.\n\n🤖 PowerLab KiCad Assistant auto-fix\n' "$DAILY_LIMIT" > "$RUNNER_TEMP/limit.md"
+            gh issue comment "$ISSUE" --body-file "$RUNNER_TEMP/limit.md"
+          fi
+
       - name: Claude investigates and fixes
         id: claude
-        if: steps.creds.outputs.ok == 'true'
+        if: steps.creds.outputs.ok == 'true' && steps.quota.outputs.ok == 'true'
         uses: anthropics/claude-code-action@v1
         with:
           # Subscription token only: passing an empty anthropic_api_key alongside it sets an
@@ -69,6 +94,8 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ github.token }}
           claude_args: >-
+            --model claude-opus-5-5
+            --effort high
             --max-turns 60
             --allowedTools "Read,Edit,Write,Glob,Grep,Bash(gh issue view:*),Bash(python -m unittest:*),Bash(python -m py_compile:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*)"
           prompt: |
@@ -96,7 +123,7 @@ jobs:
 
       - name: Check what Claude changed
         id: changes
-        if: always() && steps.creds.outputs.ok == 'true'
+        if: always() && steps.creds.outputs.ok == 'true' && steps.quota.outputs.ok == 'true'
         shell: bash
         run: |
           # Compare with the commit this run started from, so edits count whether they are
