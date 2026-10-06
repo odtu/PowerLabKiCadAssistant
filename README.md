@@ -127,7 +127,9 @@ Claude creates library parts in your clone, following [`HowToCreateNewDesign/Des
 2. Shows exactly which library files will be sent.
 3. Opens a pull request from your GitHub account.
 
-The lab reviews it, and the same checks run automatically on the pull request. Only files under `symbols/`, `footprints/` and `3dmodels/` are ever shared.
+The same checks run on the pull request. For lab members (write access), it **merges automatically once they pass**, and everyone gets the parts with the next **Update**. Pull requests from others wait for a maintainer.
+
+The checks can't confirm that pinouts or pad sizes match the datasheet, so verify that before you share. On GitHub, the `hold` label keeps a pull request open for review. Only files under `symbols/`, `footprints/` and `3dmodels/` are ever shared.
 
 ## Reporting problems
 

@@ -542,7 +542,7 @@ function showShare(e) {
       ? '<p class="ok">✓ Lab standards check passed.</p>'
       : `<p class="bad">✗ The lab standards check found problems. Fix them first; you can ask Claude to "fix the library check errors".</p><pre>${esc(check.output)}</pre>`;
   openSheet(`<h2>Share with the PowerLab library</h2>
-    <p>This opens a pull request to <b>odtu/PowerLabKiCadLibraries</b> from your GitHub account. Only the files you tick are sent, never project files. The lab reviews it before merging.</p>
+    <p>This opens a pull request to <b>odtu/PowerLabKiCadLibraries</b> from your GitHub account. Only the files you tick are sent, never project files. For lab members it <b>merges automatically once the library checks pass</b>, so check pinouts and pads against the datasheet first.</p>
     <div class="label">Files</div>
     <div class="files">${files.map((f, i) => `<label><input type="checkbox" data-i="${i}" checked><span class="st">${status(f.status)}</span><code>${esc(f.path)}</code></label>`).join('')}</div>
     ${checkHtml}

@@ -111,6 +111,65 @@ class LibraryCommitTests(unittest.TestCase):
         self.assertEqual(self.git("status", "--porcelain"), before)  # working copy untouched
 
 
+class LibraryUpdateTests(unittest.TestCase):
+    """Issue #4: after your shared parts are merged, Update must accept the local copies
+    (an edited tracked file and a new untracked file) that equal what's on GitHub."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = self.tmp.name
+        self.remote = os.path.join(root, "remote.git")
+        self.mine = os.path.join(root, "mine")
+        theirs = os.path.join(root, "theirs")
+        sh(root, "git", "init", "-q", "--bare", "-b", "main", self.remote)
+        sh(root, "git", "clone", "-q", self.remote, theirs)
+        for repo in (theirs,):
+            sh(repo, "git", "config", "user.email", "t@example.com")
+            sh(repo, "git", "config", "user.name", "T")
+        os.makedirs(os.path.join(theirs, "symbols"))
+        os.makedirs(os.path.join(theirs, "footprints", "METUPowerLab_A.pretty"))
+        self.write(theirs, "symbols/METUPowerLab_A.kicad_sym", "v1\n")
+        sh(theirs, "git", "add", "-A"); sh(theirs, "git", "commit", "-q", "-m", "v1")
+        sh(theirs, "git", "push", "-q", "origin", "main")
+        sh(root, "git", "clone", "-q", self.remote, self.mine)
+        # The user's shared change gets merged upstream...
+        self.write(theirs, "symbols/METUPowerLab_A.kicad_sym", "v1\nnew part\n")
+        self.write(theirs, "footprints/METUPowerLab_A.pretty/SOT-23-5.kicad_mod", "fp\n")
+        sh(theirs, "git", "add", "-A"); sh(theirs, "git", "commit", "-q", "-m", "merged share")
+        sh(theirs, "git", "push", "-q", "origin", "main")
+        # ...while the user's clone still holds the same edits, uncommitted.
+        self.write(self.mine, "symbols/METUPowerLab_A.kicad_sym", "v1\nnew part\n")
+        self.write(self.mine, "footprints/METUPowerLab_A.pretty/SOT-23-5.kicad_mod", "fp\n")
+        self.saved = (config.library_path, library.register_new_libraries)
+        config.library_path = lambda: self.mine
+        library.register_new_libraries = lambda path: []  # don't touch the real KiCad tables
+
+    def tearDown(self):
+        config.library_path, library.register_new_libraries = self.saved
+        self.tmp.cleanup()
+
+    def write(self, repo, rel, text):
+        os.makedirs(os.path.dirname(os.path.join(repo, rel)), exist_ok=True)
+        with open(os.path.join(repo, rel), "w", newline="\n") as f:
+            f.write(text)
+
+    def git(self, *args):
+        return subprocess.run(["git", "-C", self.mine, *args], capture_output=True, text=True).stdout.strip()
+
+    def test_update_after_own_share_was_merged(self):
+        ok, info = library.update()
+        self.assertTrue(ok, info)
+        self.assertEqual(self.git("rev-parse", "HEAD"), self.git("rev-parse", "origin/main"))
+        self.assertEqual(self.git("status", "--porcelain"), "")
+
+    def test_update_keeps_edits_that_github_does_not_have(self):
+        self.write(self.mine, "symbols/METUPowerLab_A.kicad_sym", "v1\nnew part\nmy unshared edit\n")
+        ok, info = library.update()
+        self.assertFalse(ok)
+        with open(os.path.join(self.mine, "symbols/METUPowerLab_A.kicad_sym")) as f:
+            self.assertIn("my unshared edit", f.read())  # never thrown away
+
+
 class ContributeCommandTests(unittest.TestCase):
     """The Share flow's gh/git commands, with gh and the network mocked out."""
 

@@ -158,6 +158,7 @@ class ClaudePanel(wx.Frame):
         self.image_reads = {}
         self.problems = {}  # id -> error details offered for reporting
         self.share_files = []
+        self.sharing = False
         self.library_checked = 0.0
         _live_panel = self
         install_excepthook()
@@ -468,6 +469,9 @@ class ClaudePanel(wx.Frame):
         self.in_background(library.update, done)
 
     def msg_lib_share(self, msg):
+        if self.sharing:
+            self.emit("note", level="info", text="A pull request is already being opened; wait for it to finish.")
+            return
         path = config.library_path()
 
         def work():
@@ -489,16 +493,20 @@ class ClaudePanel(wx.Frame):
         chosen = set(msg.get("paths", []))
         files = [f for f in self.share_files if f["path"] in chosen]
         login = msg.get("login", "")
-        if not files or not login:
-            return
+        if not files or not login or self.sharing:
+            return  # nothing chosen, or a share is already running (pressing twice made duplicate PRs)
+        self.sharing = True
         title = msg.get("title", "").strip() or "Add library parts"
         report.note_event("library share", f"{len(files)} files")
+        self.emit("note", level="info", text="Opening the pull request… (forking and uploading can take a minute)")
 
         def done(result):
+            self.sharing = False
             ok, info = result if not isinstance(result, Exception) else (False, str(result))
             if ok:
-                self.emit("note", level="info", text=f"Pull request opened: {info} — the lab will "
-                                                     "review it. The automatic checks run there too.")
+                self.emit("note", level="info", text=f"Pull request opened: {info}. It merges automatically "
+                                                     "once the library checks pass (lab members), then "
+                                                     "everyone gets it with Update.")
             else:
                 self.problem("warn", info, "library share failed")
             self.check_library(force=True)

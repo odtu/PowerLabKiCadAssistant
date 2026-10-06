@@ -89,18 +89,32 @@ def status(fetch=True):
     return Status(behind=behind, changes=changed_files(path))
 
 
+def same_as_upstream(path, rel):
+    """True if the working-tree file has exactly the content GitHub's main has.
+    Compares blob hashes, so it works for untracked files too (issue #4: `git diff`
+    against a commit goes through the index and calls untracked files different)."""
+    full = os.path.join(path, rel)
+    if not os.path.isfile(full):
+        return False
+    code, upstream = git(path, "rev-parse", "--verify", "--quiet", f"origin/main:{rel}")
+    if code != 0:
+        return False  # GitHub doesn't have this file
+    code, local = git(path, "hash-object", "--", rel)  # applies the repo's line-ending rules
+    return code == 0 and local.strip() == upstream.strip()
+
+
 def update():
     """Fast-forward the clone to GitHub's main. Local edits that GitHub already has
     (e.g. your own merged contribution) are dropped first; other local edits block it."""
     path = config.library_path()
+    git(path, "fetch", "--quiet", "origin")  # compare against GitHub as it is now
     for item in changed_files(path):
-        code, _ = git(path, "diff", "--quiet", "origin/main", "--", item["path"])
-        exists_upstream = git(path, "cat-file", "-e", f"origin/main:{item['path']}")[0] == 0
-        if code == 0 and exists_upstream:  # identical to what GitHub has now
-            git(path, "checkout", "--", item["path"])
+        if same_as_upstream(path, item["path"]):  # e.g. your own share, now merged
             full = os.path.join(path, item["path"])
-            if item["status"] == "??" and os.path.isfile(full):
-                os.remove(full)
+            if item["status"] == "??":
+                os.remove(full)  # untracked: the pull brings the identical file back
+            else:
+                git(path, "checkout", "--", item["path"])
     code, out = git(path, "pull", "--ff-only", "--quiet", "origin", "main")
     if code != 0:
         return False, ("Couldn't update: you have library changes that aren't on GitHub yet. "
