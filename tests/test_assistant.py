@@ -255,6 +255,8 @@ class UpdateCheckTests(unittest.TestCase):
 
     def test_version_order_is_numeric(self):
         self.assertGreater(updates.parse_version("v0.10.0"), updates.parse_version("v0.9.9"))
+        self.assertEqual(updates.parse_version("v0.2"), (0, 2, 0))
+        self.assertGreater(updates.parse_version("v0.2"), updates.parse_version("0.1.4"))
 
 
 class LibTableTests(unittest.TestCase):

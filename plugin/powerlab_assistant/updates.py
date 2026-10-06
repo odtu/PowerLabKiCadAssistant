@@ -22,9 +22,9 @@ RELEASES_URL = f"https://github.com/{config.REPORT_REPO}/releases"
 
 
 def parse_version(text):
-    """'v0.1.1' / '0.1.1' -> (0, 1, 1); anything unparsable -> ()."""
-    match = re.search(r"(\d+)\.(\d+)\.(\d+)", text or "")
-    return tuple(int(n) for n in match.groups()) if match else ()
+    """'v0.1.1' / '0.1.1' -> (0, 1, 1); 'v0.2' -> (0, 2, 0); unparsable -> ()."""
+    match = re.search(r"(\d+)\.(\d+)(?:\.(\d+))?", text or "")
+    return tuple(int(n or 0) for n in match.groups()) if match else ()
 
 
 def summary(notes):
