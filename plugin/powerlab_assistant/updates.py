@@ -1,6 +1,6 @@
 """Plugin update check: is there a newer release of PowerLab KiCad Assistant?
 
-At most every few hours the panel asks GitHub for the latest release of the public
+At most once an hour the panel asks GitHub for the latest release of the public
 repository. The request is anonymous and carries nothing about the user or their
 projects (GitHub sees an IP address, like any download).
 """
@@ -16,7 +16,7 @@ from .common import open_console
 
 # A day was too long: a fix released right after a check stayed invisible until
 # the next day (a 0.1.1 panel cached "latest = 0.1.1" and missed 0.1.2).
-CHECK_EVERY = 3 * 60 * 60  # seconds
+CHECK_EVERY = 60 * 60  # seconds: once an hour
 LATEST_URL = f"https://api.github.com/repos/{config.REPORT_REPO}/releases/latest"
 RELEASES_URL = f"https://github.com/{config.REPORT_REPO}/releases"
 

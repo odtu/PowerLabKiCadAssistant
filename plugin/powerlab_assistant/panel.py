@@ -159,6 +159,7 @@ class ClaudePanel(wx.Frame):
         self.problems = {}  # id -> error details offered for reporting
         self.share_files = []
         self.sharing = False
+        self.update_loop = False
         self.library_checked = 0.0
         _live_panel = self
         install_excepthook()
@@ -297,6 +298,8 @@ class ClaudePanel(wx.Frame):
             self.push_context()
             self.timer.Start(1000)
             self.check_library()
+            if self.ready:
+                self.check_updates()  # cached: asks GitHub only if the last check is over an hour old
         else:
             self.timer.Stop()
         evt.Skip()
@@ -408,7 +411,17 @@ class ClaudePanel(wx.Frame):
     # ---- plugin updates -------------------------------------------------------
 
     def check_updates(self):
-        """Ask GitHub (anonymously, at most daily) whether a newer release exists."""
+        """Ask GitHub (anonymously, at most hourly) whether a newer release exists.
+        Also re-checks every hour while the panel stays open."""
+        if not self.update_loop:
+            self.update_loop = True
+
+            def hourly():
+                self.check_updates()
+                wx.CallLater(updates.CHECK_EVERY * 1000, self.safe, hourly)
+
+            wx.CallLater(updates.CHECK_EVERY * 1000, self.safe, hourly)
+
         def done(result):
             if isinstance(result, Exception):
                 return  # offline or GitHub unreachable: try again next time

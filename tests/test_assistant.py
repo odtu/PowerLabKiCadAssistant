@@ -242,10 +242,11 @@ class UpdateCheckTests(unittest.TestCase):
         again = updates.check(settings, fetch=lambda: self.fail("asked GitHub again within CHECK_EVERY"))
         self.assertTrue(again["available"])
 
-    def test_release_published_after_a_check_is_seen_within_hours(self):
+    def test_release_published_after_a_check_is_seen_within_the_hour(self):
+        self.assertEqual(updates.CHECK_EVERY, 60 * 60)
         settings = {}
         updates.check(settings, fetch=self.release(f"v{config.VERSION}"))  # nothing newer yet
-        settings["update_checked"] -= 4 * 60 * 60  # four hours later, a release came out
+        settings["update_checked"] -= 61 * 60  # just over an hour later, a release came out
         self.assertTrue(updates.check(settings, fetch=self.release("v99.0.0"))["available"])
 
     def test_same_or_older_release_is_not_offered(self):
