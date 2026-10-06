@@ -1,0 +1,626 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+:root {
+  --bg: #faf9f7; --surface: #ffffff; --surface-2: #f1efea; --border: #e4e1da;
+  --text: #1f1e1c; --muted: #77746d; --accent: #d71920; --accent-ink: #ffffff; --logo-ink: #111111;
+  --user-bg: #ece9e2; --ok: #3f8f5a; --err: #c9493b; --warn: #b7791f;
+  --code-bg: #f1efea; --shadow: 0 1px 2px rgba(0,0,0,.06), 0 4px 16px rgba(0,0,0,.05);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1d1c1a; --surface: #262522; --surface-2: #2f2d2a; --border: #3a3834;
+    --text: #ecebe8; --muted: #9b978f; --accent: #f0464d; --accent-ink: #ffffff; --logo-ink: #f2f2f2;
+    --user-bg: #34322e; --ok: #6cc08b; --err: #ef7a6c; --warn: #e3ac55;
+    --code-bg: #2f2d2a; --shadow: 0 1px 2px rgba(0,0,0,.3), 0 4px 16px rgba(0,0,0,.25);
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--bg); color: var(--text);
+  font: 13px/1.5 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  display: flex; flex-direction: column; overflow: hidden;
+}
+button { font: inherit; color: inherit; cursor: pointer; }
+
+/* header */
+header {
+  display: flex; align-items: center; gap: 8px; padding: 10px 12px;
+  border-bottom: 1px solid var(--border); background: var(--surface);
+}
+.brand svg, .lockup svg { display: block; width: 100%; height: 100%; }
+.brand { width: 28px; height: 28px; flex: none; color: var(--logo-ink); }
+.lockup { display: flex; justify-content: center; margin: 0 auto 18px; }
+.lockup .lab { width: 64px; height: 64px; color: var(--logo-ink); }
+.title { font-weight: 600; font-size: 13.5px; }
+.status .org { color: var(--muted); }
+
+/* library bar */
+.libbar {
+  display: none; align-items: center; gap: 8px; padding: 6px 12px; font-size: 12px;
+  background: var(--surface-2); border-bottom: 1px solid var(--border); color: var(--muted);
+}
+.libbar.show { display: flex; }
+.libbar .msg { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.libbar.warn { color: var(--warn); }
+
+/* sheets: notice, report, share */
+.overlay {
+  position: fixed; inset: 0; z-index: 50; display: none; align-items: flex-end;
+  background: rgba(0, 0, 0, .45); animation: fade .15s ease-out;
+}
+.overlay.open { display: flex; }
+.sheet {
+  width: 100%; max-height: calc(100% - 24px); overflow-y: auto; margin: 12px; padding: 16px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow);
+  animation: rise .18s ease-out;
+}
+.sheet h2 { font-size: 15px; margin: 0 0 8px; }
+.sheet p, .sheet li { font-size: 12.5px; color: var(--text); }
+.sheet p { margin: 0 0 10px; }
+.sheet ul { margin: 0 0 12px; padding-left: 18px; }
+.sheet li { margin-bottom: 7px; }
+.sheet .muted, .sheet .small { color: var(--muted); font-size: 11.5px; }
+.sheet label, .sheet .label { display: block; font-size: 12px; font-weight: 600; margin: 10px 0 4px; }
+.sheet label .muted { font-weight: 400; }
+.sheet input[type=text], .sheet textarea {
+  display: block; width: 100%; margin-top: 4px; padding: 7px 9px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--bg); color: var(--text); font: inherit; font-weight: 400;
+}
+.sheet textarea { resize: vertical; }
+.sheet input:focus, .sheet textarea:focus { outline: none; border-color: var(--accent); }
+.sheet pre {
+  font: 11px/1.45 "Cascadia Code", Consolas, monospace; background: var(--code-bg); border-radius: 8px;
+  padding: 8px 10px; max-height: 170px; overflow: auto; white-space: pre-wrap; word-break: break-word; margin: 0;
+}
+.sheet .tip { background: var(--surface-2); border-radius: 8px; padding: 8px 10px; margin: 10px 0 0; }
+.sheet .ok { color: var(--ok); margin: 10px 0 0; }
+.sheet .bad { color: var(--err); margin: 10px 0 4px; }
+.sheet .files { border: 1px solid var(--border); border-radius: 8px; padding: 4px 0; max-height: 150px; overflow: auto; }
+.sheet .files label { display: flex; gap: 8px; align-items: center; font-weight: 400; margin: 0; padding: 3px 10px; font-size: 12px; }
+.sheet .files code { font-size: 11.5px; word-break: break-all; }
+.sheet .files .st { color: var(--muted); font-size: 11px; width: 28px; flex: none; }
+.actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+.btn {
+  border: 1px solid var(--border); background: var(--surface); border-radius: 8px; padding: 5px 12px; font-size: 12.5px;
+}
+.btn:hover { border-color: var(--accent); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.btn:disabled { opacity: .45; cursor: default; }
+.link { border: 0; background: none; color: var(--accent); padding: 0; font-size: inherit; text-decoration: underline; }
+.libbar .btn { padding: 1px 10px; font-size: 11.5px; flex: none; }
+.disclaimer { font-size: 10px; color: var(--muted); text-align: center; margin-top: 6px; line-height: 1.35; }
+@keyframes fade { from { opacity: 0; } }
+.status { color: var(--muted); font-size: 11.5px; display: flex; align-items: center; gap: 5px; }
+.dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
+.busy .dot { background: var(--accent); animation: pulse 1s ease-in-out infinite; }
+.spacer { flex: 1; }
+.icon-btn {
+  border: 0; background: transparent; border-radius: 6px; padding: 5px; display: grid; place-items: center;
+  color: var(--muted);
+}
+.icon-btn:hover { background: var(--surface-2); color: var(--text); }
+.icon-btn svg { width: 16px; height: 16px; }
+
+/* messages */
+#log { flex: 1; overflow-y: auto; padding: 14px 12px 6px; scroll-behavior: smooth; }
+#log::-webkit-scrollbar { width: 8px; }
+#log::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+.msg { margin: 0 0 12px; animation: rise .18s ease-out; }
+.user { display: flex; justify-content: flex-end; }
+.user .bubble {
+  background: var(--user-bg); padding: 7px 11px; border-radius: 14px 14px 4px 14px;
+  max-width: 88%; white-space: pre-wrap; word-wrap: break-word;
+}
+.assistant { word-wrap: break-word; }
+.assistant p { margin: 0 0 8px; }
+.assistant p:last-child { margin-bottom: 0; }
+.assistant h1, .assistant h2, .assistant h3 { font-size: 13.5px; margin: 10px 0 4px; }
+.assistant ul, .assistant ol { margin: 0 0 8px; padding-left: 20px; }
+.assistant li { margin: 2px 0; }
+.assistant code {
+  font-family: "Cascadia Code", Consolas, monospace; font-size: 12px;
+  background: var(--code-bg); padding: 1px 5px; border-radius: 4px;
+}
+.assistant pre {
+  background: var(--code-bg); padding: 9px 11px; border-radius: 8px; overflow-x: auto; margin: 0 0 8px;
+}
+.assistant pre code { background: none; padding: 0; }
+.assistant a { color: var(--accent); }
+.assistant table { border-collapse: collapse; margin: 0 0 8px; font-size: 12px; display: block; overflow-x: auto; }
+.assistant th, .assistant td { border: 1px solid var(--border); padding: 3px 7px; text-align: left; }
+.assistant th { background: var(--surface-2); }
+
+/* tool activity */
+.tools {
+  border: 1px solid var(--border); border-radius: 10px; background: var(--surface);
+  padding: 4px 0; margin: 0 0 12px; animation: rise .18s ease-out;
+}
+.tool { display: flex; align-items: center; gap: 8px; padding: 3px 10px; font-size: 12px; min-width: 0; }
+.tool .name { font-weight: 500; white-space: nowrap; }
+.tool .detail { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.err-text { color: var(--err); font-size: 11.5px; padding: 0 10px 4px 32px; }
+.ti { width: 14px; height: 14px; flex: none; display: grid; place-items: center; }
+.ti.run { border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
+.ti.ok { color: var(--ok); } .ti.bad { color: var(--err); }
+.ti svg { width: 14px; height: 14px; }
+
+/* notes */
+.note { font-size: 12px; padding: 8px 10px; border-radius: 8px; margin: 0 0 12px; display: flex; gap: 8px; align-items: flex-start; }
+.note.error { background: color-mix(in srgb, var(--err) 12%, transparent); color: var(--err); }
+.note.warn { background: color-mix(in srgb, var(--warn) 14%, transparent); color: var(--warn); }
+.note.info { background: var(--surface-2); color: var(--muted); }
+.note button {
+  margin-left: auto; flex: none; border: 1px solid currentColor; background: transparent;
+  border-radius: 6px; padding: 1px 8px; font-size: 11.5px;
+}
+.meta { color: var(--muted); font-size: 11px; margin: -6px 0 14px; }
+.shot {
+  margin: 0 0 12px; border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
+  background: var(--surface); animation: rise .18s ease-out;
+}
+.shot img { display: block; width: 100%; max-height: 320px; object-fit: contain; cursor: zoom-in; background: var(--surface-2); }
+.shot .cap { font-size: 11px; color: var(--muted); padding: 4px 9px; }
+.typing { display: flex; gap: 4px; padding: 4px 2px 12px; }
+.typing span { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); animation: blink 1.2s infinite; }
+.typing span:nth-child(2) { animation-delay: .2s; } .typing span:nth-child(3) { animation-delay: .4s; }
+
+/* empty state */
+#empty { margin: auto 0; padding: 24px 6px; text-align: center; color: var(--muted); }
+#empty .big { font-size: 15px; color: var(--text); font-weight: 600; margin: 10px 0 4px; }
+.chips { display: flex; flex-direction: column; gap: 6px; margin-top: 16px; text-align: left; }
+.chip {
+  border: 1px solid var(--border); background: var(--surface); border-radius: 10px; padding: 8px 11px;
+  font-size: 12.5px; text-align: left; transition: border-color .15s, transform .15s;
+}
+.chip:hover { border-color: var(--accent); transform: translateY(-1px); }
+
+/* composer */
+footer { padding: 8px 12px 12px; }
+.context { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; min-height: 0; }
+.ctx {
+  font-size: 11px; color: var(--muted); background: var(--surface-2); border-radius: 999px;
+  padding: 1px 8px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.composer {
+  display: flex; align-items: flex-end; gap: 6px; background: var(--surface);
+  border: 1px solid var(--border); border-radius: 14px; padding: 6px 6px 6px 12px; box-shadow: var(--shadow);
+  transition: border-color .15s;
+}
+.composer:focus-within { border-color: var(--accent); }
+textarea {
+  flex: 1; border: 0; outline: 0; resize: none; background: transparent; color: var(--text);
+  font: inherit; max-height: 140px; padding: 4px 0; line-height: 1.45;
+}
+textarea::placeholder { color: var(--muted); }
+#send {
+  width: 30px; height: 30px; border-radius: 9px; border: 0; background: var(--accent); color: var(--accent-ink);
+  display: grid; place-items: center; flex: none; transition: opacity .15s;
+}
+#send:disabled { opacity: .35; cursor: default; }
+#send svg { width: 16px; height: 16px; }
+.hint {
+  font-size: 10.5px; color: var(--muted); min-width: 0; text-align: right;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.below { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 7px; }
+.picker { position: relative; flex: none; }
+.model-btn {
+  display: flex; align-items: center; gap: 4px; border: 1px solid var(--border); background: var(--surface);
+  border-radius: 999px; padding: 2px 8px 2px 10px; font-size: 11.5px; color: var(--muted);
+  white-space: nowrap; transition: color .15s, border-color .15s;
+}
+.model-btn:hover, .model-btn.open { color: var(--text); border-color: var(--accent); }
+.model-btn svg { width: 12px; height: 12px; }
+.model-menu {
+  position: absolute; bottom: calc(100% + 6px); left: 0; min-width: 220px; z-index: 10;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+  box-shadow: var(--shadow); padding: 4px; display: none; animation: rise .12s ease-out;
+}
+.model-menu.open { display: block; }
+.model-opt {
+  display: block; width: 100%; text-align: left; border: 0; background: transparent;
+  border-radius: 8px; padding: 6px 10px;
+}
+.model-opt:hover { background: var(--surface-2); }
+.model-opt .n { display: flex; justify-content: space-between; font-size: 12.5px; font-weight: 500; }
+.model-opt .d { font-size: 11px; color: var(--muted); }
+.model-opt.sel .n::after { content: "✓"; color: var(--accent); }
+
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes pulse { 50% { opacity: .35; } }
+@keyframes blink { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
+@keyframes rise { from { opacity: 0; transform: translateY(4px); } }
+</style>
+</head>
+<body>
+<header id="header">
+  <div class="brand"><svg xmlns="http://www.w3.org/2000/svg" viewBox="210 404 153 152" aria-label="METU Power Lab"><path fill="#ED1C24" d="M304.036,549.729c-5.554,1.367-11.355,2.107-17.321,2.107c-40.121,0-72.63-32.538-72.63-72.631 c0-31.335,19.839-58.044,47.616-68.224c10.208,21.84,24.329,61.138,24.329,61.138l-29.802,13.024L304.036,549.729z"/><path fill="currentColor" d="M301.876,408.163c32.839,6.979,57.468,36.124,57.468,71.043c0,31.937-20.608,59.059-49.26,68.773l-22.959-55.338 c0,0,32.619-10.507,32.619-12.915C319.744,477.893,307.759,430.987,301.876,408.163L301.876,408.163z"/></svg></div>
+  <div>
+    <div class="title">PowerLab Assistant</div>
+    <div class="status"><span class="dot"></span><span id="status">Ready</span><span class="org">· uses Claude Code</span></div>
+  </div>
+  <div class="spacer"></div>
+  <button class="icon-btn" title="Report a problem" onclick="post({type:'report'})"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2l1.9 1.9M16 2l-1.9 1.9M9 7.1V6a3 3 0 0 1 6 0v1.1"/><path d="M12 20c-3.3 0-6-2.7-6-6v-3a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v3c0 3.3-2.7 6-6 6z"/><path d="M12 20v-9M6.5 9C4.6 8.8 3 7.1 3 5M6 13H2M3 21c0-2.1 1.7-3.9 3.8-4M21 5c0 2.1-1.6 3.8-3.5 4M22 13h-4M17.2 17c2.1.1 3.8 1.9 3.8 4"/></svg></button>
+  <button class="icon-btn" title="New chat" onclick="post({type:'new'})"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg></button>
+  <button class="icon-btn" title="Open this chat in a terminal" onclick="post({type:'terminal'})"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M13 15h4"/></svg></button>
+</header>
+<div id="libbar" class="libbar"></div>
+
+<div id="log">
+  <div id="empty">
+    <div class="lockup"><div class="lab"><svg xmlns="http://www.w3.org/2000/svg" viewBox="210 404 153 152" aria-label="METU Power Lab"><path fill="#ED1C24" d="M304.036,549.729c-5.554,1.367-11.355,2.107-17.321,2.107c-40.121,0-72.63-32.538-72.63-72.631 c0-31.335,19.839-58.044,47.616-68.224c10.208,21.84,24.329,61.138,24.329,61.138l-29.802,13.024L304.036,549.729z"/><path fill="currentColor" d="M301.876,408.163c32.839,6.979,57.468,36.124,57.468,71.043c0,31.937-20.608,59.059-49.26,68.773l-22.959-55.338 c0,0,32.619-10.507,32.619-12.915C319.744,477.893,307.759,430.987,301.876,408.163L301.876,408.163z"/></svg></div></div>
+    <div class="big">What should we build?</div>
+    <div>Short commands work best. Claude can use the KiCad tools on this project.</div>
+    <div class="chips"></div>
+  </div>
+</div>
+
+<footer>
+  <div class="context" id="context"></div>
+  <div class="composer">
+    <textarea id="input" rows="1" placeholder="Ask Claude to do something…"></textarea>
+    <button id="send" title="Send (Enter)" disabled></button>
+  </div>
+  <div class="below">
+    <div class="picker">
+      <button id="model-btn" class="model-btn" title="Choose the Claude model"></button>
+      <div id="model-menu" class="model-menu"></div>
+    </div>
+    <div class="hint" title="Enter to send · Shift+Enter for a new line">Enter to send · Shift+Enter new line</div>
+  </div>
+  <div class="disclaimer">AI can make mistakes. Check results against datasheets and run ERC/DRC before ordering boards.</div>
+</footer>
+
+<div id="overlay" class="overlay"><div class="sheet" id="sheet"></div></div>
+
+<script>
+const ICON_SEND = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>';
+const ICON_STOP = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>';
+const ICON_OK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5 9-10"/></svg>';
+const ICON_BAD = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>';
+
+const $ = id => document.getElementById(id);
+const log = $('log'), input = $('input'), send = $('send');
+let busy = false, toolGroup = null, typing = null;
+
+function post(msg) { window.wx && window.wx.postMessage(JSON.stringify(msg)); }
+
+function esc(s) { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+
+function inline(s) {
+  return esc(s)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|[^*])\*([^*\s][^*]*)\*/g, '$1<em>$2</em>')
+    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2">$1</a>');
+}
+
+function markdown(src) {
+  const lines = src.replace(/\r/g, '').split('\n');
+  let html = '', i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (/^\s*```/.test(line)) {
+      const buf = [], indent = line.match(/^\s*/)[0].length;
+      for (i++; i < lines.length && !/^\s*```/.test(lines[i]); i++) buf.push(lines[i].slice(Math.min(indent, lines[i].match(/^\s*/)[0].length)));
+      i++;
+      html += `<pre><code>${esc(buf.join('\n'))}</code></pre>`;
+    } else if (/^#{1,6}\s/.test(line)) {
+      const n = Math.min(line.match(/^#+/)[0].length, 3);
+      html += `<h${n}>${inline(line.replace(/^#+\s*/, ''))}</h${n}>`; i++;
+    } else if (/^\s*([-*]|\d+\.)\s/.test(line)) {
+      const ordered = /^\s*\d+\./.test(line), tag = ordered ? 'ol' : 'ul';
+      html += `<${tag}>`;
+      while (i < lines.length && /^\s*([-*]|\d+\.)\s/.test(lines[i]))
+        html += `<li>${inline(lines[i++].replace(/^\s*([-*]|\d+\.)\s/, ''))}</li>`;
+      html += `</${tag}>`;
+    } else if (/^\|.*\|\s*$/.test(line) && i + 1 < lines.length && /^\|[\s:|-]+\|\s*$/.test(lines[i + 1])) {
+      const cells = l => l.trim().replace(/^\||\|$/g, '').split('|').map(c => inline(c.trim()));
+      html += '<table><tr>' + cells(line).map(c => `<th>${c}</th>`).join('') + '</tr>';
+      for (i += 2; i < lines.length && /^\|.*\|\s*$/.test(lines[i]); i++)
+        html += '<tr>' + cells(lines[i]).map(c => `<td>${c}</td>`).join('') + '</tr>';
+      html += '</table>';
+    } else if (!line.trim()) {
+      i++;
+    } else {
+      const buf = [];
+      while (i < lines.length && lines[i].trim() && !/^(\s*```|#{1,6}\s|\s*([-*]|\d+\.)\s|\|)/.test(lines[i])) buf.push(lines[i++]);
+      if (!buf.length) buf.push(lines[i++]);
+      html += `<p>${buf.map(inline).join('<br>')}</p>`;
+    }
+  }
+  return html;
+}
+
+function add(el) {
+  $('empty') && $('empty').remove();
+  if (typing) log.insertBefore(el, typing); else log.appendChild(el);
+  log.scrollTop = log.scrollHeight;
+  return el;
+}
+
+function div(cls, html) { const d = document.createElement('div'); d.className = cls; if (html != null) d.innerHTML = html; return d; }
+
+function setBusy(v) {
+  busy = v;
+  document.body.classList.toggle('busy', v);
+  $('header').classList.toggle('busy', v);
+  $('status').textContent = v ? 'Working…' : 'Ready';
+  send.innerHTML = v ? ICON_STOP : ICON_SEND;
+  send.title = v ? 'Stop' : 'Send (Enter)';
+  updateSend();
+  if (v && !typing) {
+    typing = div('typing', '<span></span><span></span><span></span>');
+    log.appendChild(typing); log.scrollTop = log.scrollHeight;
+  } else if (!v && typing) { typing.remove(); typing = null; }
+}
+
+function updateSend() { send.disabled = !busy && !input.value.trim(); }
+
+const app = {
+  event(e) {
+    switch (e.kind) {
+      case 'user':
+        toolGroup = null;
+        add(div('msg user', `<div class="bubble">${esc(e.text)}</div>`)); break;
+      case 'text':
+        toolGroup = null;
+        add(div('msg assistant', markdown(e.text))); break;
+      case 'tool': {
+        if (!toolGroup) toolGroup = add(div('tools'));
+        const row = div('tool', `<span class="ti run"></span><span class="name">${esc(e.name)}</span><span class="detail">${esc(e.detail || '')}</span>`);
+        row.id = 'tool-' + e.id; row.title = e.detail || '';
+        toolGroup.appendChild(row); log.scrollTop = log.scrollHeight; break;
+      }
+      case 'tool_done': {
+        const row = document.getElementById('tool-' + e.id);
+        if (!row) break;
+        const ti = row.querySelector('.ti');
+        ti.className = 'ti ' + (e.error ? 'bad' : 'ok');
+        ti.innerHTML = e.error ? ICON_BAD : ICON_OK;
+        if (e.error && e.text) row.after(div('err-text', esc(e.text)));
+        break;
+      }
+      case 'note': {
+        const n = add(div('note ' + (e.level || 'info'), `<span>${esc(e.text)}</span>`));
+        if (e.action) {
+          const b = document.createElement('button');
+          b.textContent = e.action.label; b.onclick = () => post({ type: e.action.type, id: e.action.id });
+          n.appendChild(b);
+        }
+        toolGroup = null; break;
+      }
+      case 'meta': add(div('meta', esc(e.text))); toolGroup = null; break;
+      case 'image': {
+        const fig = div('shot');
+        const img = document.createElement('img');
+        img.src = e.src; img.alt = e.name; img.title = 'Open ' + e.name;
+        img.onload = () => { log.scrollTop = log.scrollHeight; };
+        img.onclick = () => post({ type: 'open', path: e.path });
+        const cap = div('cap'); cap.textContent = e.name;
+        fig.append(img, cap);
+        add(fig); toolGroup = null; break;
+      }
+      case 'busy':
+        setBusy(e.value);
+        if (!e.value) {
+          toolGroup = null;
+          document.querySelectorAll('.ti.run').forEach(t => { t.className = 'ti'; t.textContent = '·'; });
+        }
+        break;
+      case 'session': break;
+      case 'context': {
+        const c = $('context'); c.innerHTML = '';
+        for (const t of e.items) { const s = div('ctx'); s.textContent = t; s.title = t; c.appendChild(s); }
+        break;
+      }
+      case 'notice': showNotice(); break;
+      case 'report_sheet': showReport(e); break;
+      case 'gh_status':
+        if (reportState) { reportState.gh = e.ok; renderReportGh(); }
+        break;
+      case 'share_sheet': showShare(e); break;
+      case 'library': renderLibrary(e); break;
+      case 'models': models = e.items; currentModel = e.current; renderModels(); break;
+      case 'model': currentModel = e.current; renderModels(); break;
+      case 'suggestions': {
+        const box = document.querySelector('.chips');
+        if (!box) break;
+        box.innerHTML = '';
+        for (const s of e.items) {
+          const b = document.createElement('button');
+          b.className = 'chip'; b.dataset.text = s.text; b.textContent = s.label;
+          wireChip(b); box.appendChild(b);
+        }
+        break;
+      }
+    }
+  }
+};
+
+function submit() {
+  if (busy) { post({ type: 'stop' }); return; }
+  const text = input.value.trim();
+  if (!text) return;
+  post({ type: 'send', text });
+  input.value = ''; autosize(); updateSend();
+}
+
+function autosize() { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 140) + 'px'; }
+
+input.addEventListener('input', () => { autosize(); updateSend(); });
+input.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); } });
+send.addEventListener('click', submit);
+// ---- sheets: notice, problem report, library sharing ----
+const overlay = $('overlay'), sheet = $('sheet');
+let reportState = null, sheetLocked = false;
+
+function openSheet(html, locked = false) {
+  sheet.innerHTML = html; sheetLocked = locked; overlay.classList.add('open');
+}
+function closeSheet() {
+  overlay.classList.remove('open'); sheet.innerHTML = ''; reportState = null; input.focus();
+}
+function button(label, cls, onclick) {
+  const b = document.createElement('button');
+  b.className = 'btn' + (cls ? ' ' + cls : ''); b.textContent = label; b.onclick = onclick;
+  return b;
+}
+overlay.addEventListener('click', e => { if (e.target === overlay && !sheetLocked) closeSheet(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && !sheetLocked && overlay.classList.contains('open')) closeSheet(); });
+
+function showNotice() {
+  openSheet(`<h2>Before you start</h2>
+    <ul>
+      <li><b>AI makes mistakes.</b> Claude can get pinouts, footprints, ratings or connections wrong and still sound sure. Check its work against datasheets and run ERC/DRC before you order a board.</li>
+      <li><b>It edits your files.</b> Claude changes schematic, board and library files directly. Keep your projects in git or keep backups.</li>
+      <li><b>Your data goes to Anthropic.</b> Your messages and the project files Claude reads are processed by Anthropic under your own Claude account and its terms.</li>
+      <li><b>Nothing goes to METU Power Lab</b> unless you send it: library pull requests and problem reports, which you review before submitting. The panel has no analytics.</li>
+      <li><b>Confidential work:</b> don't use it on designs your NDA or employer doesn't allow you to share with an AI service.</li>
+    </ul>
+    <div class="actions"><button class="btn primary" id="notice-ok">I understand</button></div>`, true);
+  $('notice-ok').onclick = () => { post({ type: 'notice_ok' }); closeSheet(); };
+}
+
+function showReport(e) {
+  reportState = e;
+  openSheet(`<h2>Report a problem</h2>
+    <p>Reports become <b>public</b> issues on GitHub (odtu/PowerLabKiCadAssistant) so they can be fixed. Only what you see here is sent.</p>
+    <label>Title<input type="text" id="r-title"></label>
+    <label>What happened? <span class="muted">— don't include confidential project details</span>
+      <textarea id="r-what" rows="4" placeholder="What you asked, what you expected, what happened instead"></textarea></label>
+    <div class="label">Diagnostics <span class="muted">— sent as shown; no project data</span></div>
+    <pre id="r-diag"></pre>
+    <div id="r-gh"></div>
+    <div class="actions" id="r-actions"></div>`);
+  $('r-title').value = e.title;
+  $('r-diag').textContent = e.diagnostics;
+  renderReportGh();
+  $('r-what').focus();
+}
+
+function renderReportGh() {
+  if (!reportState) return;
+  const gh = reportState.gh;
+  $('r-gh').innerHTML = gh
+    ? '<p class="ok">✓ GitHub is connected: the issue is filed with your account.</p>'
+    : '<p class="tip">Recommended: connect your GitHub account once, so reports are filed directly and you get notified about fixes. <button class="link" id="r-connect">Connect GitHub</button> · <button class="link" id="r-check">Check again</button></p>';
+  if (!gh) {
+    $('r-connect').onclick = () => post({ type: 'gh_connect' });
+    $('r-check').onclick = () => post({ type: 'gh_check' });
+  }
+  const send = via => {
+    post({ type: 'report_submit', via, title: $('r-title').value, what: $('r-what').value, diagnostics: reportState.diagnostics });
+    closeSheet();
+  };
+  const acts = $('r-actions'); acts.innerHTML = '';
+  acts.append(button('Cancel', '', closeSheet));
+  acts.append(button('Open in browser', gh ? '' : 'primary', () => send('browser')));
+  if (gh) acts.append(button('Submit', 'primary', () => send('gh')));
+}
+
+function showShare(e) {
+  const files = e.files || [];
+  if (!files.length) {
+    openSheet(`<h2>Share with the PowerLab library</h2><p>You have no library changes to share.</p>
+      <div class="actions"><button class="btn primary" id="s-close">OK</button></div>`);
+    $('s-close').onclick = closeSheet;
+    return;
+  }
+  const status = s => ({ '??': 'new', A: 'new', M: 'edit', D: 'del', R: 'move' }[s] || s);
+  const libs = [...new Set(files.map(f => (f.path.split('/')[1] || '').replace(/\.(kicad_sym|pretty)$/, '')).filter(Boolean))];
+  const check = e.check;
+  const checkHtml = !check
+    ? '<p class="small">Your library copy has no standards check yet; the pull request is checked on GitHub.</p>'
+    : check.passed
+      ? '<p class="ok">✓ Lab standards check passed.</p>'
+      : `<p class="bad">✗ The lab standards check found problems. Fix them first; you can ask Claude to "fix the library check errors".</p><pre>${esc(check.output)}</pre>`;
+  openSheet(`<h2>Share with the PowerLab library</h2>
+    <p>This opens a pull request to <b>odtu/PowerLabKiCadLibraries</b> from your GitHub account. Only the files you tick are sent, never project files. The lab reviews it before merging.</p>
+    <div class="label">Files</div>
+    <div class="files">${files.map((f, i) => `<label><input type="checkbox" data-i="${i}" checked><span class="st">${status(f.status)}</span><code>${esc(f.path)}</code></label>`).join('')}</div>
+    ${checkHtml}
+    <label>Title<input type="text" id="s-title"></label>
+    <label>Description <span class="muted">— parts, datasheets, anything reviewers should know</span><textarea id="s-desc" rows="3"></textarea></label>
+    ${e.login ? `<p class="small">Signed in to GitHub as <b>${esc(e.login)}</b>.</p>`
+              : '<p class="tip">Connect your GitHub account to open pull requests. <button class="link" id="s-connect">Connect GitHub</button> · <button class="link" id="s-check">Check again</button></p>'}
+    <div class="actions" id="s-actions"></div>`);
+  $('s-title').value = 'Add ' + (libs.length ? libs.slice(0, 3).join(', ') : 'library parts');
+  if (!e.login) {
+    $('s-connect').onclick = () => post({ type: 'gh_connect' });
+    $('s-check').onclick = () => post({ type: 'lib_share' });
+  }
+  const acts = $('s-actions');
+  const submit = button('Open pull request', 'primary', () => {
+    const paths = [...sheet.querySelectorAll('.files input:checked')].map(c => files[+c.dataset.i].path);
+    post({ type: 'share_submit', paths, login: e.login, title: $('s-title').value, description: $('s-desc').value });
+    closeSheet();
+  });
+  submit.disabled = !e.login || (check && !check.passed);
+  acts.append(button('Cancel', '', closeSheet), submit);
+}
+
+function renderLibrary(e) {
+  const bar = $('libbar');
+  bar.className = 'libbar'; bar.innerHTML = '';
+  if (!e.configured) return;
+  const parts = [];
+  if (!e.vars_ok) parts.push(['KiCad\'s METUPOWERLAB paths don\'t point to your library copy. Run install.ps1 again.', null, true]);
+  if (e.behind) parts.push([`Library update available (${e.behind} new change${e.behind > 1 ? 's' : ''}).`, ['Update', 'lib_update']]);
+  else if (!e.ok && e.error) parts.push([`Library: ${e.error}.`, null]);
+  if (e.changes && e.changes.length) parts.push([`${e.changes.length} library change${e.changes.length > 1 ? 's' : ''} not shared yet.`, ['Share', 'lib_share']]);
+  if (!parts.length) return;
+  const [msg, action, warn] = parts[0];
+  const span = document.createElement('span'); span.className = 'msg'; span.textContent = msg; span.title = parts.map(p => p[0]).join(' ');
+  bar.append(span);
+  for (const [, act] of parts) {
+    if (act) bar.append(button(act[0], '', b => { post({ type: act[1] }); if (act[1] === 'lib_update') { span.textContent = 'Updating the library…'; } }));
+  }
+  bar.classList.add('show'); if (warn) bar.classList.add('warn');
+}
+
+const CHEVRON ='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m6 15 6-6 6 6"/></svg>';
+let models = [], currentModel = '';
+const modelBtn = $('model-btn'), modelMenu = $('model-menu');
+
+function renderModels() {
+  if (!models.length) { modelBtn.style.display = 'none'; return; }
+  const cur = models.find(m => m.id === currentModel) || models[0];
+  modelBtn.style.display = '';
+  modelBtn.innerHTML = esc(cur.short || cur.label) + CHEVRON;
+  modelMenu.innerHTML = '';
+  for (const m of models) {
+    const b = document.createElement('button');
+    b.className = 'model-opt' + (m.id === cur.id ? ' sel' : '');
+    b.innerHTML = `<div class="n">${esc(m.label)}</div>` + (m.hint ? `<div class="d">${esc(m.hint)}</div>` : '');
+    b.onclick = () => { post({ type: 'model', id: m.id }); closeModels(); input.focus(); };
+    modelMenu.appendChild(b);
+  }
+}
+function closeModels() { modelMenu.classList.remove('open'); modelBtn.classList.remove('open'); }
+modelBtn.addEventListener('click', e => {
+  e.stopPropagation();
+  const open = !modelMenu.classList.contains('open');
+  modelMenu.classList.toggle('open', open); modelBtn.classList.toggle('open', open);
+});
+document.addEventListener('click', e => { if (!modelMenu.contains(e.target)) closeModels(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModels(); });
+renderModels();
+
+function wireChip(c) {
+  c.addEventListener('click', () => {
+    input.value = c.dataset.text; autosize(); updateSend(); input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+  });
+}
+document.querySelectorAll('.chip').forEach(wireChip);
+setBusy(false);
+input.focus();
+post({ type: 'ready' });
+</script>
+</body>
+</html>

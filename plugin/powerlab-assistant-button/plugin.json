@@ -1,0 +1,21 @@
+{
+  "$schema": "https://go.kicad.org/api/schemas/v1",
+  "identifier": "tr.edu.metu.powerlab.assistant",
+  "name": "PowerLab Assistant",
+  "description": "PowerLab Assistant panel for the schematic editor (uses Claude Code)",
+  "runtime": {
+    "type": "python"
+  },
+  "actions": [
+    {
+      "identifier": "toggle-panel",
+      "name": "PowerLab Assistant",
+      "description": "Show or hide the PowerLab Assistant panel",
+      "show-button": true,
+      "scopes": ["schematic"],
+      "entrypoint": "launcher.py",
+      "icons-light": ["icon.png", "icon@2x.png"],
+      "icons-dark": ["icon_dark.png", "icon_dark@2x.png"]
+    }
+  ]
+}

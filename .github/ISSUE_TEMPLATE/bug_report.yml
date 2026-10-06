@@ -1,0 +1,29 @@
+name: Problem report
+description: Something in PowerLab KiCad Assistant didn't work. The panel's bug button fills this in for you.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This issue is **public**. Don't include confidential project details (board names,
+        schematics, part lists, customer names). The diagnostics below contain no project data.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you asked the panel to do, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: Versions and the panel's own error details, filled in by the panel.
+      render: text
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy
+      options:
+        - label: I checked that this report contains no confidential information.
+          required: true

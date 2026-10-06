@@ -1,0 +1,2 @@
+# No dependencies: launcher.py only uses the standard library. KiCad 10 still
+# requires this file to exist before it marks a Python plugin as ready.
