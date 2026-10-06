@@ -1,4 +1,4 @@
-﻿"""Per-user settings. Everything here stays on this computer.
+"""Per-user settings. Everything here stays on this computer.
 
 config.json  - written by install.ps1 (library clone path, extra work folders, MCP path)
 settings.json - panel preferences (chosen model, accepted notice version)
@@ -11,7 +11,7 @@ import json
 import os
 import sys
 
-VERSION = "0.1.6"  # bump with every release (see CLAUDE.md > Releasing)
+VERSION = "0.1.7"  # bump with every release (see CLAUDE.md > Releasing)
 REPORT_REPO = "odtu/PowerLabKiCadAssistant"  # public repo that receives bug reports
 LIBRARY_REPO = "odtu/PowerLabKiCadLibraries"
 NOTICE_VERSION = 1  # bump when the AI/privacy notice changes, so users see it again

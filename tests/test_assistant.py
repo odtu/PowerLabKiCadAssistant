@@ -100,6 +100,11 @@ class UnreachableHintTests(unittest.TestCase):
     def test_no_kicad_running(self):
         self.assertIn("isn't running", sources.unreachable_hint([]))
 
+    def test_status_chip_names_the_blocking_process(self):
+        self.assertIn("11884", sources.unreachable_chip([(11884, False), (5976, True)]))
+        self.assertEqual(sources.unreachable_chip([]), "Not connected: KiCad isn't running")
+        self.assertIn("API server", sources.unreachable_chip([(5976, True)]))
+
     def test_report_includes_process_counts(self):
         diag = report.diagnostics("schematic", "", "10.0.5", extra=["kicad_processes: 2 running, 1 without a window"])
         self.assertIn("kicad_processes: 2 running, 1 without a window", diag)

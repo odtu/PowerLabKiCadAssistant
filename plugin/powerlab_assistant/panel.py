@@ -160,6 +160,8 @@ class ClaudePanel(wx.Frame):
         self.share_files = []
         self.sharing = False
         self.update_loop = False
+        self.unreachable_text = "Not connected to KiCad (is its API server on?)"
+        self.unreachable_at = 0.0
         self.library_checked = 0.0
         _live_panel = self
         install_excepthook()
@@ -336,7 +338,15 @@ class ClaudePanel(wx.Frame):
 
     def push_context(self):
         snap = self.snapshot()
-        items = snap.chips if snap else ["Not connected to KiCad (is its API server on?)"]
+        if snap:
+            items = snap.chips
+        else:
+            # Say why, refreshed at most every 15 s (it lists running processes).
+            status = getattr(self.source, "unreachable_status", None)
+            if status and time.time() - self.unreachable_at > 15:
+                self.unreachable_text = status()
+                self.unreachable_at = time.time()
+            items = [self.unreachable_text]
         if items != self.context_items and self.ready:
             self.context_items = items
             self.emit("context", items=items)

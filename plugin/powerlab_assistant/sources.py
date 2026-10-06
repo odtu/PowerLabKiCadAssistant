@@ -48,6 +48,16 @@ def unreachable_hint(processes):
             "KiCad and reopen the panel.")
 
 
+def unreachable_chip(processes):
+    """The same diagnosis as unreachable_hint, short enough for the status chip."""
+    stale = [pid for pid, visible in processes if not visible]
+    if len(processes) > 1 and stale:
+        return f"Not connected: a stuck background KiCad (process {stale[0]}) is blocking it"
+    if not processes:
+        return "Not connected: KiCad isn't running"
+    return "Not connected to KiCad (is its API server on?)"
+
+
 def short_list(names, limit=6):
     return ", ".join(names[:limit]) + (f" +{len(names) - limit}" if len(names) > limit else "")
 
@@ -297,6 +307,9 @@ class SchematicSource:
 
     def unreachable_reason(self):
         return unreachable_hint(kicad_window.kicad_processes())
+
+    def unreachable_status(self):
+        return unreachable_chip(kicad_window.kicad_processes())
 
     def process_summary(self):
         """For problem reports: how many kicad.exe run, and how many have no window."""
