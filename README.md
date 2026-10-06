@@ -28,6 +28,7 @@ It runs [Claude Code](https://docs.claude.com/claude-code) on your computer with
 | Library parts you choose to share | A pull request to [odtu/PowerLabKiCadLibraries](https://github.com/odtu/PowerLabKiCadLibraries), from your GitHub account | Only when you press **Share** and confirm the file list |
 | Problem reports | A **public** issue on this repository | Only when you press **Submit** after reviewing the report |
 | Library updates | Anonymous read from GitHub (`git fetch`) | When the panel opens, at most every 10 minutes |
+| Plugin update check | Anonymous request to GitHub for this repository's latest release number | When the panel opens, at most once a day |
 
 **Nothing else is sent to METU Power Lab.** The panel has no analytics, telemetry or tracking.
 
@@ -81,6 +82,17 @@ The repository contains no API keys or tokens. Each user signs in with their own
 5. In the **Schematic Editor**, go to **Preferences → Preferences → Schematic Editor → Toolbars**. Add **IPC/Scripting plugins** to the **Top main** toolbar. KiCad doesn't show plugin buttons there by default.
 
 To remove it later, run `uninstall.ps1`.
+
+## Updating
+
+When a new version is released, the panel shows a bar like *PowerLab Assistant 0.1.2 is available: …* with **What's new** and **Update** buttons.
+
+- **Update**, if you installed from a `git clone` of this repository: a console window pulls the new version and runs `install.ps1 -Update`. Restart KiCad when it says done.
+  - `-Update` asks no questions and only replaces the panel's files. It also rebuilds the KiCad tools, but only if their pinned version changed.
+  - Your library, KiCad settings and GitHub setup aren't touched.
+- **Update**, if you installed from a ZIP download: the release page opens in your browser. Download it and run `install.ps1 -Update`.
+
+To be notified by e-mail as well, use **Watch → Custom → Releases** on this repository.
 
 ## Use
 

@@ -16,7 +16,7 @@ import time
 import wx
 import wx.html2
 
-from . import config, library, report
+from . import config, library, report, updates
 from .common import find_gh, open_console, open_terminal, clean_env
 from .sources import PcbSource
 
@@ -240,6 +240,7 @@ class ClaudePanel(wx.Frame):
             self.emit("notice")
         self.push_context()
         self.check_library(force=True)
+        self.check_updates()
 
     def msg_notice_ok(self, msg):
         self.settings["notice_version"] = config.NOTICE_VERSION
@@ -402,6 +403,32 @@ class ClaudePanel(wx.Frame):
 
     def msg_gh_check(self, msg):
         self.in_background(report.gh_ready, lambda ok: self.emit("gh_status", ok=ok is True))
+
+    # ---- plugin updates -------------------------------------------------------
+
+    def check_updates(self):
+        """Ask GitHub (anonymously, at most daily) whether a newer release exists."""
+        def done(result):
+            if isinstance(result, Exception):
+                return  # offline or GitHub unreachable: try again next time
+            config.save_settings(self.settings)
+            if result["available"]:
+                result["self_update"] = updates.can_self_update()
+                self.emit("update", **result)
+
+        self.in_background(lambda: updates.check(self.settings), done)
+
+    def msg_plugin_update(self, msg):
+        report.note_event("plugin update")
+        if updates.start_update():
+            self.emit("note", level="info", text="Updating in the console window. Restart KiCad when it says done.")
+        else:
+            wx.LaunchDefaultBrowser(msg.get("url") or updates.RELEASES_URL)
+            self.emit("note", level="info", text="This copy wasn't installed from a git clone, so the release "
+                                                 "page is open in your browser: download it and run install.ps1 -Update.")
+
+    def msg_whats_new(self, msg):
+        wx.LaunchDefaultBrowser(msg.get("url") or updates.RELEASES_URL)
 
     # ---- library sync and sharing -------------------------------------------
 

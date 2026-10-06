@@ -248,6 +248,7 @@ textarea::placeholder { color: var(--muted); }
   <button class="icon-btn" title="New chat" onclick="post({type:'new'})"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg></button>
   <button class="icon-btn" title="Open this chat in a terminal" onclick="post({type:'terminal'})"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M13 15h4"/></svg></button>
 </header>
+<div id="updbar" class="libbar"></div>
 <div id="libbar" class="libbar"></div>
 
 <div id="log">
@@ -425,6 +426,7 @@ const app = {
         break;
       case 'share_sheet': showShare(e); break;
       case 'library': renderLibrary(e); break;
+      case 'update': renderUpdate(e); break;
       case 'models': models = e.items; currentModel = e.current; renderModels(); break;
       case 'model': currentModel = e.current; renderModels(); break;
       case 'suggestions': {
@@ -562,6 +564,18 @@ function showShare(e) {
   });
   submit.disabled = !e.login || (check && !check.passed);
   acts.append(button('Cancel', '', closeSheet), submit);
+}
+
+function renderUpdate(e) {
+  const bar = $('updbar');
+  bar.innerHTML = '';
+  const span = document.createElement('span'); span.className = 'msg';
+  span.textContent = `PowerLab Assistant ${e.version} is available` + (e.summary ? `: ${e.summary}` : '.');
+  span.title = `${span.textContent} (you have ${e.current})`;
+  bar.append(span,
+    button('What\'s new', '', () => post({ type: 'whats_new', url: e.url })),
+    button('Update', '', () => { post({ type: 'plugin_update', url: e.url }); span.textContent = 'Updating… restart KiCad when the console says done.'; }));
+  bar.classList.add('show');
 }
 
 function renderLibrary(e) {

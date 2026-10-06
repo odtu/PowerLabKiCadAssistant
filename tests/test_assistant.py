@@ -14,7 +14,7 @@ os.environ["POWERLAB_ASSISTANT_STANDALONE"] = "1"  # don't register the PCB plug
 sys.path.insert(0, os.path.join(ROOT, "plugin"))
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 
-from powerlab_assistant import config, library, report, sources  # noqa: E402
+from powerlab_assistant import config, library, report, sources, updates  # noqa: E402
 import configure_kicad  # noqa: E402
 
 
@@ -151,6 +151,28 @@ class ContributeCommandTests(unittest.TestCase):
                "  --clone   Clone the fork\n  --remote  Add a git remote for the fork\n")
         self.assertEqual(library.error_line(out),
                          "the `--remote` flag is unsupported when a repository argument is provided")
+
+
+class UpdateCheckTests(unittest.TestCase):
+    def release(self, tag, body="## 0.9.0\n\n- Fixes library Share\n- Other things"):
+        return lambda: {"tag_name": tag, "body": body, "html_url": f"https://example.invalid/{tag}"}
+
+    def test_newer_release_is_offered_once_a_day(self):
+        settings = {}
+        result = updates.check(settings, fetch=self.release("v99.0.0"))
+        self.assertTrue(result["available"])
+        self.assertEqual(result["version"], "99.0.0")
+        self.assertEqual(result["summary"], "Fixes library Share")
+        # Within a day the cached answer is reused: GitHub isn't asked again.
+        again = updates.check(settings, fetch=lambda: self.fail("asked GitHub twice in a day"))
+        self.assertTrue(again["available"])
+
+    def test_same_or_older_release_is_not_offered(self):
+        for tag in (f"v{config.VERSION}", "v0.0.1", "not-a-version"):
+            self.assertFalse(updates.check({}, fetch=self.release(tag))["available"], tag)
+
+    def test_version_order_is_numeric(self):
+        self.assertGreater(updates.parse_version("v0.10.0"), updates.parse_version("v0.9.9"))
 
 
 class LibTableTests(unittest.TestCase):

@@ -15,6 +15,21 @@ Problem reports from the panel arrive as public issues on odtu/PowerLabKiCadAssi
    Add `-f close=true` to close the issue too. Use `-F body=@file`: Windows PowerShell 5.1 mangles quotes in inline arguments. After the run, check the comment author is `github-actions[bot]`.
 4. Issues and replies are public. Never quote project, board, sheet or part names, net names or file contents from a user's design in a reply.
 
+## Releasing
+
+Users only learn about fixes through releases: the panel offers an update when the latest GitHub release is newer than its `VERSION`.
+
+1. Bump `VERSION` in `plugin/powerlab_assistant/config.py` (semantic: patch for fixes, minor for features).
+2. Commit, push, then tag and publish:
+
+   ```powershell
+   gh release create vX.Y.Z -R odtu/PowerLabKiCadAssistant --title "X.Y.Z" --notes-file notes.md
+   ```
+
+   The first bullet of the notes appears in the panel's update bar ("PowerLab Assistant X.Y.Z is available: <first bullet>"). Make it a short, user-facing summary.
+3. Issue replies name the version that contains the fix ("Fixed in 0.1.1 — update from the panel"), so reporters know which update brings it.
+4. If the release changes the pinned KiCad MCP server commit, change `$McpCommit` in `install.ps1`. `install.ps1 -Update` rebuilds it only when that pin changed.
+
 ## Working on the code
 
 - Tests: `"C:\Program Files\KiCad\10.0\bin\python.exe" -m unittest discover -s tests` (KiCad's Python has wx and pcbnew).

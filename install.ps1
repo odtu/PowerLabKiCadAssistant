@@ -15,14 +15,20 @@
     5. The METU Power Lab library as a git clone, and KiCad pointed at it.
     6. Optionally GitHub CLI, for sharing libraries and filing reports.
 
+  -Update (used by the panel's Update button) asks nothing: it refreshes the
+  plugin files and, only if its pinned version changed, the KiCad MCP server.
+  The library, KiCad settings and GitHub setup are left alone.
+
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File install.ps1
   powershell -ExecutionPolicy Bypass -File install.ps1 -LibraryPath D:\Work\PowerLabKiCadLibraries
+  powershell -ExecutionPolicy Bypass -File install.ps1 -Update
 #>
 param(
     [string]$LibraryPath = "",
     [switch]$SkipLibrary,
     [switch]$SkipMcp,
+    [switch]$Update,
     [string]$McpCommit = "ac716d1"
 )
 
@@ -64,6 +70,7 @@ function Save-Config {
     if ($script:KiCadBin) { $config["kicad_bin"] = $script:KiCadBin }
     if ($script:McpReady) { $config["mcp_path"] = $script:McpDir }
     if ($script:Library) { $config["library_path"] = $script:Library }
+    $config["source_path"] = $script:Root  # where the panel's Update button pulls from
     if (-not $config.ContainsKey("extra_dirs")) { $config["extra_dirs"] = @() }
     $config | ConvertTo-Json | Set-Content -Encoding UTF8 $path
     return $path
@@ -78,7 +85,7 @@ function Run($exe, [string[]]$arguments, $where = $null) {
 }
 
 Write-Host ""
-Write-Host "PowerLab KiCad Assistant - installer" -ForegroundColor White
+Write-Host ("PowerLab KiCad Assistant - " + $(if ($Update) { "update" } else { "installer" })) -ForegroundColor White
 Write-Host "Uses Claude Code. AI can make mistakes: always check its work before ordering boards." -ForegroundColor DarkGray
 Write-Host ""
 
@@ -109,7 +116,7 @@ if ($nodeMajor -lt 18) { Fail "Node.js 18 or newer is needed (found $(node --ver
 Ok "git, Node.js $(node --version)"
 
 $running = Get-Process kicad, eeschema, pcbnew -ErrorAction SilentlyContinue
-if ($running) {
+if ($running -and -not $Update) {  # updating only replaces plugin files; KiCad settings aren't touched
     Warn "KiCad is running. Close it now: KiCad rewrites its settings when it exits."
     Read-Host "  Press Enter once KiCad is closed" | Out-Null
     if (Get-Process kicad, eeschema, pcbnew -ErrorAction SilentlyContinue) { Fail "KiCad is still running." }
@@ -119,6 +126,7 @@ if ($running) {
 Say "2. Claude Code"
 $Claude = (Get-Command claude -ErrorAction SilentlyContinue).Source
 if (-not $Claude -and (Test-Path "$env:USERPROFILE\.local\bin\claude.exe")) { $Claude = "$env:USERPROFILE\.local\bin\claude.exe" }
+if (-not $Claude -and $Update) { Fail "Claude Code is missing. Run install.ps1 without -Update." }
 if (-not $Claude) {
     if (Ask "Claude Code is not installed. Install it with Anthropic's official installer now?") {
         Invoke-RestMethod https://claude.ai/install.ps1 | Invoke-Expression
@@ -130,7 +138,16 @@ Ok "Claude Code at $Claude"
 
 # ---- 3. KiCad MCP server ---------------------------------------------------
 $McpDir = Join-Path $LocalData "KiCAD-MCP-Server"
-if (-not $SkipMcp) {
+$mcpCurrent = $false
+if ($Update -and (Test-Path (Join-Path $McpDir "dist\index.js"))) {
+    $head = (& git -C $McpDir rev-parse HEAD).Trim()
+    $mcpCurrent = $head.StartsWith($McpCommit)
+}
+if ($mcpCurrent) {
+    Say "3. KiCad tools for Claude"
+    Ok "Already at the pinned version ($McpCommit)"
+    $McpReady = $true
+} elseif (-not $SkipMcp) {
     Say "3. KiCad tools for Claude (KiCAD-MCP-Server @ $McpCommit)"
     New-Item -ItemType Directory -Force $LocalData | Out-Null
     if (-not (Test-Path (Join-Path $McpDir ".git"))) { Run git @("clone", "--quiet", $McpRepo, $McpDir) }
@@ -145,7 +162,7 @@ if (-not $SkipMcp) {
     $McpReady = $true
 
     $exists = ((Probe $Claude @("mcp", "get", "kicad")) -eq 0)
-    if (-not $exists -or (Ask "Claude Code already has a 'kicad' tool server. Replace it with this one?")) {
+    if (-not $exists -or (-not $Update -and (Ask "Claude Code already has a 'kicad' tool server. Replace it with this one?"))) {
         if ($exists) { & $Claude mcp remove kicad -s user | Out-Null }
         $sitePackages = Join-Path $KiCadBin "Lib\site-packages"
         $entry = Join-Path $McpDir "dist\index.js"
@@ -162,7 +179,7 @@ Say "4. Panel plugins"
 $PanelDest = Join-Path $KiCadDocs "scripting\plugins\powerlab_assistant"
 $ButtonDest = Join-Path $KiCadDocs "plugins\powerlab-assistant"
 foreach ($legacy in @((Join-Path $KiCadDocs "scripting\plugins\claude_launcher"), (Join-Path $KiCadDocs "plugins\metu-powerlab-claude"))) {
-    if ((Test-Path $legacy) -and (Ask "Remove the old prototype plugin at $legacy ?")) { Remove-Item -Recurse -Force $legacy }
+    if ((Test-Path $legacy) -and -not $Update -and (Ask "Remove the old prototype plugin at $legacy ?")) { Remove-Item -Recurse -Force $legacy }
 }
 foreach ($pair in @(@("plugin\powerlab_assistant", $PanelDest), @("plugin\powerlab-assistant-button", $ButtonDest))) {
     if (Test-Path $pair[1]) { Remove-Item -Recurse -Force $pair[1] }
@@ -172,6 +189,14 @@ foreach ($pair in @(@("plugin\powerlab_assistant", $PanelDest), @("plugin\powerl
 Ok "PCB editor panel   -> $PanelDest"
 Ok "Schematic button   -> $ButtonDest"
 $null = Save-Config
+
+if ($Update) {
+    $version = (Select-String -Path (Join-Path $PanelDest "config.py") -Pattern '^VERSION = "([^"]+)"').Matches[0].Groups[1].Value
+    Write-Host ""
+    Write-Host "Updated to PowerLab KiCad Assistant $version." -ForegroundColor White
+    Write-Host "  Restart KiCad to load it. The schematic panel restarts by itself on its next button click."
+    exit 0
+}
 
 # ---- 5. Library ------------------------------------------------------------
 $Library = ""

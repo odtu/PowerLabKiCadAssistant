@@ -11,7 +11,7 @@ import json
 import os
 import sys
 
-VERSION = "0.1.0"
+VERSION = "0.1.1"  # bump with every release (see CLAUDE.md > Releasing)
 REPORT_REPO = "odtu/PowerLabKiCadAssistant"  # public repo that receives bug reports
 LIBRARY_REPO = "odtu/PowerLabKiCadLibraries"
 NOTICE_VERSION = 1  # bump when the AI/privacy notice changes, so users see it again
@@ -65,6 +65,11 @@ def work_dirs():
 
 def mcp_path():
     return config().get("mcp_path", "")
+
+
+def source_path():
+    """The folder install.ps1 ran from (a git clone, if updates can be pulled)."""
+    return config().get("source_path", "")
 
 
 def kicad_bin():
