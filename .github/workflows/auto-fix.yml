@@ -62,9 +62,13 @@ jobs:
         if: steps.creds.outputs.ok == 'true'
         uses: anthropics/claude-code-action@v1
         with:
+          # Subscription token only: passing an empty anthropic_api_key alongside it sets an
+          # empty ANTHROPIC_API_KEY, which Claude Code prefers and then fails to sign in with.
+          # (To use API billing instead, replace this line with
+          #  anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}.)
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ github.token }}
+          show_full_output: true  # temporary, to diagnose the first runs
           claude_args: >-
             --max-turns 60
             --allowedTools "Read,Edit,Write,Glob,Grep,Bash(gh issue view:*),Bash(python -m unittest:*),Bash(python -m py_compile:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*)"
