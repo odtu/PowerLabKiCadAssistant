@@ -159,6 +159,7 @@ jobs:
           tail -n 25 "$RUNNER_TEMP/tests.log"
 
       - name: Open the pull request and reply on the issue
+        id: publish
         if: always() && steps.changes.outputs.result != ''
         shell: bash
         env:
@@ -184,11 +185,32 @@ jobs:
             rm -f .auto-fix-summary.md
             git add -A plugin tests tools README.md install.ps1 uninstall.ps1 2>/dev/null || true
             git diff --cached --quiet || git commit -q -m "Fix #${ISSUE} (proposed by Claude)" -m "Fixes #${ISSUE}" -m "Co-Authored-By: Claude <noreply@anthropic.com>"
-            git push origin "$branch"
+            git format-patch -q "$GITHUB_SHA"..HEAD -o "$RUNNER_TEMP/patch"  # kept as an artifact if anything below fails
+            # Rebase onto the current main: if main moved during the run (e.g. a workflow edit),
+            # the branch would otherwise carry old workflow files, which GITHUB_TOKEN may not push.
+            git fetch -q origin main
+            if ! git rebase -q origin/main; then
+              git rebase --abort
+              echo "push_failed=conflict" >> "$GITHUB_OUTPUT"
+              printf 'I proposed a fix, but it conflicts with changes made to `main` while I was working, so no pull request was opened. The patch is attached to the [run](%s) (artifact `auto-fix-patch`).\n\n%s%s\n' "$run_url" "$summary" "$footer" > "$reply"
+              gh issue comment "$ISSUE" --body-file "$reply"
+              exit 1
+            fi
+            if ! git push -q origin "$branch"; then
+              echo "push_failed=push" >> "$GITHUB_OUTPUT"
+              printf 'I proposed a fix, but pushing it failed, so no pull request was opened. The patch is attached to the [run](%s) (artifact `auto-fix-patch`).\n\n%s%s\n' "$run_url" "$summary" "$footer" > "$reply"
+              gh issue comment "$ISSUE" --body-file "$reply"
+              exit 1
+            fi
             if [ "$TESTS" = "pass" ]; then tests_line="✅ All unit tests pass."; draft=""; else tests_line="❌ Unit tests fail, see the [run]($run_url). Opened as a draft."; draft="--draft"; fi
             printf '%s\n\n### Tests\n%s\n\nFixes #%s\n\n> A maintainer reviews and merges this; then release it (CLAUDE.md > Releasing).%s\n' \
               "$summary" "$tests_line" "$ISSUE" "$footer" > "$RUNNER_TEMP/pr-body.md"
-            pr_url=$(gh pr create $draft --base main --head "$branch" --title "Fix #${ISSUE}: $(gh issue view "$ISSUE" --json title -q .title)" --body-file "$RUNNER_TEMP/pr-body.md")
+            if ! pr_url=$(gh pr create $draft --base main --head "$branch" --title "Fix #${ISSUE}: $(gh issue view "$ISSUE" --json title -q .title)" --body-file "$RUNNER_TEMP/pr-body.md"); then
+              echo "push_failed=pr" >> "$GITHUB_OUTPUT"
+              printf 'I proposed a fix on branch `%s`, but opening the pull request failed ([run](%s)).\n\n%s%s\n' "$branch" "$run_url" "$summary" "$footer" > "$reply"
+              gh issue comment "$ISSUE" --body-file "$reply"
+              exit 1
+            fi
             # Windows + Linux tests on the PR's commit; they show up as checks on the PR.
             gh workflow run tests.yml --ref "$branch" || echo "::warning::Couldn't start tests.yml on $branch"
             printf 'I looked into this and proposed a fix: %s\n\n%s\n\n%s%s\n' "$pr_url" "$tests_line" "$summary" "$footer" > "$reply"
@@ -198,3 +220,11 @@ jobs:
             printf 'I looked into this but did not change any code.\n\n%s%s\n' "$summary" "$footer" > "$reply"
           fi
           gh issue comment "$ISSUE" --body-file "$reply"
+
+      - name: Keep the proposed fix if it couldn't be published
+        if: failure() && steps.publish.outputs.push_failed != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: auto-fix-patch
+          path: ${{ runner.temp }}/patch/
+          retention-days: 30
