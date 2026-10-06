@@ -100,12 +100,17 @@ jobs:
         if: always() && steps.creds.outputs.ok == 'true'
         shell: bash
         run: |
-          git status --porcelain --untracked-files=all | grep -v ' \.auto-fix-summary\.md$' > changed.txt || true
-          cat changed.txt
-          if grep -Ev '^.. (plugin/|tests/|tools/|README\.md$|install\.ps1$|uninstall\.ps1$)' changed.txt | grep -v '^$'; then
+          # Compare with the commit this run started from, so edits count whether they are
+          # uncommitted or were committed locally by the action. Scratch files live in
+          # RUNNER_TEMP, outside the repo, so they never count as changes.
+          echo "HEAD: $(git rev-parse --short HEAD)  start: ${GITHUB_SHA::7}"; git status --short
+          { git diff --name-only "$GITHUB_SHA"; git ls-files --others --exclude-standard; } \
+            | grep -v '^\.auto-fix-summary\.md$' | sort -u > "$RUNNER_TEMP/changed.txt" || true
+          echo "Changed files:"; cat "$RUNNER_TEMP/changed.txt"
+          if grep -Ev '^(plugin/|tests/|tools/|README\.md$|install\.ps1$|uninstall\.ps1$)' "$RUNNER_TEMP/changed.txt" | grep -v '^$'; then
             echo "Changed files outside the allowed paths; refusing to open a PR." >&2
             echo "result=disallowed" >> "$GITHUB_OUTPUT"
-          elif [ -s changed.txt ]; then
+          elif [ -s "$RUNNER_TEMP/changed.txt" ]; then
             echo "result=changed" >> "$GITHUB_OUTPUT"
           else
             echo "result=none" >> "$GITHUB_OUTPUT"
@@ -116,8 +121,8 @@ jobs:
         if: steps.changes.outputs.result == 'changed'
         shell: bash
         run: |
-          if python -m unittest discover -s tests > tests.log 2>&1; then echo "result=pass" >> "$GITHUB_OUTPUT"; else echo "result=fail" >> "$GITHUB_OUTPUT"; fi
-          tail -n 25 tests.log
+          if python -m unittest discover -s tests > "$RUNNER_TEMP/tests.log" 2>&1; then echo "result=pass" >> "$GITHUB_OUTPUT"; else echo "result=fail" >> "$GITHUB_OUTPUT"; fi
+          tail -n 25 "$RUNNER_TEMP/tests.log"
 
       - name: Open the pull request and reply on the issue
         if: always() && steps.changes.outputs.result != ''
@@ -130,29 +135,30 @@ jobs:
           summary="$(cat .auto-fix-summary.md 2>/dev/null || echo '_Claude did not write a summary; see the workflow log._')"
           run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           footer=$'\n\n🤖 Investigated by Claude ([Claude Code](https://claude.com/claude-code)) for the PowerLab KiCad Assistant maintainers.'
+          reply="$RUNNER_TEMP/reply.md"
 
           if [ "$CLAUDE" != "success" ] && [ "$RESULT" = "none" ]; then
-            printf 'I could not investigate this automatically (the run failed: [log](%s)). A maintainer will take a look.%s\n' "$run_url" "$footer" > reply.md
-            gh issue comment "$ISSUE" --body-file reply.md
+            printf 'I could not investigate this automatically (the run failed: [log](%s)). A maintainer will take a look.%s\n' "$run_url" "$footer" > "$reply"
+            gh issue comment "$ISSUE" --body-file "$reply"
             exit 0
           fi
           if [ "$RESULT" = "changed" ]; then
             branch="auto-fix/issue-${ISSUE}-${GITHUB_RUN_ID}"
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git checkout -b "$branch"
-            rm -f .auto-fix-summary.md changed.txt tests.log
+            git checkout -b "$branch"   # keeps any commits the action already made
+            rm -f .auto-fix-summary.md
             git add -A plugin tests tools README.md install.ps1 uninstall.ps1 2>/dev/null || true
-            git commit -m "Fix #${ISSUE} (proposed by Claude)" -m "Fixes #${ISSUE}" -m "Co-Authored-By: Claude <noreply@anthropic.com>"
+            git diff --cached --quiet || git commit -q -m "Fix #${ISSUE} (proposed by Claude)" -m "Fixes #${ISSUE}" -m "Co-Authored-By: Claude <noreply@anthropic.com>"
             git push origin "$branch"
             if [ "$TESTS" = "pass" ]; then tests_line="✅ All unit tests pass."; draft=""; else tests_line="❌ Unit tests fail, see the [run]($run_url). Opened as a draft."; draft="--draft"; fi
-            printf '%s\n\n### Tests\n%s\n\n> A maintainer reviews and merges this; then release it (CLAUDE.md > Releasing).%s\n' \
-              "$summary" "$tests_line" "$footer" > pr-body.md
-            pr_url=$(gh pr create $draft --base main --head "$branch" --title "Fix #${ISSUE}: $(gh issue view "$ISSUE" --json title -q .title)" --body-file pr-body.md)
-            printf 'I looked into this and proposed a fix: %s\n\n%s\n\n%s%s\n' "$pr_url" "$tests_line" "$summary" "$footer" > reply.md
+            printf '%s\n\n### Tests\n%s\n\nFixes #%s\n\n> A maintainer reviews and merges this; then release it (CLAUDE.md > Releasing).%s\n' \
+              "$summary" "$tests_line" "$ISSUE" "$footer" > "$RUNNER_TEMP/pr-body.md"
+            pr_url=$(gh pr create $draft --base main --head "$branch" --title "Fix #${ISSUE}: $(gh issue view "$ISSUE" --json title -q .title)" --body-file "$RUNNER_TEMP/pr-body.md")
+            printf 'I looked into this and proposed a fix: %s\n\n%s\n\n%s%s\n' "$pr_url" "$tests_line" "$summary" "$footer" > "$reply"
           elif [ "$RESULT" = "disallowed" ]; then
-            printf 'I looked into this, but my changes touched files outside the plugin code, so no pull request was opened. A maintainer will take a look ([run](%s)).%s\n' "$run_url" "$footer" > reply.md
+            printf 'I looked into this, but my changes touched files outside the plugin code, so no pull request was opened. A maintainer will take a look ([run](%s)).%s\n' "$run_url" "$footer" > "$reply"
           else
-            printf 'I looked into this but did not change any code.\n\n%s%s\n' "$summary" "$footer" > reply.md
+            printf 'I looked into this but did not change any code.\n\n%s%s\n' "$summary" "$footer" > "$reply"
           fi
-          gh issue comment "$ISSUE" --body-file reply.md
+          gh issue comment "$ISSUE" --body-file "$reply"
