@@ -19,7 +19,7 @@ permissions:
   pull-requests: write
   issues: write
   id-token: write
-  actions: read
+  actions: write  # to start tests.yml on the fix branch (PRs opened by GITHUB_TOKEN don't trigger it)
 
 concurrency:
   group: auto-fix-${{ github.event.issue.number }}
@@ -68,7 +68,6 @@ jobs:
           #  anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}.)
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ github.token }}
-          show_full_output: true  # temporary, to diagnose the first runs
           claude_args: >-
             --max-turns 60
             --allowedTools "Read,Edit,Write,Glob,Grep,Bash(gh issue view:*),Bash(python -m unittest:*),Bash(python -m py_compile:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*)"
@@ -155,6 +154,8 @@ jobs:
             printf '%s\n\n### Tests\n%s\n\nFixes #%s\n\n> A maintainer reviews and merges this; then release it (CLAUDE.md > Releasing).%s\n' \
               "$summary" "$tests_line" "$ISSUE" "$footer" > "$RUNNER_TEMP/pr-body.md"
             pr_url=$(gh pr create $draft --base main --head "$branch" --title "Fix #${ISSUE}: $(gh issue view "$ISSUE" --json title -q .title)" --body-file "$RUNNER_TEMP/pr-body.md")
+            # Windows + Linux tests on the PR's commit; they show up as checks on the PR.
+            gh workflow run tests.yml --ref "$branch" || echo "::warning::Couldn't start tests.yml on $branch"
             printf 'I looked into this and proposed a fix: %s\n\n%s\n\n%s%s\n' "$pr_url" "$tests_line" "$summary" "$footer" > "$reply"
           elif [ "$RESULT" = "disallowed" ]; then
             printf 'I looked into this, but my changes touched files outside the plugin code, so no pull request was opened. A maintainer will take a look ([run](%s)).%s\n' "$run_url" "$footer" > "$reply"
