@@ -85,6 +85,26 @@ class SelectionParserTests(unittest.TestCase):
         self.assertEqual(sources.parse_selection(clip), ["R12 (10k)", "label EN"])
 
 
+class UnreachableHintTests(unittest.TestCase):
+    """Issue #7: a windowless leftover kicad.exe holds the API connection."""
+
+    def test_stale_background_kicad_is_named(self):
+        hint = sources.unreachable_hint([(11884, False), (28252, True)])
+        self.assertIn("11884", hint)
+        self.assertIn("Task Manager", hint)
+        self.assertNotIn("28252", hint)  # the KiCad the user is working in
+
+    def test_single_kicad_points_to_api_setting(self):
+        self.assertIn("Enable KiCad API", sources.unreachable_hint([(28252, True)]))
+
+    def test_no_kicad_running(self):
+        self.assertIn("isn't running", sources.unreachable_hint([]))
+
+    def test_report_includes_process_counts(self):
+        diag = report.diagnostics("schematic", "", "10.0.5", extra=["kicad_processes: 2 running, 1 without a window"])
+        self.assertIn("kicad_processes: 2 running, 1 without a window", diag)
+
+
 class LibraryCommitTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

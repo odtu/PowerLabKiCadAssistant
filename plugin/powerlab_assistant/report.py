@@ -68,7 +68,7 @@ def _version(args):
     return scrub(out.splitlines()[0]) if code == 0 and out else "unknown"
 
 
-def diagnostics(editor, model, kicad_version, error=None):
+def diagnostics(editor, model, kicad_version, error=None, extra=()):
     claude = find_claude()
     mcp = config.mcp_path()
     lines = [
@@ -80,6 +80,7 @@ def diagnostics(editor, model, kicad_version, error=None):
         f"claude_code: {_version([claude, '--version']) if claude else 'not found'}",
         f"mcp_server: {_version(['git', '-C', mcp, 'rev-parse', '--short', 'HEAD']) if mcp else 'unknown'}",
         f"model: {model or 'default'}",
+        *[scrub(line) for line in extra],
     ]
     if error:
         lines += ["", f"error: {scrub(error.get('kind', ''))}", scrub(error.get("detail", ""))]

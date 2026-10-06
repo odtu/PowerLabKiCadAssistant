@@ -360,9 +360,11 @@ class ClaudePanel(wx.Frame):
         editor, model = self.source.editor, self.model
         kicad = self.source.kicad_version() if hasattr(self.source, "kicad_version") else ""
         title = f"[{editor}] " + (error["kind"] if error else "Problem report")
+        processes = getattr(self.source, "process_summary", None)
 
         def work():
-            return report.diagnostics(editor, model, kicad, error), report.gh_ready()
+            extra = [f"kicad_processes: {processes()}"] if processes else []
+            return report.diagnostics(editor, model, kicad, error, extra), report.gh_ready()
 
         def done(result):
             if isinstance(result, Exception):
@@ -601,8 +603,10 @@ class ClaudePanel(wx.Frame):
         self.sending = False
         snap = self.snapshot()
         if snap is None:
-            self.problem("error", "Can't reach KiCad. Turn on Preferences → Plugins → Enable KiCad API, "
-                                  "then reopen the panel.", "kicad not reachable")
+            reason = getattr(self.source, "unreachable_reason", None)
+            text = reason() if reason else ("Can't reach KiCad. Turn on Preferences → Plugins → "
+                                            "Enable KiCad API, then reopen the panel.")
+            self.problem("error", text, "kicad not reachable")
             return
         args = [
             self.claude, "-p",

@@ -54,6 +54,22 @@ def child_windows(hwnd):
     return found
 
 
+def kicad_processes():
+    """[(pid, has_visible_window)] for every running kicad.exe."""
+    import csv
+    import subprocess
+
+    try:
+        out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq kicad.exe", "/FO", "CSV", "/NH"],
+                             capture_output=True, text=True, timeout=10,
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    pids = [int(row[1]) for row in csv.reader(out.splitlines()) if len(row) > 1 and row[1].isdigit()]
+    with_window = {window_pid(h) for h in top_windows() if window_text(h)}
+    return [(pid, pid in with_window) for pid in pids]
+
+
 def find_editor(kind="Schematic Editor"):
     """The visible '<project> — Schematic Editor' window ('*' prefix when unsaved)."""
     for hwnd in top_windows():

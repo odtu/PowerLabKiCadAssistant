@@ -31,6 +31,23 @@ class Snapshot:
     watch: list = field(default_factory=list)  # files whose on-disk changes need a reload
 
 
+def unreachable_hint(processes):
+    """Why KiCad's API may not answer, from [(pid, has_visible_window)] of kicad.exe (issue #7).
+
+    A KiCad that got stuck while closing keeps running without a window and holds KiCad's
+    API connection, so the KiCad the user is working in can't open its own."""
+    stale = [pid for pid, visible in processes if not visible]
+    if len(processes) > 1 and stale:
+        return (f"KiCad isn't answering because another KiCad is still running in the background "
+                f"without a window (process {', '.join(map(str, stale))}) and is holding KiCad's "
+                "connection. End it in Task Manager > Details > kicad.exe (that process ID), "
+                "then restart KiCad.")
+    if not processes:
+        return "KiCad isn't running. Start KiCad and open the schematic, then try again."
+    return ("Can't reach KiCad. Turn on Preferences > Plugins > Enable KiCad API, then restart "
+            "KiCad and reopen the panel.")
+
+
 def short_list(names, limit=6):
     return ", ".join(names[:limit]) + (f" +{len(names) - limit}" if len(names) > limit else "")
 
@@ -277,6 +294,14 @@ class SchematicSource:
             return str(self.call(lambda k: k.get_version()))
         except Exception:
             return ""
+
+    def unreachable_reason(self):
+        return unreachable_hint(kicad_window.kicad_processes())
+
+    def process_summary(self):
+        """For problem reports: how many kicad.exe run, and how many have no window."""
+        procs = kicad_window.kicad_processes()
+        return f"{len(procs)} running, {sum(1 for _, visible in procs if not visible)} without a window"
 
     def alive(self):
         try:
