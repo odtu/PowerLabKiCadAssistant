@@ -1,2 +1,8 @@
 __pycache__/
 *.pyc
+
+# KiCad lock and local-state files (lock files contain the user and computer name)
+*.lck
+*.kicad_prl
+# Local test projects
+tests/TestPCB/
