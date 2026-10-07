@@ -25,11 +25,16 @@ foreach ($dir in @((Join-Path $KiCadDocs "scripting\plugins\powerlab_assistant")
     if ((Test-Path $dir) -and (Ask "Remove plugin folder $dir ?")) { Remove-Item -Recurse -Force $dir }
 }
 
+$skills = @(Get-ChildItem (Join-Path $env:USERPROFILE ".claude\skills") -Directory -Filter "powerlab-*" -ErrorAction SilentlyContinue)
+if ($skills.Count -and (Ask "Remove the assistant's Claude skills ($(($skills | ForEach-Object Name) -join ', '))?")) {
+    $skills | ForEach-Object { Remove-Item -Recurse -Force $_.FullName }
+}
+
 $claude = (Get-Command claude -ErrorAction SilentlyContinue).Source
 if (-not $claude) { $claude = "$env:USERPROFILE\.local\bin\claude.exe" }
 if ((Test-Path $claude) -and (Ask "Remove the 'kicad' tool server from Claude Code?")) { & $claude mcp remove kicad -s user }
 
-if ((Test-Path $LocalData) -and (Ask "Delete the KiCad MCP server copy in $LocalData ?")) { Remove-Item -Recurse -Force $LocalData }
+if ((Test-Path $LocalData) -and (Ask "Delete the KiCad MCP server, Java and Freerouting copies in $LocalData ?")) { Remove-Item -Recurse -Force $LocalData }
 if ((Test-Path $AppData) -and (Ask "Delete settings and KiCad config backups in $AppData ? (copy the backup folder first if you may want to restore it)")) {
     Remove-Item -Recurse -Force $AppData
 }

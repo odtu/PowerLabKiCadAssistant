@@ -117,6 +117,20 @@ The panel shows each step Claude takes, plus any images it renders. The model pi
 - Before each message, the panel makes sure the schematic is saved.
 - After Claude changes a sheet, the panel reloads it in KiCad for you.
 
+## Skills
+
+Skills teach Claude how the lab does specific jobs. The installer copies them to your Claude skills folder (`%USERPROFILE%\.claude\skills\powerlab-*`). Claude uses one automatically when your request matches it, both in the panel and in a terminal session started from the panel.
+
+| Skill | What it does | Try |
+|---|---|---|
+| `powerlab-autoroute` | Autoroutes with **Freerouting 2.4.1** (on Java 25). It checks the prerequisites first and expects hand-routed, locked power and gate-drive nets. It then routes (optionally best-of-N), refills zones, runs DRC, and reports what's left. | *Autoroute the remaining nets* |
+
+Freerouting 2.4.1 needs Java 25. The installer puts a private copy of Java 25 (Eclipse Temurin) and the Freerouting jar in `%LOCALAPPDATA%\PowerLabKiCadAssistant`, checking both downloads against their published SHA-256 checksums. Any Java already on your computer is left alone; the panel uses this copy only for its own Claude sessions.
+
+Freerouting works best on boards whose signal nets are mostly unrouted: a 2-layer board with 29 nets routes in seconds. It is very slow on dense, mostly routed boards with many copper pours on the outer layers, because it reads each pour as a solid plane. Claude checks this and tells you before it runs.
+
+Autorouted power-electronics boards always need a human review: loop areas, return paths, and track widths on high-current nets.
+
 ## The METU Power Lab library
 
 The panel keeps your library clone up to date. When new parts are merged on GitHub, a bar offers **Update**.

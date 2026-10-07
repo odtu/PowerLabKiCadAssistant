@@ -38,6 +38,17 @@ $AppData = Join-Path $env:APPDATA "PowerLabKiCadAssistant"
 $LocalData = Join-Path $env:LOCALAPPDATA "PowerLabKiCadAssistant"
 $McpRepo = "https://github.com/mixelpixx/KiCAD-MCP-Server.git"
 $LibraryRepo = "https://github.com/odtu/PowerLabKiCadLibraries.git"
+$SkillsDir = Join-Path $env:USERPROFILE ".claude\skills"
+
+# Pinned tools for the powerlab-autoroute skill (official downloads + their published SHA-256).
+# Freerouting 2.4.1 is built for Java 25. Both live in the assistant's own folder; the system
+# Java (if any) is left alone and the panel puts this Java first only for its own sessions.
+$JavaVersion = "25.0.4.1"
+$JavaUrl = "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.4.1%2B1/OpenJDK25U-jre_x64_windows_hotspot_25.0.4.1_1.zip"
+$JavaSha256 = "4c95451cea98556def2c54f7782933f52a26d4a36bd85e1d59f0364464828b07"
+$FreeroutingVersion = "2.4.1"
+$FreeroutingUrl = "https://github.com/freerouting/freerouting/releases/download/v2.4.1/freerouting-2.4.1.jar"
+$FreeroutingSha256 = "251101c3eeac22d7e7dfcf6796603279e5d1000283eb82d8f093780f7afc6aa9"
 
 function Say($text) { Write-Host $text -ForegroundColor Cyan }
 function Ok($text) { Write-Host "  OK  $text" -ForegroundColor Green }
@@ -70,10 +81,26 @@ function Save-Config {
     if ($script:KiCadBin) { $config["kicad_bin"] = $script:KiCadBin }
     if ($script:McpReady) { $config["mcp_path"] = $script:McpDir }
     if ($script:Library) { $config["library_path"] = $script:Library }
+    if ($script:JavaHome) { $config["java_home"] = $script:JavaHome }
+    if ($script:FreeroutingJar) { $config["freerouting_jar"] = $script:FreeroutingJar }
     $config["source_path"] = $script:Root  # where the panel's Update button pulls from
     if (-not $config.ContainsKey("extra_dirs")) { $config["extra_dirs"] = @() }
     $config | ConvertTo-Json | Set-Content -Encoding UTF8 $path
     return $path
+}
+function Get-Verified($url, $sha256, $dest) {
+    # Download $url to $dest, refusing it unless its SHA-256 matches the pinned value.
+    $tmp = "$dest.download"
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    $saved = $ProgressPreference
+    $ProgressPreference = "SilentlyContinue"  # the PS 5.1 progress bar makes big downloads crawl
+    try { Invoke-WebRequest $url -OutFile $tmp -UseBasicParsing }
+    finally { $ProgressPreference = $saved }
+    if ((Get-FileHash $tmp -Algorithm SHA256).Hash.ToLower() -ne $sha256) {
+        Remove-Item -Force $tmp
+        Fail "$(Split-Path $url -Leaf) failed its checksum check; not installed."
+    }
+    Move-Item -Force $tmp $dest
 }
 function Run($exe, [string[]]$arguments, $where = $null) {
     # Runs a native command; stops the install if it fails.
@@ -188,6 +215,53 @@ foreach ($pair in @(@("plugin\powerlab_assistant", $PanelDest), @("plugin\powerl
 }
 Ok "PCB editor panel   -> $PanelDest"
 Ok "Schematic button   -> $ButtonDest"
+$null = Save-Config
+
+# ---- 4b. Skills and the tools they need ------------------------------------
+Say "4b. Skills (autorouting with Freerouting $FreeroutingVersion on Java $JavaVersion)"
+New-Item -ItemType Directory -Force $SkillsDir | Out-Null
+$shipped = @(Get-ChildItem (Join-Path $Root "skills") -Directory -ErrorAction SilentlyContinue)
+foreach ($skill in $shipped) {
+    $dest = Join-Path $SkillsDir $skill.Name
+    if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
+    Copy-Item -Recurse $skill.FullName $dest
+}
+# Skills this project shipped before but no longer does (only our powerlab-* names).
+Get-ChildItem $SkillsDir -Directory -Filter "powerlab-*" | Where-Object { $shipped.Name -notcontains $_.Name } |
+    ForEach-Object { Remove-Item -Recurse -Force $_.FullName }
+Ok "Skills: $(($shipped | ForEach-Object Name) -join ', ') -> $SkillsDir"
+
+$JavaRoot = Join-Path $LocalData "java-$JavaVersion"
+$JavaHome = (Get-ChildItem $JavaRoot -Directory -ErrorAction SilentlyContinue | Where-Object { Test-Path (Join-Path $_.FullName "bin\java.exe") } | Select-Object -First 1).FullName
+$FreeroutingJar = Join-Path $LocalData "freerouting\freerouting-$FreeroutingVersion.jar"
+$haveJar = (Test-Path $FreeroutingJar) -and ((Get-FileHash $FreeroutingJar -Algorithm SHA256).Hash.ToLower() -eq $FreeroutingSha256)
+if ($JavaHome -and $haveJar) {
+    Ok "Java $JavaVersion and Freerouting $FreeroutingVersion already installed"
+} elseif ($Update -or (Ask "Install Freerouting $FreeroutingVersion and a private Java $JavaVersion for autorouting? (about 120 MB, nothing system-wide)")) {
+    New-Item -ItemType Directory -Force $LocalData, (Split-Path $FreeroutingJar) | Out-Null
+    if (-not $JavaHome) {
+        Write-Host "  ... downloading Java $JavaVersion (Eclipse Temurin JRE, 58 MB)"
+        $zip = Join-Path $LocalData "java-$JavaVersion.zip"
+        Get-Verified $JavaUrl $JavaSha256 $zip
+        if (Test-Path $JavaRoot) { Remove-Item -Recurse -Force $JavaRoot }
+        Expand-Archive -LiteralPath $zip -DestinationPath $JavaRoot
+        Remove-Item -Force $zip
+        $JavaHome = (Get-ChildItem $JavaRoot -Directory | Where-Object { Test-Path (Join-Path $_.FullName "bin\java.exe") } | Select-Object -First 1).FullName
+        if (-not $JavaHome) { Fail "Java $JavaVersion archive had no bin\java.exe." }
+    }
+    if (-not $haveJar) {
+        Write-Host "  ... downloading Freerouting $FreeroutingVersion (64 MB)"
+        Get-Verified $FreeroutingUrl $FreeroutingSha256 $FreeroutingJar
+    }
+    # java prints its version on stderr; capturing it under "Stop" would abort the script in PS 5.1.
+    $saved = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+    $ver = (& (Join-Path $JavaHome "bin\java.exe") -version 2>&1 | Select-Object -First 1 | ForEach-Object { "$_" }) -join ""
+    $ErrorActionPreference = $saved
+    Ok "Java ($ver) and Freerouting $FreeroutingVersion installed in $LocalData"
+} else {
+    Warn "Skipped: the autoroute skill needs Freerouting. Run install.ps1 again to add it."
+    $JavaHome = $null; $FreeroutingJar = $null
+}
 $null = Save-Config
 
 if ($Update) {
