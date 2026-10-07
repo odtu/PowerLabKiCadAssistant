@@ -51,6 +51,7 @@ Users only learn about fixes through releases: the panel offers an update when t
 - **Rotation keeps 3D models:** `move_component` puts them back, because kipy 0.8's orientation setter drops them (#10).
 - **`pourNets` on `autoroute`:** those nets are left out of the DSN, so they connect through pours instead of tracks; their existing tracks are kept.
 - **Pours in live mode (#12):** the live `add_copper_pour` handler accepts the tool's `outline` (or `points`), and falls back to the board outline like the offline one. `add_zone` gets a handler in both modes.
+- **Stitching vias in live mode (#14):** `add_gnd_stitching_vias` had no live-mode handler. With KiCad open, the tool process never loads the board, so it said "No board is loaded". The new handler plans on the saved board file with the largest net-class clearance, then places the vias live.
 
 To change it:
 1. Edit the files in `%LOCALAPPDATA%\PowerLabKiCadAssistant\KiCAD-MCP-Server`.

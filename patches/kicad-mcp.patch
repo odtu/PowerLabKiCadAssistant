@@ -208,7 +208,7 @@ index 6f9a813..827e3fa 100644
              # Apply changes
              commit = board.begin_commit()
 diff --git a/python/kicad_interface.py b/python/kicad_interface.py
-index c6ac305..eabe32c 100644
+index c6ac305..dbc3de5 100644
 --- a/python/kicad_interface.py
 +++ b/python/kicad_interface.py
 @@ -558,6 +558,7 @@ class KiCADInterface(SchematicHandlersMixin):
@@ -219,7 +219,14 @@ index c6ac305..eabe32c 100644
              "route_differential_pair": self.routing_commands.route_differential_pair,
              "refill_zones": self._handle_refill_zones,
              # Design rule commands
-@@ -762,6 +763,7 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -756,12 +757,14 @@ class KiCADInterface(SchematicHandlersMixin):
+         "route_trace": "_ipc_route_trace",
+         "route_arc_trace": "_ipc_route_arc_trace",
+         "add_via": "_ipc_add_via",
++        "add_gnd_stitching_vias": "_ipc_add_gnd_stitching_vias",  # PowerLab patch
+         "add_net": "_ipc_add_net",
+         "delete_trace": "_ipc_delete_trace",
+         "query_traces": "_ipc_query_traces",
          "get_nets_list": "_ipc_get_nets_list",
          # Zone commands
          "add_copper_pour": "_ipc_add_copper_pour",
@@ -227,7 +234,7 @@ index c6ac305..eabe32c 100644
          "refill_zones": "_ipc_refill_zones",
          # Board commands
          "add_text": "_ipc_add_text",
-@@ -1236,6 +1238,7 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -1236,6 +1239,7 @@ class KiCADInterface(SchematicHandlersMixin):
          "add_board_text",
          "move_footprint_text",
          "add_copper_pour",
@@ -235,7 +242,7 @@ index c6ac305..eabe32c 100644
          "refill_zones",
          "import_svg_logo",
          "sync_schematic_to_board",
-@@ -1848,6 +1851,17 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -1848,6 +1852,17 @@ class KiCADInterface(SchematicHandlersMixin):
          state = self._dirty_state(board_path)
          return {"success": True, "boardPath": board_path, **state}
  
@@ -253,7 +260,73 @@ index c6ac305..eabe32c 100644
      def _handle_batch_move_components(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """Batch move wrapper that preserves the external-edit save guard."""
          if getattr(self, "session_backend", None) == "ipc" and not self._ipc_session_alive():
-@@ -5131,21 +5145,37 @@ print("ok")
+@@ -5079,6 +5094,65 @@ print("ok")
+             logger.error(f"IPC route_arc_trace error: {e}")
+             return {"success": False, "message": str(e)}
+ 
++    def _ipc_add_gnd_stitching_vias(self, params: Dict[str, Any]) -> Dict[str, Any]:
++        """IPC handler for add_gnd_stitching_vias (PowerLab patch).
++
++        The collision-checked planner works on a pcbnew board, which an IPC session
++        doesn't load. Plan on the saved board file, then place the vias live.
++        """
++        try:
++            import pcbnew
++            from commands.routing import RoutingCommands
++
++            path = self.ipc_backend.get_open_board_path()
++            if not path or not os.path.isfile(str(path)):
++                return {
++                    "success": False,
++                    "message": "No saved board is open in KiCad",
++                    "errorDetails": "Open the board in KiCad and save it first",
++                }
++            board = pcbnew.LoadBoard(str(path))
++            plan_params = {**params, "dryRun": True}
++            if "clearance" not in params:
++                # The planner's fixed 0.2 mm default undercuts stricter net classes
++                # (e.g. 0.3 mm Power/GND); use the board's largest class clearance.
++                try:
++                    ns = board.GetDesignSettings().m_NetSettings
++                    classes = list(ns.GetNetclasses().values()) + [ns.GetDefaultNetclass()]
++                    plan_params["clearance"] = max(
++                        0.2, max(pcbnew.ToMM(c.GetClearance()) for c in classes)
++                    )
++                except Exception as e:
++                    logger.debug(f"Net class clearances unavailable: {e}")
++            plan = RoutingCommands(board).add_gnd_stitching_vias(plan_params)
++            if not plan.get("success") or params.get("dryRun"):
++                return plan
++
++            summary = plan["summary"]
++            placed = []
++            for p in plan["placed"]:
++                if self.ipc_board_api.add_via(
++                    x=p["x"],
++                    y=p["y"],
++                    diameter=summary["via_size_mm"],
++                    drill=summary["via_drill_mm"],
++                    net_name=summary["gnd_net"],
++                    via_type="through",
++                ):
++                    placed.append(p)
++            plan["placed"] = placed
++            summary["placed_count"] = len(placed)
++            summary["dry_run"] = False
++            plan["message"] = f"Added {len(placed)} stitching vias (visible in KiCAD UI)"
++            plan["note"] = (
++                "Positions were checked against the saved board file; "
++                "save in KiCad first if it has unsaved edits, then run DRC."
++            )
++            return plan
++        except Exception as e:
++            logger.error(f"IPC add_gnd_stitching_vias error: {e}")
++            return {"success": False, "message": str(e)}
++
+     def _ipc_add_via(self, params: Dict[str, Any]) -> Dict[str, Any]:
+         """IPC handler for add_via - adds via with real-time UI update"""
+         try:
+@@ -5131,21 +5205,37 @@ print("ok")
              net = params.get("net")
              clearance = params.get("clearance", 0.5)
              min_width = params.get("minWidth", 0.25)

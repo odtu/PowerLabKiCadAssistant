@@ -59,6 +59,7 @@ Before routing, confirm with the user, or check with the kicad tools:
 
   Steps 1–4 must be routed by hand and locked first. KiCad exports locked tracks as protected, so Freerouting keeps them. If they aren't done, say so and recommend doing them first. Only autoroute them if the user explicitly insists, and warn that loop area, current capacity and return paths won't be considered.
 - **Pours first (§3.1, §3.5):** never let Freerouting draw GND as tracks.
+  - **Check for existing pours first** with `query_zones`. Never add a second pour for the same net on a layer that already has one: overlapping same-net zones give DRC "zones intersect" errors. To change an existing pour, ask the user.
   - If the board has no GND pour, create one before routing with `add_copper_pour` (layer, net and clearance; leave out `outline` to cover the whole board outline), on the bottom layer and also on the top. On 4 layers, use the inner GND plane layer. Do the same for any power net the user wants as a pour (above ~3 A).
   - Then route with `pourNets` set to those nets, e.g. `pourNets: ["GND"]`. Freerouting leaves them out, routes on all layers, and keeps their existing tracks. The pours are refilled around the new tracks afterwards.
 - **3D models:** check that the footprints still have their 3D models (`get_component_properties` or the 3D viewer). If they are missing, tell the user to run **Tools → Update Footprints from Library** with **Reset 3D models** ticked. It restores them without moving the parts.
@@ -82,7 +83,7 @@ Before routing, confirm with the user, or check with the kicad tools:
   - check every power and GND track against its class width (`query_traces`)
   - at least 2 vias at each power layer change, 0.4 mm drill (§3.4)
   - no vias in SMD pads except thermal pads
-- **Pours and stitching:** after the pours are filled, add GND stitching vias every ~5 mm (`add_gnd_stitching_vias`, §3.4). Remove copper islands or stitch them to GND (§3.5).
+- **Pours and stitching:** after the pours are filled, save the board (Ctrl+S, or `save_board`), then add GND stitching vias every ~5 mm with `add_gnd_stitching_vias` (`strategies: ["grid", "in_zones"]`, `viaSize: 0.8`, `viaDrill: 0.4`; §3.4). With KiCad open, it plans on the saved file and places the vias live, keeping the board's largest net-class clearance. Remove copper islands or stitch them to GND (§3.5).
 - **High-speed:** no clock or fast signal crosses a gap in its reference plane (§3.3).
 - **Unrouted nets:** report what is still unrouted (`get_ratsnest`). Name the nets and suggest finishing them by hand.
 - **Optional:** render the top and bottom with `kicad-cli pcb render` so the user can look at the result.
