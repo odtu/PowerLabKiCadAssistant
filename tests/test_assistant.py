@@ -215,6 +215,14 @@ class McpPatchTests(unittest.TestCase):
         self.assertIn("models = list(target_fp.definition.models)", patch)
         self.assertIn("target_fp.definition.add_item(model)", patch)
 
+    def test_pours_work_in_live_mode(self):
+        """Issue #12: live add_copper_pour ignored "outline" and add_zone had no handler."""
+        patch = self.patch()
+        self.assertIn('points = params.get("outline") or params.get("points") or []', patch)
+        self.assertIn("box = self.ipc_board_api.edge_cuts_box()", patch)
+        self.assertIn('+        "add_zone": "_ipc_add_copper_pour",', patch)
+        self.assertIn('+            "add_zone": self._handle_add_zone,', patch)
+
     def test_pour_nets_are_left_out_of_routing(self):
         module = types.ModuleType("pour_nets")
         exec(self.new_file("python/commands/pour_nets.py"), module.__dict__)

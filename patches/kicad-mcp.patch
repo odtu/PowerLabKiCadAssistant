@@ -159,10 +159,41 @@ index 0000000..9fcaf09
 +        text = text[:close] + f"(net {PLACEHOLDER_NET})\n    " + text[close:]
 +    return text, dropped
 diff --git a/python/kicad_api/ipc_backend.py b/python/kicad_api/ipc_backend.py
-index 6f9a813..dce0b27 100644
+index 6f9a813..827e3fa 100644
 --- a/python/kicad_api/ipc_backend.py
 +++ b/python/kicad_api/ipc_backend.py
-@@ -905,7 +905,13 @@ class IPCBoardAPI(BoardAPI):
+@@ -471,6 +471,30 @@ class IPCBoardAPI(BoardAPI):
+             logger.error(f"Failed to get board size: {e}")
+             return {"width": 0, "height": 0, "unit": "mm", "error": str(e)}
+ 
++    def edge_cuts_box(self) -> Optional[tuple[float, float, float, float]]:
++        """Board outline bounding box (left, top, right, bottom) in mm, or None (PowerLab patch)."""
++        from kipy.proto.board.board_types_pb2 import BoardLayer
++        from kipy.util.units import to_mm
++
++        board = self._get_board()
++        boxes = [
++            self._get_box2_extents(box)
++            for box in (
++                board.get_item_bounding_box(shape)
++                for shape in board.get_shapes()
++                if shape.layer == BoardLayer.BL_Edge_Cuts
++            )
++            if box
++        ]
++        if not boxes:
++            return None
++        return (
++            to_mm(min(b[0] for b in boxes)),
++            to_mm(min(b[1] for b in boxes)),
++            to_mm(max(b[2] for b in boxes)),
++            to_mm(max(b[3] for b in boxes)),
++        )
++
+     @staticmethod
+     def _get_box2_extents(bbox: Any) -> tuple[float, float, float, float]:
+         """Return left/top/right/bottom for kipy Box2 wrappers across versions."""
+@@ -905,7 +929,13 @@ class IPCBoardAPI(BoardAPI):
              target_fp.position = Vector2.from_xy(from_mm(x), from_mm(y))
  
              if rotation is not None:
@@ -176,6 +207,97 @@ index 6f9a813..dce0b27 100644
  
              # Apply changes
              commit = board.begin_commit()
+diff --git a/python/kicad_interface.py b/python/kicad_interface.py
+index c6ac305..eabe32c 100644
+--- a/python/kicad_interface.py
++++ b/python/kicad_interface.py
+@@ -558,6 +558,7 @@ class KiCADInterface(SchematicHandlersMixin):
+             "create_netclass": self.routing_commands.create_netclass,
+             "set_net_color": self.routing_commands.set_net_color,
+             "add_copper_pour": self.routing_commands.add_copper_pour,
++            "add_zone": self._handle_add_zone,  # PowerLab patch: add_zone had no handler
+             "route_differential_pair": self.routing_commands.route_differential_pair,
+             "refill_zones": self._handle_refill_zones,
+             # Design rule commands
+@@ -762,6 +763,7 @@ class KiCADInterface(SchematicHandlersMixin):
+         "get_nets_list": "_ipc_get_nets_list",
+         # Zone commands
+         "add_copper_pour": "_ipc_add_copper_pour",
++        "add_zone": "_ipc_add_copper_pour",  # PowerLab patch: add_zone had no handler
+         "refill_zones": "_ipc_refill_zones",
+         # Board commands
+         "add_text": "_ipc_add_text",
+@@ -1236,6 +1238,7 @@ class KiCADInterface(SchematicHandlersMixin):
+         "add_board_text",
+         "move_footprint_text",
+         "add_copper_pour",
++        "add_zone",
+         "refill_zones",
+         "import_svg_logo",
+         "sync_schematic_to_board",
+@@ -1848,6 +1851,17 @@ class KiCADInterface(SchematicHandlersMixin):
+         state = self._dirty_state(board_path)
+         return {"success": True, "boardPath": board_path, **state}
+ 
++    def _handle_add_zone(self, params: Dict[str, Any]) -> Dict[str, Any]:
++        """add_zone = add_copper_pour with explicit points in any unit (PowerLab patch)."""
++        to_mm = {"mm": 1.0, "mil": 0.0254, "inch": 25.4}.get(params.get("unit") or "mm", 1.0)
++        points = [
++            {"x": p.get("x", 0) * to_mm, "y": p.get("y", 0) * to_mm}
++            for p in (params.get("points") or [])
++        ]
++        call_params = {k: v for k, v in params.items() if k not in ("points", "unit")}
++        call_params["outline"] = points
++        return self.routing_commands.add_copper_pour(call_params)
++
+     def _handle_batch_move_components(self, params: Dict[str, Any]) -> Dict[str, Any]:
+         """Batch move wrapper that preserves the external-edit save guard."""
+         if getattr(self, "session_backend", None) == "ipc" and not self._ipc_session_alive():
+@@ -5131,21 +5145,37 @@ print("ok")
+             net = params.get("net")
+             clearance = params.get("clearance", 0.5)
+             min_width = params.get("minWidth", 0.25)
+-            points = params.get("points", [])
++            # The tool sends "outline" (add_copper_pour) or "points" (add_zone); with
++            # neither, pour over the board outline like the SWIG handler (PowerLab patch).
++            points = params.get("outline") or params.get("points") or []
+             priority = params.get("priority", 0)
+             fill_type = params.get("fillType", "solid")
+             name = params.get("name", "")
++            to_mm = {"mm": 1.0, "mil": 0.0254, "inch": 25.4}.get(params.get("unit") or "mm", 1.0)
+ 
+             if not points or len(points) < 3:
+-                return {
+-                    "success": False,
+-                    "message": "At least 3 points are required for copper pour outline",
+-                }
++                box = self.ipc_board_api.edge_cuts_box()
++                if not box:
++                    return {
++                        "success": False,
++                        "message": "Missing outline",
++                        "errorDetails": "Provide an outline array or add a board outline first",
++                    }
++                left, top, right, bottom = box
++                # KiCad clips the fill to the board edge, so the bounding box is enough.
++                points = [
++                    {"x": left, "y": top},
++                    {"x": right, "y": top},
++                    {"x": right, "y": bottom},
++                    {"x": left, "y": bottom},
++                ]
++                to_mm = 1.0
+ 
+-            # Convert points format if needed (handle both {x, y} and {x, y, unit})
+             formatted_points = []
+             for point in points:
+-                formatted_points.append({"x": point.get("x", 0), "y": point.get("y", 0)})
++                formatted_points.append(
++                    {"x": point.get("x", 0) * to_mm, "y": point.get("y", 0) * to_mm}
++                )
+ 
+             success = self.ipc_board_api.add_zone(
+                 points=formatted_points,
 diff --git a/src/tools/freerouting.ts b/src/tools/freerouting.ts
 index d9942f7..585a1ec 100644
 --- a/src/tools/freerouting.ts
