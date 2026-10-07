@@ -187,7 +187,7 @@ footer { padding: 8px 12px 12px; }
 }
 .composer {
   display: flex; align-items: flex-end; gap: 6px; background: var(--surface);
-  border: 1px solid var(--border); border-radius: 14px; padding: 6px 6px 6px 12px; box-shadow: var(--shadow);
+  border: 1px solid var(--border); border-radius: 14px; padding: 6px; box-shadow: var(--shadow);
   transition: border-color .15s;
 }
 .composer:focus-within { border-color: var(--accent); }
@@ -201,6 +201,25 @@ textarea::placeholder { color: var(--muted); }
   display: grid; place-items: center; flex: none; transition: opacity .15s;
 }
 #send:disabled { opacity: .35; cursor: default; }
+.attach-btn {
+  width: 30px; height: 30px; border: 0; border-radius: 9px; background: transparent; color: var(--muted);
+  display: grid; place-items: center; flex: none;
+}
+.attach-btn:hover { background: var(--surface-2); color: var(--text); }
+.attach-btn svg { width: 16px; height: 16px; }
+.files-row { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
+.files-row:empty { display: none; }
+.file-chip {
+  display: flex; align-items: center; gap: 2px; max-width: 100%; font-size: 11px;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px; padding: 1px 2px 1px 8px;
+}
+.file-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-chip button { border: 0; background: transparent; color: var(--muted); padding: 0 5px; font-size: 12px; line-height: 1; }
+.file-chip button:hover { color: var(--err); }
+.user > div { max-width: 88%; display: flex; flex-direction: column; align-items: flex-end; }
+.user > div .bubble { max-width: 100%; }
+.user .att { font-size: 11px; color: var(--muted); text-align: right; margin-top: 3px; }
+body.dragging .composer { border-color: var(--accent); border-style: dashed; }
 #send svg { width: 16px; height: 16px; }
 .hint {
   font-size: 10.5px; color: var(--muted); min-width: 0; text-align: right;
@@ -262,7 +281,9 @@ textarea::placeholder { color: var(--muted); }
 
 <footer>
   <div class="context" id="context"></div>
+  <div class="files-row" id="files"></div>
   <div class="composer">
+    <button id="attach" class="attach-btn" title="Attach files (you can also paste or drop them here)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></button>
     <textarea id="input" rows="1" placeholder="Ask Claude to do something…"></textarea>
     <button id="send" title="Send (Enter)" disabled></button>
   </div>
@@ -271,7 +292,7 @@ textarea::placeholder { color: var(--muted); }
       <button id="model-btn" class="model-btn" title="Choose the Claude model"></button>
       <div id="model-menu" class="model-menu"></div>
     </div>
-    <div class="hint" title="Enter to send · Shift+Enter for a new line">Enter to send · Shift+Enter new line</div>
+    <div class="hint" id="hint" title="Enter to send · Shift+Enter for a new line">Enter to send · Shift+Enter new line</div>
   </div>
   <div class="disclaimer">AI can make mistakes. Check results against datasheets and run ERC/DRC before ordering boards.</div>
 </footer>
@@ -360,14 +381,47 @@ function setBusy(v) {
   } else if (!v && typing) { typing.remove(); typing = null; }
 }
 
-function updateSend() { send.disabled = !busy && !input.value.trim(); }
+let attachedCount = 0;
+function updateSend() { send.disabled = !busy && !input.value.trim() && !attachedCount; }
+
+function renderFiles(names) {
+  const row = $('files'); row.innerHTML = '';
+  attachedCount = names.length;
+  names.forEach((name, index) => {
+    const chip = div('file-chip');
+    const label = document.createElement('span'); label.textContent = '📎 ' + name; label.title = name;
+    const x = document.createElement('button'); x.textContent = '×'; x.title = 'Remove';
+    x.onclick = () => post({ type: 'attach_remove', index });
+    chip.append(label, x); row.appendChild(chip);
+  });
+  updateSend();
+}
+
+const MAX_ATTACH = 20 * 1024 * 1024;
+function attachFile(file) {
+  if (file.size > MAX_ATTACH) {
+    app.event({ kind: 'note', level: 'warn', text: `${file.name} is larger than 20 MB, so it wasn't attached.` });
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => post({ type: 'attach_data', name: file.name || 'pasted.png', data: reader.result });
+  reader.readAsDataURL(file);
+}
 
 const app = {
   event(e) {
     switch (e.kind) {
-      case 'user':
+      case 'user': {
         toolGroup = null;
-        add(div('msg user', `<div class="bubble">${esc(e.text)}</div>`)); break;
+        const files = (e.files || []).length ? `<div class="att">📎 ${esc(e.files.join(', '))}</div>` : '';
+        add(div('msg user', `<div><div class="bubble">${esc(e.text)}</div>${files}</div>`)); break;
+      }
+      case 'attachments': renderFiles(e.items || []); break;
+      case 'usage': {
+        const h = $('hint');
+        if (e.text) { h.textContent = e.text; h.title = e.tip || e.text; }
+        break;
+      }
       case 'text':
         toolGroup = null;
         add(div('msg assistant', markdown(e.text))); break;
@@ -447,7 +501,7 @@ const app = {
 function submit() {
   if (busy) { post({ type: 'stop' }); return; }
   const text = input.value.trim();
-  if (!text) return;
+  if (!text && !attachedCount) return;
   post({ type: 'send', text });
   input.value = ''; autosize(); updateSend();
 }
@@ -457,6 +511,20 @@ function autosize() { input.style.height = 'auto'; input.style.height = Math.min
 input.addEventListener('input', () => { autosize(); updateSend(); });
 input.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); } });
 send.addEventListener('click', submit);
+$('attach').addEventListener('click', () => post({ type: 'attach' }));
+input.addEventListener('paste', e => {
+  const files = [...((e.clipboardData && e.clipboardData.files) || [])];
+  if (files.length) { e.preventDefault(); files.forEach(attachFile); }
+});
+// Dropping a file must never navigate the panel away, so handle every drop here.
+let dragDepth = 0;
+document.addEventListener('dragenter', e => { e.preventDefault(); dragDepth++; document.body.classList.add('dragging'); });
+document.addEventListener('dragleave', () => { if (--dragDepth <= 0) { dragDepth = 0; document.body.classList.remove('dragging'); } });
+document.addEventListener('dragover', e => e.preventDefault());
+document.addEventListener('drop', e => {
+  e.preventDefault(); dragDepth = 0; document.body.classList.remove('dragging');
+  [...((e.dataTransfer && e.dataTransfer.files) || [])].forEach(attachFile);
+});
 // ---- sheets: notice, problem report, library sharing ----
 const overlay = $('overlay'), sheet = $('sheet');
 let reportState = null, sheetLocked = false;

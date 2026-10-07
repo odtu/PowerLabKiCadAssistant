@@ -23,7 +23,7 @@ Call the `check_freerouting` tool.
 Ask for whatever you can't read from the board, and don't guess currents or voltages.
 - **Copper weight and layer count:** confirm them, because they change every limit (§2.0–2.2). The default is 2 layers and 1 oz.
 - **Board constraints (§2.6):** check them with `get_design_rules` and set any that are missing with `set_design_rules`. For 1 oz copper:
-  - clearance 0.2 mm, track 0.2 mm
+  - minimum clearance 0.15 mm, minimum track 0.15 mm, minimum connection 0.15 mm. These are the PCBWay standard-price floor; the net classes below set the 0.2 mm lab default. Freerouting's fanout narrows escape tracks to 0.15 mm between fine-pitch pads (e.g. ESP32, USB-C), which the rules allow.
   - via 0.6 mm, through hole 0.3 mm, annular ring 0.15 mm
   - copper to hole 0.25 mm, copper to edge 0.5 mm, hole to hole 0.4 mm
   - no micro or blind vias
@@ -55,19 +55,24 @@ Before routing, confirm with the user, or check with the kicad tools:
   5. **Everything else:** Freerouting.
 
   Steps 1–4 must be routed by hand and locked first. KiCad exports locked tracks as protected, so Freerouting keeps them. If they aren't done, say so and recommend doing them first. Only autoroute them if the user explicitly insists, and warn that loop area, current capacity and return paths won't be considered.
-- **Pours (§3.5):** GND and power pours must exist before routing. Freerouting doesn't create pours; without them it routes the whole net as tracks, which is slow and wrong. On 2 layers the bottom should be a mostly unbroken GND pour (§3.1). A Freerouting warning that a plane layer "has no conduction areas" means that pour is missing.
+- **Pours first (§3.1, §3.5):** never let Freerouting draw GND as tracks.
+  - If the board has no GND pour, create one before routing with `add_copper_pour` over the whole outline, on the bottom layer and also on the top. On 4 layers, use the inner GND plane layer. Do the same for any power net the user wants as a pour (above ~3 A).
+  - Then route with `pourNets` set to those nets, e.g. `pourNets: ["GND"]`. Freerouting leaves them out, routes on all layers, and keeps their existing tracks. The pours are refilled around the new tracks afterwards.
+- **3D models:** check that the footprints still have their 3D models (`get_component_properties` or the 3D viewer). If they are missing, tell the user to run **Tools → Update Footprints from Library** with **Reset 3D models** ticked. It restores them without moving the parts.
 
 ## 4. Route
-- **Load the board:** if `autoroute` says "No board is loaded", call `open_board` with the board path first. On large boards it can take over 30 s and time out once; retry once.
+- **Load the saved board:** `autoroute` reads the `.kicad_pcb` file, not KiCad's live copy. After live edits (placement, new pours), save first (`save_board`, or ask the user to press Ctrl+S), then call `open_board` with the board path so the router sees them. Also call `open_board` if `autoroute` says "No board is loaded". On large boards it can take over 30 s and time out once; retry once.
 - **Baseline DRC:** run `run_drc` once before routing, so new errors can be told apart from old ones.
-- **Estimate the run time:** check the ratsnest (`get_ratsnest`) and tell the user how many connections are open. Freerouting 2.4.1 needs seconds for a small 2-layer board, but several minutes per attempt for a dense one: a 4-layer, 95-net board with ~230 open connections took over 3 minutes for its first passes.
+- **Estimate the run time:** check the ratsnest (`get_ratsnest`) and tell the user how many connections are open. Freerouting 2.4.1 needs seconds for a small 2-layer board, about 2 minutes for a 2-layer ESP32 board with ~85 nets, and several minutes per attempt for a dense 4-layer one.
 - **Timeout:** set `timeout` from that estimate. Allow 600 s per attempt for dense boards and 900 s for very dense ones; the 300 s default is often too short.
 - **Best-of-N:** for a first run, use `attempts: 1` with the default `maxPasses` (20). Only use `attempts: 3` (or 5 for dense boards) when the user wants the most complete result and accepts the extra time; each attempt varies the max passes and the most complete result is kept.
+- **Pour nets:** always pass `pourNets` for the nets that have pours (step 3).
 - **Priority nets:** put signal nets that must be completed (e.g. MCU control, communication) in `targetNets`.
 - **If it times out:** say so plainly. Nothing is imported and the board is unchanged. Offer a longer timeout, routing more nets by hand first, or adding the missing pours.
 
 ## 5. Check the result against the rules (§3.3–3.7)
 - **Refill zones:** run `refill_zones`.
+- **Pour-net pads:** in the DRC's unconnected items, find pads of the pour nets that the pour can't reach, e.g. a GND pad boxed in by tracks. Add a via next to each one (`add_via`, 0.4/0.8 mm), connected with a short track, so it reaches the bottom pour. Then refill again.
 - **DRC:** run `run_drc` and compare it with the baseline. The goal is **0 new errors**. Track-width or clearance errors mean the net classes don't match the board constraints; fix the rules and re-route rather than hiding the errors.
 - **Corners:** Freerouting routes at 45° but still leaves some 90° corners. On a test board it left 26. The rules forbid them (§3.3). Find them with `query_traces`: two segments of the same net and layer meeting at a right angle. List them for the user, who can fix them with the interactive router or by dragging the corner with `D`.
 - **Widths and vias on power nets:**

@@ -16,7 +16,7 @@ import time
 import wx
 import wx.html2
 
-from . import config, library, report, updates
+from . import attachments, config, library, report, updates, usage
 from .common import find_gh, open_console, open_terminal, clean_env
 from .sources import PcbSource
 
@@ -36,6 +36,10 @@ PANEL_NOTE = (
     "You are running in a narrow command panel docked beside KiCad, one headless "
     "command at a time. Keep replies to a few short lines. You cannot ask for permission "
     "mid-run; if you need a decision from the user, stop and ask in your reply.\n"
+    "This panel lives inside the open KiCad editor window: closing that editor (or KiCad) "
+    "closes the panel and ends this chat. Never ask the user to close the PCB or schematic "
+    "editor or KiCad. Board tools edit the open board live; after you change a file on disk, "
+    "ask the user to use File > Revert instead.\n"
     "Images you open with the Read tool are shown to the user in the panel automatically, "
     "so never try to open them in another program.\n"
     "kicad-cli is already on PATH. Run it by name as a single plain command, e.g. "
@@ -154,6 +158,8 @@ class ClaudePanel(wx.Frame):
         self.last_text = ""
         self.got_result = False
         self.held_text = ""
+        self.attached = []  # files attached to the next message
+        self.limits = []  # plan limits from Claude Code's last rate_limit_event
         self.capturing = False
         self.sending = False
         self.settings = config.settings()
@@ -247,16 +253,47 @@ class ClaudePanel(wx.Frame):
                   items=[{"id": i, "label": l, "short": s, "hint": h} for i, l, s, h in MODELS])
         if self.settings.get("notice_version", 0) < config.NOTICE_VERSION:
             self.emit("notice")
+        self.emit_attached()
+        if self.limits:
+            text, tip = usage.summary(self.limits, 0, 0)
+            self.emit("usage", text=text, tip=tip)
+        self.in_background(attachments.clean_old, lambda result: None)
         self.push_context()
         self.check_library(force=True)
         self.check_updates()
+
+    def msg_attach(self, msg):
+        with wx.FileDialog(self, "Attach files for Claude", wildcard="All files (*.*)|*.*",
+                           style=wx.FD_OPEN | wx.FD_MULTIPLE | wx.FD_FILE_MUST_EXIST) as dlg:
+            if dlg.ShowModal() == wx.ID_OK:
+                self.attached += [p for p in dlg.GetPaths() if p not in self.attached]
+        self.emit_attached()
+
+    def msg_attach_data(self, msg):
+        try:
+            self.attached.append(attachments.save_data(msg.get("name", ""), msg.get("data", "")))
+        except ValueError as exc:
+            self.emit("note", level="warn", text=f"Couldn't attach {msg.get('name') or 'that'}: {exc}.")
+        self.emit_attached()
+
+    def msg_attach_remove(self, msg):
+        index = msg.get("index")
+        if isinstance(index, int) and 0 <= index < len(self.attached):
+            del self.attached[index]
+        self.emit_attached()
+
+    def emit_attached(self):
+        self.emit("attachments", items=[os.path.basename(p) for p in self.attached])
 
     def msg_notice_ok(self, msg):
         self.settings["notice_version"] = config.NOTICE_VERSION
         config.save_settings(self.settings)
 
     def msg_send(self, msg):
-        self.run(msg.get("text", "").strip())
+        text = msg.get("text", "").strip()
+        if not text and self.attached:
+            text = "Have a look at the attached files."
+        self.run(text)
 
     def msg_stop(self, msg):
         if self.proc:
@@ -633,7 +670,8 @@ class ClaudePanel(wx.Frame):
             "--output-format", "stream-json", "--verbose",
             "--append-system-prompt", snap.context + "\n" + PANEL_NOTE,
         ]
-        for d in config.work_dirs():
+        files, self.attached = self.attached, []
+        for d in config.work_dirs() + [f for f in attachments.folders(files) if f not in config.work_dirs()]:
             args += ["--add-dir", d]
         if self.session_id:
             args += ["--resume", self.session_id]
@@ -642,7 +680,8 @@ class ClaudePanel(wx.Frame):
         args += ["--effort", self.effort]
         args += ["--allowedTools", ",".join(ALLOWED_TOOLS)]
 
-        self.emit("user", text=text)
+        self.emit("user", text=text, files=[os.path.basename(p) for p in files])
+        self.emit_attached()
         report.note_event("send", self.source.editor)
         self.watched = {p: os.path.getmtime(p) for p in snap.watch if os.path.isfile(p)}
         self.started = time.time()
@@ -656,10 +695,12 @@ class ClaudePanel(wx.Frame):
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
         except OSError as exc:
+            self.attached = files + self.attached
+            self.emit_attached()
             self.problem("error", f"Could not start Claude Code: {exc}", "claude failed to start",
                          type(exc).__name__)
             return
-        self.proc.stdin.write(f"{text}\n\n<kicad_state>\n{snap.state}\n</kicad_state>")
+        self.proc.stdin.write(f"{text}{attachments.prompt_suffix(files)}\n\n<kicad_state>\n{snap.state}\n</kicad_state>")
         self.proc.stdin.close()
         self.emit("busy", value=True)
         threading.Thread(target=self.read_stream, args=(self.proc,), daemon=True).start()
@@ -682,6 +723,10 @@ class ClaudePanel(wx.Frame):
         kind = msg.get("type")
         if kind == "system" and msg.get("subtype") == "init":
             self.session_id = msg.get("session_id")
+        elif kind == "rate_limit_event":
+            self.limits = usage.limits(msg) or self.limits
+            text, tip = usage.summary(self.limits, 0, 0)
+            self.emit("usage", text=text, tip=tip)
         elif kind == "assistant":
             for block in msg.get("message", {}).get("content", []):
                 if block.get("type") == "text" and block.get("text", "").strip():
@@ -727,8 +772,11 @@ class ClaudePanel(wx.Frame):
             secs = time.time() - self.started
             labels = {i: l for i, l, _, _ in MODELS if i}
             used = [labels.get(m, m) for m in (msg.get("modelUsage") or {})]
+            tokens, window = usage.context(msg)
             self.emit("meta", text=f"{secs:.0f}s" + (f" · {turns} steps" if turns > 1 else "")
                       + (f" · {', '.join(used)} · {self.effort} effort" if used else ""))
+            text, tip = usage.summary(self.limits, tokens, window)
+            self.emit("usage", text=text, tip=tip)
 
     def _remember(self, kind, detail=""):
         pid = str(len(self.problems) + 1)

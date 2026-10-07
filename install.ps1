@@ -102,6 +102,17 @@ function Get-Verified($url, $sha256, $dest) {
     }
     Move-Item -Force $tmp $dest
 }
+function Update-McpPatch {
+    # PowerLab fixes on top of the pinned KiCad MCP server (patches\kicad-mcp.patch).
+    # Returns $true when it changed the checkout, so the caller rebuilds it.
+    $patch = Join-Path $Root "patches\kicad-mcp.patch"
+    if ((Probe git @("-C", $McpDir, "apply", "--check", "-R", $patch)) -eq 0) { return $false }
+    # Not applied, or an older version of it is: start again from the pinned files.
+    Run git @("-C", $McpDir, "checkout", "--quiet", "--force", $McpCommit)
+    Run git @("-C", $McpDir, "clean", "-fdq", "--", "python", "src")
+    Run git @("-C", $McpDir, "apply", "--whitespace=nowarn", $patch)
+    return $true
+}
 function Run($exe, [string[]]$arguments, $where = $null) {
     # Runs a native command; stops the install if it fails.
     if ($where) { Push-Location $where }
@@ -173,13 +184,19 @@ if ($Update -and (Test-Path (Join-Path $McpDir "dist\index.js"))) {
 if ($mcpCurrent) {
     Say "3. KiCad tools for Claude"
     Ok "Already at the pinned version ($McpCommit)"
+    if (Update-McpPatch) {
+        Run npm @("run", "build", "--silent") $McpDir
+        Ok "PowerLab fixes applied and rebuilt"
+    } else { Ok "PowerLab fixes already applied" }
     $McpReady = $true
 } elseif (-not $SkipMcp) {
     Say "3. KiCad tools for Claude (KiCAD-MCP-Server @ $McpCommit)"
     New-Item -ItemType Directory -Force $LocalData | Out-Null
     if (-not (Test-Path (Join-Path $McpDir ".git"))) { Run git @("clone", "--quiet", $McpRepo, $McpDir) }
     Run git @("-C", $McpDir, "fetch", "--quiet", "origin")
-    Run git @("-C", $McpDir, "checkout", "--quiet", $McpCommit)
+    Run git @("-C", $McpDir, "checkout", "--quiet", "--force", $McpCommit)
+    $null = Update-McpPatch
+    Ok "PowerLab fixes applied"
     Run npm @("ci", "--no-audit", "--no-fund", "--loglevel=error") $McpDir
     Run npm @("run", "build", "--silent") $McpDir
     Ok "MCP server built"

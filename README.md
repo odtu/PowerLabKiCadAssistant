@@ -88,7 +88,7 @@ To remove it later, run `uninstall.ps1`.
 When a new version is released, the panel shows a bar like *PowerLab Assistant 0.1.2 is available: …* with **What's new** and **Update** buttons.
 
 - **Update**, if you installed from a `git clone` of this repository: a console window pulls the new version and runs `install.ps1 -Update`. Restart KiCad when it says done.
-  - `-Update` asks no questions and only replaces the panel's files. It also rebuilds the KiCad tools, but only if their pinned version changed.
+  - `-Update` asks no questions and only replaces the panel's files. It also rebuilds the KiCad tools, but only if their pinned version or the lab's fixes to them (`patches/kicad-mcp.patch`) changed.
   - Your library, KiCad settings and GitHub setup aren't touched.
 - **Update**, if you installed from a ZIP download: the release page opens in your browser. Download it and run `install.ps1 -Update`.
 
@@ -103,7 +103,12 @@ Click the **PowerLab Assistant** button on the toolbar of the PCB Editor or the 
 - *What is this part connected to?* (select it first)
 - *Render the top side and show it to me*
 
-The panel shows each step Claude takes, plus any images it renders. The model picker under the input box switches between Claude models. The default is **Opus 5.5 at high effort**. To change the effort, set `"effort"` (`low`, `medium`, `high`, `xhigh` or `max`) in `%APPDATA%\PowerLabKiCadAssistant\settings.json`.
+The panel shows each step Claude takes, plus any images it renders.
+
+- **Models:** the model picker under the input box switches between Claude models. The default is **Opus 5.5 at high effort**. To change the effort, set `"effort"` (`low`, `medium`, `high`, `xhigh` or `max`) in `%APPDATA%\PowerLabKiCadAssistant\settings.json`.
+- **Attachments:** attach screenshots, datasheets (PDF) or other files with the 📎 button, or paste or drop them into the input box. Pasted and dropped files are kept for a week in `%TEMP%\PowerLabAssistant\attachments`.
+- **Usage:** the corner under the input box shows how much of your Claude plan's limit is used (e.g. *5h 49%*) and how full this chat's context is. Hover for the reset time. Start a new chat (**+**) when the context gets full.
+- **Keep the editor open:** the panel lives inside the PCB or Schematic Editor, so closing that editor closes the chat.
 
 **PCB Editor:**
 
@@ -128,7 +133,7 @@ Skills teach Claude how the lab does specific jobs. The installer copies them to
 
 Freerouting 2.4.1 needs Java 25. The installer puts a private copy of Java 25 (Eclipse Temurin) and the Freerouting jar in `%LOCALAPPDATA%\PowerLabKiCadAssistant`, checking both downloads against their published SHA-256 checksums. Any Java already on your computer is left alone; the panel uses this copy only for its own Claude sessions.
 
-Freerouting works best on boards whose signal nets are mostly unrouted: a 2-layer board with 29 nets routes in seconds. It is very slow on dense, mostly routed boards with many copper pours on the outer layers, because it reads each pour as a solid plane. Claude checks this and tells you before it runs.
+Freerouting works best on boards whose signal nets are mostly unrouted: a 2-layer board with 29 nets routes in seconds. GND (and any power net you want as a copper pour) is never routed as tracks. Claude creates the pours first, Freerouting routes the other nets on all layers, and the pours are then refilled around the new tracks. Freerouting is very slow on dense, mostly routed boards with many pours on the outer layers, and Claude tells you before it runs.
 
 Autorouted power-electronics boards always need a human review: loop areas, return paths, and track widths on high-current nets.
 
@@ -159,6 +164,7 @@ Reports are public, so don't add confidential details to the description.
 
 - **KiCad 10's schematic API is limited.** It can't report the selection, save or reload. The panel works around this by using the editor's own **Edit → Copy**, **File → Save** and **File → Revert**. Your clipboard is restored afterwards. This needs KiCad's menus in **English**.
 - **Claude's permissions are limited.** Inside the panel, Claude can only use the KiCad tools, read and write files, search the web, and run `kicad-cli`. Other shell commands are blocked, because the panel can't ask you for permission mid-run. Use the terminal button to continue a conversation in a full Claude Code session.
+- **The KiCad tools get small fixes from this repository.** `patches/kicad-mcp.patch` keeps 3D models when parts are rotated (kipy 0.8 drops them), and adds pour-aware autorouting. The installer applies it on top of the pinned KiCad MCP server.
 - **Windows only, KiCad 10 only.**
 
 ## Contributing

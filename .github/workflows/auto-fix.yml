@@ -86,6 +86,14 @@ jobs:
           if [ "$used" -lt "$DAILY_LIMIT" ]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
+            # Opening an issue with the auto-fix label fires both "opened" and "labeled":
+            # say it once, not once per run.
+            last=$(gh issue view "$ISSUE" --json comments \
+                     --jq '[.comments[] | select(.author.login == "github-actions")] | last | .body // ""')
+            if printf '%s' "$last" | grep -q "daily limit of"; then
+              echo "::notice::Already told issue #$ISSUE about the daily limit."
+              exit 0
+            fi
             printf 'The daily limit of %s automatic fixes is reached, so I did not look into this yet. A maintainer can start it later by removing and re-adding the `auto-fix` label.\n\n🤖 PowerLab KiCad Assistant auto-fix\n' "$DAILY_LIMIT" > "$RUNNER_TEMP/limit.md"
             gh issue comment "$ISSUE" --body-file "$RUNNER_TEMP/limit.md"
           fi

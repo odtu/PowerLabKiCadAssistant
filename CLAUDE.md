@@ -43,7 +43,20 @@ Users only learn about fixes through releases: the panel offers an update when t
 
    The first bullet of the notes appears in the panel's update bar ("PowerLab Assistant X.Y.Z is available: <first bullet>"). Make it a short, user-facing summary.
 3. Issue replies name the version that contains the fix ("Fixed in 0.1.1 — update from the panel"), so reporters know which update brings it.
-4. If the release changes the pinned KiCad MCP server commit, change `$McpCommit` in `install.ps1`. `install.ps1 -Update` rebuilds it only when that pin changed.
+4. If the release changes the pinned KiCad MCP server commit, change `$McpCommit` in `install.ps1`. `install.ps1 -Update` rebuilds it only when that pin or `patches/kicad-mcp.patch` changed.
+
+## Fixes to the KiCad MCP server
+
+`patches/kicad-mcp.patch` holds the lab's fixes on top of the pinned `$McpCommit`. The installer checks whether it's applied (`git apply --check -R`); if not, it resets the checkout to the pin, applies the patch and rebuilds. Today it does two things:
+- **Rotation keeps 3D models:** `move_component` puts them back, because kipy 0.8's orientation setter drops them (#10).
+- **`pourNets` on `autoroute`:** those nets are left out of the DSN, so they connect through pours instead of tracks; their existing tracks are kept.
+
+To change it:
+1. Edit the files in `%LOCALAPPDATA%\PowerLabKiCadAssistant\KiCAD-MCP-Server`.
+2. Regenerate the patch there with `git add -N <new files>; git diff > <repo>\patches\kicad-mcp.patch`, then `git reset`.
+3. Check that it applies to a clean checkout of the pin.
+
+Report real bugs upstream too.
 
 ## Skills
 

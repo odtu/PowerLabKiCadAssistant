@@ -207,11 +207,13 @@ Green, red, yellow and blue mask, and white or black silk, cost nothing extra.
 
 Defaults for a **1 oz** board. For 2 oz or 3 oz, take the values from the tables above.
 
+The board minimums are the **PCBWay standard-price floor** (§2.2), so DRC only rejects what can't be made without a surcharge. The **net classes** below carry the lab defaults, and that's what tracks are routed at. A track may go below the class width, down to 0.15 mm, only locally where a part forces it, e.g. escaping between fine-pitch pads (QFN, ESP32 module, USB-C).
+
 | KiCad constraint | Value |
 |---|---|
-| Minimum clearance | 0.2 mm |
-| Minimum track width | 0.2 mm |
-| Minimum connection width | 0.2 mm |
+| Minimum clearance | 0.15 mm |
+| Minimum track width | 0.15 mm |
+| Minimum connection width | 0.15 mm |
 | Minimum annular width | 0.15 mm |
 | Minimum via diameter | 0.6 mm |
 | Copper to hole clearance | 0.25 mm |

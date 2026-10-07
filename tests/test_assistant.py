@@ -3,6 +3,7 @@
     "C:\\Program Files\\KiCad\\10.0\\bin\\python.exe" -m unittest discover -s tests -v
 """
 
+import base64
 import os
 import subprocess
 import sys
@@ -152,6 +153,100 @@ class SkillToolsEnvTests(unittest.TestCase):
             self.assertIn("powerlab-pcb-design-rules", f.read())
 
 
+class AttachmentTests(unittest.TestCase):
+    """Issue #10: images and documents can be attached to a message."""
+
+    def test_pasted_image_is_saved_and_listed_for_claude(self):
+        from powerlab_assistant import attachments
+        png = "data:image/png;base64," + base64.b64encode(b"\x89PNG fake").decode()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = attachments.save_data("", png, folder=tmp)
+            self.assertTrue(path.endswith(".png"))
+            with open(path, "rb") as f:
+                self.assertEqual(f.read(), b"\x89PNG fake")
+            self.assertEqual(attachments.folders([path, path]), [tmp])
+        suffix = attachments.prompt_suffix([path])
+        self.assertIn("Read tool", suffix)
+        self.assertIn(path, suffix)
+        self.assertEqual(attachments.prompt_suffix([]), "")
+
+    def test_rejects_non_files_and_odd_names(self):
+        from powerlab_assistant import attachments
+        with self.assertRaises(ValueError):
+            attachments.save_data("x.txt", "javascript:alert(1)")
+        self.assertEqual(attachments.safe_name("..\\..\\evil<>.pdf"), "evil_.pdf")
+
+
+class UsageTests(unittest.TestCase):
+    """Issue #10: show plan limits and context use in the panel."""
+
+    def test_limits_and_context(self):
+        from powerlab_assistant import usage
+        event = {"type": "rate_limit_event", "rate_limit_info": {
+            "status": "allowed", "rateLimitType": "five_hour", "resetsAt": 1791408000,
+            "unifiedWindows": {"five_hour": {"utilization": 0.49, "resetsAt": 1791408000},
+                               "seven_day": {"utilization": 0.2, "resetsAt": 1791900000}}}}
+        items = usage.limits(event, now=1791400000)
+        self.assertEqual([(i["short"], i["pct"]) for i in items], [("5h", 49), ("week", 20)])
+        result = {"usage": {"iterations": [{"input_tokens": 10, "cache_read_input_tokens": 20000,
+                                            "cache_creation_input_tokens": 4000, "output_tokens": 990}]},
+                  "modelUsage": {"claude-opus-5-5": {"contextWindow": 200000}}}
+        self.assertEqual(usage.context(result), (25000, 200000))
+        text, tip = usage.summary(items, 25000, 200000)
+        self.assertEqual(text, "5h 49% · context 12%")
+        self.assertIn("Weekly limit: 20% used", tip)
+        self.assertEqual(usage.summary([], 0, 0), ("", ""))
+
+
+class McpPatchTests(unittest.TestCase):
+    """Issue #10: fixes shipped as a patch on the pinned KiCad MCP server."""
+
+    def patch(self):
+        with open(os.path.join(ROOT, "patches", "kicad-mcp.patch"), encoding="utf-8") as f:
+            return f.read()
+
+    def new_file(self, name):
+        text = self.patch().split(f"+++ b/{name}\n", 1)[1]
+        body = text.split("\ndiff --git", 1)[0].split("\n")[1:]  # skip the @@ header
+        return "\n".join(line[1:] for line in body if line.startswith("+"))
+
+    def test_rotation_keeps_3d_models(self):
+        patch = self.patch()
+        self.assertIn("models = list(target_fp.definition.models)", patch)
+        self.assertIn("target_fp.definition.add_item(model)", patch)
+
+    def test_pour_nets_are_left_out_of_routing(self):
+        module = types.ModuleType("pour_nets")
+        exec(self.new_file("python/commands/pour_nets.py"), module.__dict__)
+        dsn = """(pcb test
+  (structure
+    (layer F.Cu (type signal))
+    (plane GND (polygon B.Cu 0 0 0 100 0 100 100 0 100))
+    (plane VBUS (polygon F.Cu 0 0 0 10 0 10 10 0 10))
+  )
+  (network
+    (net GND (pins U1-1 C1-2))
+    (net SIG (pins U1-2 R1-1))
+    (class kicad_default "" GND SIG
+      (rule (width 200) (clearance 200))
+    )
+  )
+  (wiring
+    (wire (path B.Cu 500 0 0 10 0) (net GND) (type protect))
+    (wire (path F.Cu 200 0 5 10 5) (net SIG))
+  )
+)"""
+        out, dropped = module.leave_to_pours(dsn, ["GND"])
+        self.assertEqual(dropped, 1)
+        self.assertNotIn("(plane GND", out)
+        self.assertIn("(plane VBUS", out)  # other pours stay
+        self.assertNotIn("(net GND (pins", out)
+        self.assertIn("(net SIG (pins U1-2 R1-1))", out)
+        self.assertIn("(class kicad_default \"\" SIG", out)
+        self.assertIn(f"(net {module.PLACEHOLDER_NET})", out)  # GND wire kept as an obstacle
+        self.assertEqual(out.count("("), out.count(")"))
+
+
 class PanelDefaultsTests(unittest.TestCase):
     """panel.py needs wx.html2, so read its constants without importing it."""
 
@@ -175,6 +270,13 @@ class PanelDefaultsTests(unittest.TestCase):
         self.assertIn(c["DEFAULT_EFFORT"], c["EFFORTS"])
         self.assertEqual(c["MODELS"][0][0], c["DEFAULT_MODEL"])
         self.assertIn("powerlab-pcb-design-rules", "".join(c["PANEL_NOTE"]))
+        self.assertIn("Never ask the user to close", c["PANEL_NOTE"])  # issue #10
+
+    def test_board_minimums_are_the_pcbway_floor(self):
+        with open(os.path.join(ROOT, "skills", "powerlab-pcb-design-rules", "SKILL.md"), encoding="utf-8") as f:
+            rules = f.read()
+        self.assertIn("| Minimum track width | 0.15 mm |", rules)
+        self.assertIn("| Default | 0.2 mm | 0.2 mm |", rules)  # lab default stays in the net class
 
 
 class LibraryCommitTests(unittest.TestCase):
