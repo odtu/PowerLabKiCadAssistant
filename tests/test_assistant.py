@@ -142,6 +142,40 @@ class SkillToolsEnvTests(unittest.TestCase):
             self.assertIn(f"name: {name}", head[1])
             self.assertIn("description:", head[1])
 
+    def test_design_rules_skill_is_public_safe_and_used_by_autoroute(self):
+        skills = os.path.join(ROOT, "skills")
+        with open(os.path.join(skills, "powerlab-pcb-design-rules", "SKILL.md"), encoding="utf-8") as f:
+            rules = f.read()
+        self.assertIn("### 2.6 KiCad setup", rules)
+        self.assertNotIn(".kicad_wks", rules)  # the lab drawing-sheet rule stays out of the public panel
+        with open(os.path.join(skills, "powerlab-autoroute", "SKILL.md"), encoding="utf-8") as f:
+            self.assertIn("powerlab-pcb-design-rules", f.read())
+
+
+class PanelDefaultsTests(unittest.TestCase):
+    """panel.py needs wx.html2, so read its constants without importing it."""
+
+    def constants(self):
+        import ast
+        with open(os.path.join(ROOT, "plugin", "powerlab_assistant", "panel.py"), encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        found = {}
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
+                try:
+                    found[node.targets[0].id] = ast.literal_eval(node.value)
+                except ValueError:
+                    pass
+        return found
+
+    def test_default_is_opus_high_effort(self):
+        c = self.constants()
+        self.assertEqual(c["DEFAULT_MODEL"], "claude-opus-5-5")
+        self.assertEqual(c["DEFAULT_EFFORT"], "high")
+        self.assertIn(c["DEFAULT_EFFORT"], c["EFFORTS"])
+        self.assertEqual(c["MODELS"][0][0], c["DEFAULT_MODEL"])
+        self.assertIn("powerlab-pcb-design-rules", "".join(c["PANEL_NOTE"]))
+
 
 class LibraryCommitTests(unittest.TestCase):
     def setUp(self):
