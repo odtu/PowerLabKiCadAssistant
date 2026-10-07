@@ -23,7 +23,7 @@ from .sources import PcbSource
 # Tools Claude may use without asking. Headless runs can't show permission
 # prompts, so anything else (including shell rm/del/mkdir) is denied.
 ALLOWED_TOOLS = [
-    "mcp__kicad", "Read", "Glob", "Grep", "Edit", "Write", "WebSearch", "WebFetch",
+    "mcp__kicad", "Skill", "Read", "Glob", "Grep", "Edit", "Write", "WebSearch", "WebFetch",
     "PowerShell(kicad-cli:*)", "Bash(kicad-cli:*)",
 ]
 

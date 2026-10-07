@@ -42,14 +42,27 @@ def find_gh():
 
 
 def clean_env():
-    """Environment for child processes: no KiCad-embedded Python variables, and KiCad's
-    bin folder on PATH so Claude can call kicad-cli by name."""
+    """Environment for child processes: no KiCad-embedded Python variables, KiCad's
+    bin folder on PATH so Claude can call kicad-cli by name, and the assistant's own
+    Java 25 + Freerouting for the kicad MCP server's autoroute tool."""
     env = dict(os.environ)
     for var in ("PYTHONHOME", "PYTHONPATH"):
         env.pop(var, None)
+    first = []
+    java = config.java_home()
+    if java:
+        # The MCP server takes the first `java` on PATH; a system Java 8 would come first
+        # otherwise and Freerouting 2.4.1 needs Java 25.
+        first.append(os.path.join(java, "bin"))
+        env["JAVA_HOME"] = java
     bin_dir = config.kicad_bin()
     if bin_dir:
-        env["PATH"] = bin_dir + os.pathsep + env.get("PATH", "")
+        first.append(bin_dir)
+    if first:
+        env["PATH"] = os.pathsep.join(first + [env.get("PATH", "")])
+    jar = config.freerouting_jar()
+    if jar:
+        env["FREEROUTING_JAR"] = jar
     return env
 
 

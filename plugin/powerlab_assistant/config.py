@@ -11,7 +11,7 @@ import json
 import os
 import sys
 
-VERSION = "0.1.7"  # bump with every release (see CLAUDE.md > Releasing)
+VERSION = "0.2.0"  # bump with every release (see CLAUDE.md > Releasing)
 REPORT_REPO = "odtu/PowerLabKiCadAssistant"  # public repo that receives bug reports
 LIBRARY_REPO = "odtu/PowerLabKiCadLibraries"
 NOTICE_VERSION = 1  # bump when the AI/privacy notice changes, so users see it again
@@ -65,6 +65,17 @@ def work_dirs():
 
 def mcp_path():
     return config().get("mcp_path", "")
+
+
+def java_home():
+    """Private Java 25 installed by install.ps1 (Freerouting 2.4.1 needs it)."""
+    path = config().get("java_home", "")
+    return path if path and os.path.isfile(os.path.join(path, "bin", "java.exe")) else ""
+
+
+def freerouting_jar():
+    path = config().get("freerouting_jar", "")
+    return path if path and os.path.isfile(path) else ""
 
 
 def source_path():

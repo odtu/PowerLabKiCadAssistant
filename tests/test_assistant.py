@@ -110,6 +110,39 @@ class UnreachableHintTests(unittest.TestCase):
         self.assertIn("kicad_processes: 2 running, 1 without a window", diag)
 
 
+class SkillToolsEnvTests(unittest.TestCase):
+    """The panel's Claude sessions must find the private Java 25 before any system Java,
+    and the Freerouting jar, so the kicad MCP server's autoroute tool works."""
+
+    def test_java_first_on_path_and_jar_exported(self):
+        from powerlab_assistant import common
+        with tempfile.TemporaryDirectory() as tmp:
+            java_home = os.path.join(tmp, "jdk-25-jre")
+            os.makedirs(os.path.join(java_home, "bin"))
+            open(os.path.join(java_home, "bin", "java.exe"), "w").close()
+            jar = os.path.join(tmp, "freerouting-2.4.1.jar")
+            open(jar, "w").close()
+            saved = config.config
+            config.config = lambda: {"java_home": java_home, "freerouting_jar": jar}
+            try:
+                env = common.clean_env()
+            finally:
+                config.config = saved
+        self.assertEqual(env["PATH"].split(os.pathsep)[0], os.path.join(java_home, "bin"))
+        self.assertEqual(env["JAVA_HOME"], java_home)
+        self.assertEqual(env["FREEROUTING_JAR"], jar)
+
+    def test_shipped_skills_have_frontmatter(self):
+        skills = os.path.join(ROOT, "skills")
+        names = sorted(os.listdir(skills))
+        self.assertIn("powerlab-autoroute", names)
+        for name in names:
+            with open(os.path.join(skills, name, "SKILL.md"), encoding="utf-8") as f:
+                head = f.read().split("---")
+            self.assertIn(f"name: {name}", head[1])
+            self.assertIn("description:", head[1])
+
+
 class LibraryCommitTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

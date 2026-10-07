@@ -45,6 +45,13 @@ Users only learn about fixes through releases: the panel offers an update when t
 3. Issue replies name the version that contains the fix ("Fixed in 0.1.1 — update from the panel"), so reporters know which update brings it.
 4. If the release changes the pinned KiCad MCP server commit, change `$McpCommit` in `install.ps1`. `install.ps1 -Update` rebuilds it only when that pin changed.
 
+## Skills
+
+- **Where they live:** each folder in `skills/` is a Claude Code skill (`SKILL.md` with `name` and `description` frontmatter). `install.ps1` (and `-Update`) copies them to `%USERPROFILE%\.claude\skills\`. Name them `powerlab-*`: the installer removes `powerlab-*` skills that no longer ship, and never touches the user's other skills.
+- **Writing one:** the description decides when Claude uses it, so name the user phrasings. Keep the body to the lab's procedure and judgement; the kicad MCP tools do the work.
+- **External tools:** a skill that needs one gets it from `install.ps1`. Pin the version and its SHA-256, install it under `%LOCALAPPDATA%\PowerLabKiCadAssistant`, record its path in `config.json`, and expose it to the panel's sessions in `common.clean_env()`. That's how Java 25 and Freerouting 2.4.1 are set up. Never change system-wide PATH or Java.
+- **The `Skill` tool** is in the panel's `ALLOWED_TOOLS`.
+
 ## Working on the code
 
 - Stage only the files you changed (`git add <paths>`), never `git add -A` / `git add .`. Maintainers keep local KiCad test projects in the checkout (e.g. `tests/TestPCB/`), and KiCad lock files contain the user's computer and user name.

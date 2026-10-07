@@ -68,6 +68,7 @@ class PcbSource:
         ("Create a symbol + footprint library for…", "Create a symbol and footprint library for "),
         ("Run DRC and summarize violations", "Run DRC on this board and summarize the violations"),
         ("Check selected footprints", "Check the selected footprints against their datasheets"),
+        ("Autoroute the remaining nets", "Autoroute the remaining nets with Freerouting"),
         ("Export Gerbers for PCBWay", "Export Gerbers and drill files for PCBWay"),
     ]
     can_reload = False
