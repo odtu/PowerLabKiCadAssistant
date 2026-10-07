@@ -82,7 +82,7 @@ Before routing, confirm with the user, or check with the kicad tools:
   - check every power and GND track against its class width (`query_traces`)
   - at least 2 vias at each power layer change, 0.4 mm drill (§3.4)
   - no vias in SMD pads except thermal pads
-- **Pours and stitching:** after the pours are filled, add GND stitching vias every ~5 mm (`add_gnd_stitching_vias`, §3.4). Remove copper islands or stitch them to GND (§3.5).
+- **Pours and stitching:** after the pours are filled, save the board (Ctrl+S, or `save_board`), then add GND stitching vias every ~5 mm with `add_gnd_stitching_vias` (`strategies: ["grid", "in_zones"]`, `viaSize: 0.8`, `viaDrill: 0.4`; §3.4). With KiCad open, it plans on the saved file and places the vias live, keeping the board's largest net-class clearance. Remove copper islands or stitch them to GND (§3.5).
 - **High-speed:** no clock or fast signal crosses a gap in its reference plane (§3.3).
 - **Unrouted nets:** report what is still unrouted (`get_ratsnest`). Name the nets and suggest finishing them by hand.
 - **Optional:** render the top and bottom with `kicad-cli pcb render` so the user can look at the result.

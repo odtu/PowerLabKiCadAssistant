@@ -223,6 +223,13 @@ class McpPatchTests(unittest.TestCase):
         self.assertIn('+        "add_zone": "_ipc_add_copper_pour",', patch)
         self.assertIn('+            "add_zone": self._handle_add_zone,', patch)
 
+    def test_stitching_vias_work_in_live_mode(self):
+        """Issue #14: add_gnd_stitching_vias said "No board is loaded" with KiCad open."""
+        patch = self.patch()
+        self.assertIn('+        "add_gnd_stitching_vias": "_ipc_add_gnd_stitching_vias",', patch)
+        self.assertIn("def _ipc_add_gnd_stitching_vias", patch)
+        self.assertIn('plan_params["clearance"] = max(', patch)  # net-class clearance, not a fixed 0.2
+
     def test_pour_nets_are_left_out_of_routing(self):
         module = types.ModuleType("pour_nets")
         exec(self.new_file("python/commands/pour_nets.py"), module.__dict__)
