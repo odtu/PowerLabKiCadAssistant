@@ -22,11 +22,14 @@ Call the `check_freerouting` tool.
 ## 2. Set the rules (design rules §2)
 Ask for whatever you can't read from the board, and don't guess currents or voltages.
 - **Copper weight and layer count:** confirm them, because they change every limit (§2.0–2.2). The default is 2 layers and 1 oz.
-- **Board constraints (§2.6):** check them with `get_design_rules` and set any that are missing with `set_design_rules`. For 1 oz copper:
-  - minimum clearance 0.15 mm, minimum track 0.15 mm, minimum connection 0.15 mm. These are the PCBWay standard-price floor; the net classes below set the 0.2 mm lab default. Freerouting's fanout narrows escape tracks to 0.15 mm between fine-pitch pads (e.g. ESP32, USB-C), which the rules allow.
-  - via 0.6 mm, through hole 0.3 mm, annular ring 0.15 mm
-  - copper to hole 0.25 mm, copper to edge 0.5 mm, hole to hole 0.4 mm
-  - no micro or blind vias
+- **Board constraints (§2.6):** check them with `get_design_rules`. For 1 oz copper they should be the values below.
+  - If they differ and the board is open in KiCad, `set_design_rules` can't change them: KiCad's API has no design-rule calls, and KiCad overwrites the file when it saves. Ask the user to set them in **Board Setup → Design Rules → Constraints**, save, and tell you to continue.
+  - Use `set_design_rules` only when KiCad doesn't have the board open.
+  - The values:
+    - minimum clearance 0.15 mm, minimum track 0.15 mm, minimum connection 0.15 mm. These are the PCBWay standard-price floor; the net classes below set the 0.2 mm lab default. Freerouting's fanout narrows escape tracks to 0.15 mm between fine-pitch pads (e.g. ESP32, USB-C), which the rules allow.
+    - via 0.6 mm, through hole 0.3 mm, annular ring 0.15 mm
+    - copper to hole 0.25 mm, copper to edge 0.5 mm, hole to hole 0.4 mm
+    - no micro or blind vias
 - **Net classes (§2.6):** Freerouting reads the project's net classes, so these decide its widths, clearances and vias. Create them with `create_netclass` (its `nets` list) or `assign_net_to_class`. Both take net names, not patterns, so list the nets with `get_nets_list` and pick the ones matching the §1.6 patterns `*GND*`, `+*`, `-*`, `VBUS*`:
 
   | Class | Track | Clearance | Via drill / pad |
@@ -56,7 +59,7 @@ Before routing, confirm with the user, or check with the kicad tools:
 
   Steps 1–4 must be routed by hand and locked first. KiCad exports locked tracks as protected, so Freerouting keeps them. If they aren't done, say so and recommend doing them first. Only autoroute them if the user explicitly insists, and warn that loop area, current capacity and return paths won't be considered.
 - **Pours first (§3.1, §3.5):** never let Freerouting draw GND as tracks.
-  - If the board has no GND pour, create one before routing with `add_copper_pour` over the whole outline, on the bottom layer and also on the top. On 4 layers, use the inner GND plane layer. Do the same for any power net the user wants as a pour (above ~3 A).
+  - If the board has no GND pour, create one before routing with `add_copper_pour` (layer, net and clearance; leave out `outline` to cover the whole board outline), on the bottom layer and also on the top. On 4 layers, use the inner GND plane layer. Do the same for any power net the user wants as a pour (above ~3 A).
   - Then route with `pourNets` set to those nets, e.g. `pourNets: ["GND"]`. Freerouting leaves them out, routes on all layers, and keeps their existing tracks. The pours are refilled around the new tracks afterwards.
 - **3D models:** check that the footprints still have their 3D models (`get_component_properties` or the 3D viewer). If they are missing, tell the user to run **Tools → Update Footprints from Library** with **Reset 3D models** ticked. It restores them without moving the parts.
 

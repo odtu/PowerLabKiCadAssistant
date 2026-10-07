@@ -50,6 +50,7 @@ Users only learn about fixes through releases: the panel offers an update when t
 `patches/kicad-mcp.patch` holds the lab's fixes on top of the pinned `$McpCommit`. The installer checks whether it's applied (`git apply --check -R`); if not, it resets the checkout to the pin, applies the patch and rebuilds. Today it does two things:
 - **Rotation keeps 3D models:** `move_component` puts them back, because kipy 0.8's orientation setter drops them (#10).
 - **`pourNets` on `autoroute`:** those nets are left out of the DSN, so they connect through pours instead of tracks; their existing tracks are kept.
+- **Pours in live mode (#12):** the live `add_copper_pour` handler accepts the tool's `outline` (or `points`), and falls back to the board outline like the offline one. `add_zone` gets a handler in both modes.
 
 To change it:
 1. Edit the files in `%LOCALAPPDATA%\PowerLabKiCadAssistant\KiCAD-MCP-Server`.
