@@ -1,0 +1,195 @@
+diff --git a/python/commands/freerouting.py b/python/commands/freerouting.py
+index 0c12af2..14a6161 100644
+--- a/python/commands/freerouting.py
++++ b/python/commands/freerouting.py
+@@ -19,7 +19,17 @@ import time
+ from pathlib import Path
+ from typing import Any, Dict, Iterable, List, Optional, Tuple
+ 
++from commands.pour_nets import PLACEHOLDER_NET, leave_to_pours
++from utils.board_items import delete_board_item
+ from utils.project_netclasses import apply_net_classes_to_board, load_project_net_classes
++
++
++def _duplicate(item: Any) -> Any:
++    """A detached copy of a track/via for board.Add() (KiCad 10 needs the argument)."""
++    try:
++        return item.Duplicate(False)
++    except TypeError:
++        return item.Duplicate()
+ from utils.project_settings_guard import preserve_project_settings
+ 
+ logger = logging.getLogger("kicad_interface")
+@@ -590,6 +600,16 @@ class FreeroutingCommands:
+         dsn_size = os.path.getsize(dsn_path)
+         logger.info(f"DSN exported: {dsn_size} bytes")
+ 
++        # Nets left to copper pours aren't routed as tracks (PowerLab patch)
++        pour_nets = [str(n) for n in (params.get("pourNets") or [])]
++        if pour_nets:
++            with open(dsn_path, "r", encoding="utf-8") as fh:
++                dsn_text = fh.read()
++            dsn_text, dropped = leave_to_pours(dsn_text, pour_nets)
++            with open(dsn_path, "w", encoding="utf-8") as fh:
++                fh.write(dsn_text)
++            logger.info(f"Left {dropped} net(s) to pours: {pour_nets}")
++
+         # Step 2: Run Freerouting (single or multiple attempts)
+         mode_label = "docker" if use_docker else "direct"
+         total_start = time.time()
+@@ -752,8 +772,16 @@ class FreeroutingCommands:
+ 
+         # Step 3: Import the winning SES
+         logger.info(f"Importing SES from {ses_path}")
++        # The SES import replaces every track, so keep the pour nets' own tracks
++        pour_tracks = [_duplicate(t) for t in self.board.GetTracks() if t.GetNetname() in pour_nets]
+         try:
+             result = pcbnew.ImportSpecctraSES(self.board, ses_path)
++            if pour_nets:
++                for t in [t for t in self.board.GetTracks()
++                          if t.GetNetname() in pour_nets or t.GetNetname() in ("", PLACEHOLDER_NET)]:
++                    delete_board_item(self.board, t)  # Remove() corrupts SWIG on KiCad 10 (#247)
++                for t in pour_tracks:
++                    self.board.Add(t)
+             if result is not True and result != 0:
+                 return {
+                     "success": False,
+@@ -810,6 +838,10 @@ class FreeroutingCommands:
+             "netClasses": netclass_report,
+             "freerouting_stdout": best_proc_stdout[:1000],
+         }
++        if pour_nets:
++            response["pourNets"] = pour_nets
++            response["pour_tracks_kept"] = len(pour_tracks)
++            response["next_steps"] = "Run refill_zones, then add vias for pour-net pads the pour can't reach."
+         if attempts > 1:
+             response["attempts"] = attempt_results
+             response["best_attempt"] = best_attempt_idx + 1
+diff --git a/python/commands/pour_nets.py b/python/commands/pour_nets.py
+new file mode 100644
+index 0000000..9fcaf09
+--- /dev/null
++++ b/python/commands/pour_nets.py
+@@ -0,0 +1,87 @@
++"""Leave nets to copper pours: Freerouting routes everything else (PowerLab patch).
++
++The DSN keeps the pour nets' existing wires and vias as obstacles under a pin-less
++placeholder net, drops the pour nets from the netlist so they aren't routed as tracks,
++and drops their planes so other nets can use those layers (refilled pours flow around
++the new tracks afterwards).
++"""
++
++import re
++
++PLACEHOLDER_NET = "PLA_POUR_KEEP"
++
++
++def _end(text, start):
++    depth, quoted = 0, False
++    for i in range(start, len(text)):
++        c = text[i]
++        if c == '"':
++            quoted = not quoted
++        elif not quoted:
++            if c == "(":
++                depth += 1
++            elif c == ")":
++                depth -= 1
++                if depth == 0:
++                    return i + 1
++    raise ValueError("unbalanced DSN")
++
++
++def _name_at(text, pos):
++    m = re.compile(r'\s*("([^"]*)"|[^\s()]+)').match(text, pos)
++    return (m.group(2) if m.group(2) is not None else m.group(1)), m.end()
++
++
++def _quote(name):
++    return f'"{name}"' if re.search(r'[\s()"]', name) or not name else name
++
++
++def leave_to_pours(dsn, nets):
++    """Return (new_dsn, dropped_net_count) with `nets` left out of routing."""
++    nets = set(nets)
++    out, i = [], 0
++    in_network = None
++    network_start = dsn.index("(network")
++    network_end = _end(dsn, network_start)
++    wiring_start = dsn.find("(wiring")
++    wiring_end = _end(dsn, wiring_start) if wiring_start >= 0 else -1
++    dropped = 0
++    for m in re.finditer(r"\((plane|net|class)\s", dsn):
++        if m.start() < i:
++            continue
++        kind = m.group(1)
++        inside_network = network_start < m.start() < network_end
++        inside_wiring = wiring_start >= 0 and wiring_start < m.start() < wiring_end
++        if kind == "plane" and not inside_network and not inside_wiring:
++            name, _ = _name_at(dsn, m.end() - 1)
++            if name in nets:
++                end = _end(dsn, m.start())
++                out.append(dsn[i:m.start()])
++                i = end
++        elif kind == "net" and inside_network:
++            name, _ = _name_at(dsn, m.end() - 1)
++            if name in nets:
++                end = _end(dsn, m.start())
++                out.append(dsn[i:m.start()])
++                i = end
++                dropped += 1
++        elif kind == "net" and inside_wiring:
++            name, name_end = _name_at(dsn, m.end() - 1)
++            if name in nets:  # (net GND) inside a wire/via: keep it as an obstacle
++                out.append(dsn[i:m.start()])
++                out.append(f"(net {PLACEHOLDER_NET}")
++                i = name_end
++        elif kind == "class" and inside_network:
++            head_end = dsn.find("(", m.end())
++            tokens = re.findall(r'"[^"]*"|[^\s()]+', dsn[m.end():head_end])
++            kept = [tokens[0]] + [t for t in tokens[1:] if t.strip('"') not in nets]
++            out.append(dsn[i:m.start()])
++            out.append("(class " + " ".join(kept) + "\n      ")
++            i = head_end
++    out.append(dsn[i:])
++    text = "".join(out)
++    if wiring_start >= 0 and PLACEHOLDER_NET in text:
++        start = text.index("(network")
++        close = _end(text, start) - 1
++        text = text[:close] + f"(net {PLACEHOLDER_NET})\n    " + text[close:]
++    return text, dropped
+diff --git a/python/kicad_api/ipc_backend.py b/python/kicad_api/ipc_backend.py
+index 6f9a813..dce0b27 100644
+--- a/python/kicad_api/ipc_backend.py
++++ b/python/kicad_api/ipc_backend.py
+@@ -905,7 +905,13 @@ class IPCBoardAPI(BoardAPI):
+             target_fp.position = Vector2.from_xy(from_mm(x), from_mm(y))
+ 
+             if rotation is not None:
++                # kipy 0.8's orientation setter rebuilds the footprint's items and drops
++                # its 3D models, which then vanish from the board (PowerLab patch).
++                models = list(target_fp.definition.models)
+                 target_fp.orientation = Angle.from_degrees(rotation)
++                for model in models:
++                    if model not in target_fp.definition.items:
++                        target_fp.definition.add_item(model)
+ 
+             # Apply changes
+             commit = board.begin_commit()
+diff --git a/src/tools/freerouting.ts b/src/tools/freerouting.ts
+index d9942f7..585a1ec 100644
+--- a/src/tools/freerouting.ts
++++ b/src/tools/freerouting.ts
+@@ -55,6 +55,12 @@ export function registerFreeroutingTools(server: McpServer, callKicadScript: Fun
+         .describe(
+           "Per-attempt `--max-passes` values to cycle through (default: [50, 60, 65, 70, 75, 80, 85, 90, 55, 95]). The list wraps if `attempts` exceeds its length.",
+         ),
++      pourNets: z
++        .array(z.string())
++        .optional()
++        .describe(
++          "Nets that connect through copper pours (e.g. ['GND']). Freerouting leaves them unrouted instead of drawing them as tracks; their pours are hidden during routing so other nets can use those layers, and their existing tracks are kept. Create the pours first, then run refill_zones and add GND vias/stitching after routing.",
++        ),
+       keepArtifacts: z
+         .boolean()
+         .optional()
