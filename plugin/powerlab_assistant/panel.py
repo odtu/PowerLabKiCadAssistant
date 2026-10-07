@@ -48,6 +48,8 @@ PANEL_NOTE = (
     "Change designs only through the kicad MCP tools (board tools edit KiCad live when its "
     "API server is on); never hand-edit .kicad_pcb or .kicad_sch files. Never delete files or "
     "folders unless the user names them explicitly; if a request is ambiguous, ask.\n"
+    "For any schematic or PCB design, placement, routing, design-rule or review work, load "
+    "the powerlab-pcb-design-rules skill first and follow it.\n"
     "You can make mistakes: for anything that ends up in hardware (footprints, pinouts, "
     "ratings, design rules), say what the user should double-check against the datasheet."
 )
@@ -55,12 +57,15 @@ PANEL_NOTE = (
 # Model picker: (id passed to --model, menu label, short button label, hint).
 # "" means Claude Code's own default.
 MODELS = [
-    ("", "Default", "Default model", "Claude Code's default model"),
-    ("claude-opus-5-5", "Opus 5.5", "Opus 5.5", "Most capable for complex work"),
+    ("claude-opus-5-5", "Opus 5.5", "Opus 5.5", "Most capable for complex work (panel default)"),
     ("claude-sonnet-5-5", "Sonnet 5.5", "Sonnet 5.5", "Fast and capable for everyday tasks"),
     ("claude-haiku-4-5-20251001", "Haiku 4.5", "Haiku 4.5", "Fastest for quick answers"),
     ("claude-fable-5-1", "Fable 5.1", "Fable 5.1", "May need usage credits on your account"),
+    ("", "Claude Code default", "Default model", "Whatever Claude Code itself is set to"),
 ]
+DEFAULT_MODEL = "claude-opus-5-5"
+DEFAULT_EFFORT = "high"  # --effort; settings.json "effort" overrides (low, medium, high, xhigh, max)
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
 HTML_PATH = os.path.join(os.path.dirname(__file__), "panel.html")
 DETAIL_KEYS = ("name", "symbol_name", "footprint_name", "library", "reference", "net",
                "file_path", "path", "pattern", "query", "url", "command")
@@ -542,7 +547,12 @@ class ClaudePanel(wx.Frame):
 
     @property
     def model(self):
-        return self.settings.get("model", "")
+        return self.settings.get("model", DEFAULT_MODEL)
+
+    @property
+    def effort(self):
+        effort = self.settings.get("effort", DEFAULT_EFFORT)
+        return effort if effort in EFFORTS else DEFAULT_EFFORT
 
     def has_unsaved(self):
         check = getattr(self.source, "unsaved", None)
@@ -629,6 +639,7 @@ class ClaudePanel(wx.Frame):
             args += ["--resume", self.session_id]
         if self.model:
             args += ["--model", self.model]
+        args += ["--effort", self.effort]
         args += ["--allowedTools", ",".join(ALLOWED_TOOLS)]
 
         self.emit("user", text=text)
@@ -717,7 +728,7 @@ class ClaudePanel(wx.Frame):
             labels = {i: l for i, l, _, _ in MODELS if i}
             used = [labels.get(m, m) for m in (msg.get("modelUsage") or {})]
             self.emit("meta", text=f"{secs:.0f}s" + (f" · {turns} steps" if turns > 1 else "")
-                      + (f" · {', '.join(used)}" if used else ""))
+                      + (f" · {', '.join(used)} · {self.effort} effort" if used else ""))
 
     def _remember(self, kind, detail=""):
         pid = str(len(self.problems) + 1)

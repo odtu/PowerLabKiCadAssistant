@@ -103,7 +103,7 @@ Click the **PowerLab Assistant** button on the toolbar of the PCB Editor or the 
 - *What is this part connected to?* (select it first)
 - *Render the top side and show it to me*
 
-The panel shows each step Claude takes, plus any images it renders. The model picker under the input box switches between Claude models.
+The panel shows each step Claude takes, plus any images it renders. The model picker under the input box switches between Claude models. The default is **Opus 5.5 at high effort**. To change the effort, set `"effort"` (`low`, `medium`, `high`, `xhigh` or `max`) in `%APPDATA%\PowerLabKiCadAssistant\settings.json`.
 
 **PCB Editor:**
 
@@ -123,7 +123,8 @@ Skills teach Claude how the lab does specific jobs. The installer copies them to
 
 | Skill | What it does | Try |
 |---|---|---|
-| `powerlab-autoroute` | Autoroutes with **Freerouting 2.4.1** (on Java 25). It checks the prerequisites first and expects hand-routed, locked power and gate-drive nets. It then routes (optionally best-of-N), refills zones, runs DRC, and reports what's left. | *Autoroute the remaining nets* |
+| `powerlab-pcb-design-rules` | The lab's [PCB design rules](https://github.com/odtu/Powerlab/blob/master/KiCAD/PCB_DESIGN_RULES.md) (without the lab drawing-sheet rule). It covers the PCBWay standard-price spec, DRC constraints, net classes, schematic rules, and placement, routing, via and pour rules. Claude follows it for any schematic or PCB design work. | *Set up the design rules for this board* |
+| `powerlab-autoroute` | Autoroutes with **Freerouting 2.4.1** (on Java 25). It first sets the lab design rules and net classes (power tracks sized for their current) and expects hand-routed, locked power and gate-drive nets. It then routes, refills zones, runs DRC against a baseline, checks corners, widths and vias against the rules, and reports what's left. | *Autoroute the remaining nets* |
 
 Freerouting 2.4.1 needs Java 25. The installer puts a private copy of Java 25 (Eclipse Temurin) and the Freerouting jar in `%LOCALAPPDATA%\PowerLabKiCadAssistant`, checking both downloads against their published SHA-256 checksums. Any Java already on your computer is left alone; the panel uses this copy only for its own Claude sessions.
 
