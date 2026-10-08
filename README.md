@@ -180,4 +180,12 @@ Bug reports and pull requests are welcome. The panel's code is in `plugin/powerl
 
 [CERN Open Hardware Licence Version 2 - Strongly Reciprocal](LICENSE), like the METU Power Lab libraries.
 
-Claude and Claude Code are products of Anthropic. This project is not affiliated with or endorsed by Anthropic. KiCAD-MCP-Server is MIT-licensed by its authors and is downloaded at install time, not redistributed here.
+Claude and Claude Code are products of Anthropic. This project is not affiliated with or endorsed by Anthropic.
+
+It builds on other open-source projects, which keep their own licenses:
+- **KiCad tools:** KiCAD-MCP-Server (MIT), with a small MIT-licensed patch from this repository.
+- **Autorouting:** Freerouting (GPL-3.0), running on Eclipse Temurin Java (GPL-2.0 with Classpath Exception).
+- **Board views:** PyMuPDF (AGPL-3.0).
+- **KiCad** itself (GPL-3.0).
+
+The installer downloads these from their official sources; this repository doesn't redistribute them. The full list, with links and licenses, is in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
