@@ -30,6 +30,7 @@ ALLOWED_TOOLS = [
 IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
                ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml"}
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
+VIEWS_DIR = os.path.join(os.path.dirname(attachments.FOLDER), "views")  # board renders for review
 LIBRARY_CHECK_EVERY = 10 * 60  # seconds between GitHub checks for library updates
 
 PANEL_NOTE = (
@@ -54,6 +55,9 @@ PANEL_NOTE = (
     "folders unless the user names them explicitly; if a request is ambiguous, ask.\n"
     "For any schematic or PCB design, placement, routing, design-rule or review work, load "
     "the powerlab-pcb-design-rules skill first and follow it.\n"
+    "For any placement or routing work, also load the powerlab-visual-review skill: render the "
+    "board and look at it after every step, fix what you see, and show the user the views. "
+    "Save renders in the views folder named below (kicad-cli may write there too).\n"
     "You can make mistakes: for anything that ends up in hardware (footprints, pinouts, "
     "ratings, design rules), say what the user should double-check against the datasheet."
 )
@@ -101,6 +105,12 @@ def describe_tool(name, args):
 def tool_kind(name):
     """Tool name for the anonymous event log (no arguments)."""
     return name.replace("mcp__kicad__", "kicad:")
+
+
+def views_note():
+    """Tell Claude where board renders go (a private temp folder, cleaned after a week)."""
+    os.makedirs(VIEWS_DIR, exist_ok=True)
+    return f"\nViews folder for board renders: {VIEWS_DIR}\n"
 
 
 def install_excepthook():
@@ -257,7 +267,8 @@ class ClaudePanel(wx.Frame):
         if self.limits:
             text, tip = usage.summary(self.limits, 0, 0)
             self.emit("usage", text=text, tip=tip)
-        self.in_background(attachments.clean_old, lambda result: None)
+        self.in_background(lambda: (attachments.clean_old(), attachments.clean_old(VIEWS_DIR)),
+                           lambda result: None)
         self.push_context()
         self.check_library(force=True)
         self.check_updates()
@@ -668,10 +679,11 @@ class ClaudePanel(wx.Frame):
         args = [
             self.claude, "-p",
             "--output-format", "stream-json", "--verbose",
-            "--append-system-prompt", snap.context + "\n" + PANEL_NOTE,
+            "--append-system-prompt", snap.context + "\n" + PANEL_NOTE + views_note(),
         ]
         files, self.attached = self.attached, []
-        for d in config.work_dirs() + [f for f in attachments.folders(files) if f not in config.work_dirs()]:
+        extra = attachments.folders(files) + [VIEWS_DIR]
+        for d in config.work_dirs() + [f for f in extra if f not in config.work_dirs()]:
             args += ["--add-dir", d]
         if self.session_id:
             args += ["--resume", self.session_id]

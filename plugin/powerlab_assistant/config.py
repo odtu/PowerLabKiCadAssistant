@@ -11,7 +11,7 @@ import json
 import os
 import sys
 
-VERSION = "0.4.2"  # bump with every release (see CLAUDE.md > Releasing)
+VERSION = "0.5.0"  # bump with every release (see CLAUDE.md > Releasing)
 REPORT_REPO = "odtu/PowerLabKiCadAssistant"  # public repo that receives bug reports
 LIBRARY_REPO = "odtu/PowerLabKiCadLibraries"
 NOTICE_VERSION = 1  # bump when the AI/privacy notice changes, so users see it again
