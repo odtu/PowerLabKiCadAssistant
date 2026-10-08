@@ -56,8 +56,12 @@ Users only learn about fixes through releases: the panel offers an update when t
 
 To change it:
 1. Edit the files in `%LOCALAPPDATA%\PowerLabKiCadAssistant\KiCAD-MCP-Server`.
-2. Regenerate the patch there with `git add -N <new files>; git diff > <repo>\patches\kicad-mcp.patch`, then `git reset`.
+2. Regenerate the patch there with `git add -N <new files>; git diff > <repo>\patches\kicad-mcp.patch`, then `git reset`. Put back the MIT license header from the old patch: everything before the first `diff --git`, which `git apply` ignores.
 3. Check that it applies to a clean checkout of the pin.
+
+## Third-party licenses
+
+`THIRD_PARTY_NOTICES.md` lists every outside project the assistant contains, downloads or needs, with its license. When you add a dependency (installer download, Python or npm package, GitHub Action), check its license and add it there. METU Power Lab / odtu content needs no entry, because it's the lab's own.
 
 Report real bugs upstream too.
 
