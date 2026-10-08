@@ -6,6 +6,10 @@ It runs [Claude Code](https://docs.claude.com/claude-code) on your computer with
 
 > **Early version.** Windows and KiCad 10 only. Expect rough edges and please [report problems](#reporting-problems).
 
+![The PowerLab Assistant panel: suggestions and library updates; autorouting with a rendered board view; checking a footprint against an attached datasheet](docs/images/panel-overview.png)
+
+<sub>Example sessions (illustrative). Left: start screen with suggestions and a library update. Middle: Claude routes the board, then renders and checks it. Right: a question about an attached datasheet, with another file ready to send. The board is the lab's open-source [Voltage Sensor Card](https://github.com/odtu/Powerlab/tree/master/Hardware/Voltage-Sensor-Board).</sub>
+
 ---
 
 ## ⚠️ Read this first
