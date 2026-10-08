@@ -551,26 +551,70 @@ class UpdateCheckTests(unittest.TestCase):
     def release(self, tag, body="## 0.9.0\n\n- Fixes library Share\n- Other things"):
         return lambda: {"tag_name": tag, "body": body, "html_url": f"https://example.invalid/{tag}"}
 
-    def test_newer_release_is_offered_and_answer_cached_briefly(self):
+    def stable(self, version):
+        return lambda: version
+
+    def no_release(self):
+        return self.fail("asked the GitHub API for release notes without a newer version")
+
+    def test_newer_stable_version_is_offered_and_answer_cached_briefly(self):
         settings = {}
-        result = updates.check(settings, fetch=self.release("v99.0.0"))
+        result = updates.check(settings, fetch_version=self.stable("99.0.0"), fetch_release=self.release("v99.0.0"))
         self.assertTrue(result["available"])
         self.assertEqual(result["version"], "99.0.0")
         self.assertEqual(result["summary"], "Fixes library Share")
+        self.assertEqual(result["url"], "https://example.invalid/v99.0.0")
         # Shortly after, the cached answer is reused: GitHub isn't asked again.
-        again = updates.check(settings, fetch=lambda: self.fail("asked GitHub again within CHECK_EVERY"))
+        again = updates.check(settings, fetch_version=lambda: self.fail("asked GitHub again within CHECK_EVERY"),
+                              fetch_release=lambda: self.fail("asked for the notes again"))
         self.assertTrue(again["available"])
+        self.assertEqual(again["summary"], "Fixes library Share")
 
-    def test_release_published_after_a_check_is_seen_within_the_hour(self):
-        self.assertEqual(updates.CHECK_EVERY, 60 * 60)
+    def test_stable_release_is_seen_within_minutes(self):
+        self.assertLessEqual(updates.CHECK_EVERY, 5 * 60)
         settings = {}
-        updates.check(settings, fetch=self.release(f"v{config.VERSION}"))  # nothing newer yet
-        settings["update_checked"] -= 61 * 60  # just over an hour later, a release came out
-        self.assertTrue(updates.check(settings, fetch=self.release("v99.0.0"))["available"])
+        updates.check(settings, fetch_version=self.stable(config.VERSION), fetch_release=self.no_release)
+        settings["update_checked"] -= updates.CHECK_EVERY + 1  # a few minutes later, main moved
+        self.assertTrue(updates.check(settings, fetch_version=self.stable("99.0.0"),
+                                      fetch_release=self.release("v99.0.0"))["available"])
 
-    def test_same_or_older_release_is_not_offered(self):
-        for tag in (f"v{config.VERSION}", "v0.0.1", "not-a-version"):
-            self.assertFalse(updates.check({}, fetch=self.release(tag))["available"], tag)
+    def test_version_is_read_from_stable_branch_without_the_api(self):
+        self.assertIn("raw.githubusercontent.com", updates.VERSION_URL)
+        self.assertIn("/main/plugin/powerlab_assistant/config.py", updates.VERSION_URL)
+        with open(config.__file__, encoding="utf-8") as f:
+            self.assertEqual(updates.version_in(f.read()), config.VERSION)
+        self.assertEqual(updates.version_in('NOTICE_VERSION = 1\nVERSION = "1.2.3"  # bump\n'), "1.2.3")
+        self.assertEqual(updates.version_in("nothing here"), "")
+
+    def test_notes_wait_until_the_release_is_published(self):
+        settings = {}
+        # main has 99.0.0, but its GitHub release isn't out yet: the latest is the previous one.
+        early = updates.check(settings, fetch_version=self.stable("99.0.0"), fetch_release=self.release("v0.1.0"))
+        self.assertTrue(early["available"])
+        self.assertEqual(early["summary"], "")  # not the previous release's notes
+        self.assertTrue(early["url"].endswith("/releases"))
+        # Within CHECK_EVERY the version is cached, but the notes are asked for again.
+        later = updates.check(settings, fetch_version=lambda: self.fail("asked GitHub again within CHECK_EVERY"),
+                              fetch_release=self.release("v99.0.0"))
+        self.assertEqual(later["summary"], "Fixes library Share")
+
+    def test_release_notes_failure_still_offers_the_update(self):
+        def offline():
+            raise OSError("no network")
+        result = updates.check({}, fetch_version=self.stable("99.0.0"), fetch_release=offline)
+        self.assertTrue(result["available"])
+        self.assertEqual(result["summary"], "")
+
+    def test_notes_of_an_older_version_are_dropped(self):
+        settings = {"update_checked": 0, "update_cache": {"version": "v98.0.0", "summary": "Old notes", "url": "x"}}
+        result = updates.check(settings, fetch_version=self.stable("99.0.0"), fetch_release=self.release("v98.0.0"))
+        self.assertEqual(result["version"], "99.0.0")
+        self.assertEqual(result["summary"], "")
+
+    def test_same_or_older_version_is_not_offered(self):
+        for version in (config.VERSION, "0.0.1", "", "not-a-version"):
+            self.assertFalse(updates.check({}, fetch_version=self.stable(version),
+                                           fetch_release=self.no_release)["available"], version)
 
     def test_version_order_is_numeric(self):
         self.assertGreater(updates.parse_version("v0.10.0"), updates.parse_version("v0.9.9"))

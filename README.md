@@ -32,7 +32,7 @@ It runs [Claude Code](https://docs.claude.com/claude-code) on your computer with
 | Library parts you choose to share | A pull request to [odtu/PowerLabKiCadLibraries](https://github.com/odtu/PowerLabKiCadLibraries), from your GitHub account | Only when you press **Share** and confirm the file list |
 | Problem reports | A **public** issue on this repository | Only when you press **Submit** after reviewing the report |
 | Library updates | Anonymous read from GitHub (`git fetch`) | When the panel opens, at most every 10 minutes |
-| Plugin update check | Anonymous request to GitHub for this repository's latest release number | When the panel opens or is shown, at most once an hour |
+| Plugin update check | Anonymous read from GitHub of the version number on this repository's stable branch; when it's newer, of that release's notes | When the panel opens or is shown, at most every 5 minutes |
 
 **Nothing else is sent to METU Power Lab.** The panel has no analytics, telemetry or tracking.
 
@@ -89,7 +89,7 @@ To remove it later, run `uninstall.ps1`.
 
 ## Updating
 
-When a new version is released, the panel shows a bar like *PowerLab Assistant 0.1.2 is available: …* with **What's new** and **Update** buttons.
+Changes are tried on the `test` branch first. When they're released to `main`, the stable branch, the panel shows a bar like *PowerLab Assistant 0.1.2 is available: …* within about 10 minutes, with **What's new** and **Update** buttons.
 
 - **Update**, if you installed from a `git clone` of this repository: a console window pulls the new version and runs `install.ps1 -Update`. Restart KiCad when it says done.
   - `-Update` asks no questions and only replaces the panel's files. It also rebuilds the KiCad tools, but only if their pinned version or the lab's fixes to them (`patches/kicad-mcp.patch`) changed.
@@ -174,7 +174,7 @@ Reports are public, so don't add confidential details to the description.
 
 ## Contributing
 
-Bug reports and pull requests are welcome. The panel's code is in `plugin/powerlab_assistant` (Python + an HTML/JS UI in `panel.html`). The schematic toolbar button is in `plugin/powerlab-assistant-button`.
+Bug reports and pull requests are welcome. Open pull requests against the `test` branch: `main` only changes when a tested version is released. The panel's code is in `plugin/powerlab_assistant` (Python + an HTML/JS UI in `panel.html`). The schematic toolbar button is in `plugin/powerlab-assistant-button`.
 
 ## License
 
