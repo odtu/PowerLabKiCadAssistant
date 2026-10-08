@@ -45,7 +45,7 @@ Ask for whatever you can't read from the board, and don't guess currents or volt
 ## 3. Make sure the board is ready (design rules §3.1–3.2)
 Before routing, confirm with the user, or check with the kicad tools:
 - **Saved:** the board is saved in KiCad. Routing writes the `.kicad_pcb` file, so unsaved KiCad edits would be lost.
-- **Outline and placement:** a closed board outline exists on Edge.Cuts and every footprint is inside it. Placement decides the result far more than router settings. Check the §3.2 points before routing; bad placement can't be fixed by the router:
+- **Outline and placement:** a closed board outline exists on Edge.Cuts and every footprint is inside it. Placement decides the result far more than router settings. Check the §3.2 points before routing; bad placement can't be fixed by the router. **Render a placement view first** (`powerlab-visual-review`), look at it, and fix the placement before routing:
   - decoupling caps right at their IC pins
   - crystals at the MCU
   - analog, digital and power sections apart
@@ -76,6 +76,7 @@ Before routing, confirm with the user, or check with the kicad tools:
 
 ## 5. Check the result against the rules (§3.3–3.7)
 - **Refill zones:** run `refill_zones`.
+- **Look at it** (`powerlab-visual-review`): save, then render top copper, bottom copper and both layers together. Review them for detours, 90° corners, long or looping power and gate-drive paths, and pours chopped into islands. Fix what you see and render again before reporting.
 - **Pour-net pads:** in the DRC's unconnected items, find pads of the pour nets that the pour can't reach, e.g. a GND pad boxed in by tracks. Add a via next to each one (`add_via`, 0.4/0.8 mm), connected with a short track, so it reaches the bottom pour. Then refill again.
 - **DRC:** run `run_drc` and compare it with the baseline. The goal is **0 new errors**. Track-width or clearance errors mean the net classes don't match the board constraints; fix the rules and re-route rather than hiding the errors.
 - **Corners:** Freerouting routes at 45° but still leaves some 90° corners. On a test board it left 26. The rules forbid them (§3.3). Find them with `query_traces`: two segments of the same net and layer meeting at a right angle. List them for the user, who can fix them with the interactive router or by dragging the corner with `D`.

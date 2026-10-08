@@ -223,6 +223,14 @@ class McpPatchTests(unittest.TestCase):
         self.assertIn('+        "add_zone": "_ipc_add_copper_pour",', patch)
         self.assertIn('+            "add_zone": self._handle_add_zone,', patch)
 
+    def test_board_views_are_coloured_and_kept(self):
+        """Visual review: colour 2D views, true aspect ratio, numbered output files."""
+        patch = self.patch()
+        self.assertIn('*([] if color else ["--black-and-white"])', patch)
+        self.assertIn("zoom = min(width / page.rect.width, height / page.rect.height)", patch)
+        self.assertIn("output_path = output_path_param or", patch)
+        self.assertIn("outputPath,", patch)  # passed through by the TypeScript tool
+
     def test_stitching_vias_work_in_live_mode(self):
         """Issue #14: add_gnd_stitching_vias said "No board is loaded" with KiCad open."""
         patch = self.patch()
@@ -286,6 +294,7 @@ class PanelDefaultsTests(unittest.TestCase):
         self.assertEqual(c["MODELS"][0][0], c["DEFAULT_MODEL"])
         self.assertIn("powerlab-pcb-design-rules", "".join(c["PANEL_NOTE"]))
         self.assertIn("Never ask the user to close", c["PANEL_NOTE"])  # issue #10
+        self.assertIn("powerlab-visual-review", c["PANEL_NOTE"])  # look at the board while working
 
     def test_board_minimums_are_the_pcbway_floor(self):
         with open(os.path.join(ROOT, "skills", "powerlab-pcb-design-rules", "SKILL.md"), encoding="utf-8") as f:

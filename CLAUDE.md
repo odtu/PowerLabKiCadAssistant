@@ -52,6 +52,7 @@ Users only learn about fixes through releases: the panel offers an update when t
 - **`pourNets` on `autoroute`:** those nets are left out of the DSN, so they connect through pours instead of tracks; their existing tracks are kept.
 - **Pours in live mode (#12):** the live `add_copper_pour` handler accepts the tool's `outline` (or `points`), and falls back to the board outline like the offline one. `add_zone` gets a handler in both modes.
 - **Stitching vias in live mode (#14):** `add_gnd_stitching_vias` had no live-mode handler. With KiCad open, the tool process never loads the board, so it said "No board is loaded". The new handler plans on the saved board file with the largest net-class clearance, then places the vias live.
+- **Board views for review:** `get_board_2d_view` renders in layer colours on KiCad's dark background (it was black and white), keeps the board's aspect ratio, and takes an `outputPath`, so the `powerlab-visual-review` skill can keep a numbered series.
 
 To change it:
 1. Edit the files in `%LOCALAPPDATA%\PowerLabKiCadAssistant\KiCAD-MCP-Server`.

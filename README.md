@@ -6,6 +6,10 @@ It runs [Claude Code](https://docs.claude.com/claude-code) on your computer with
 
 > **Early version.** Windows and KiCad 10 only. Expect rough edges and please [report problems](#reporting-problems).
 
+![The PowerLab Assistant panel: suggestions and library updates; autorouting with a rendered board view; checking a footprint against an attached datasheet](docs/images/panel-overview.png)
+
+<sub>Example sessions (illustrative). Left: start screen with suggestions and a library update. Middle: Claude routes the board, then renders and checks it. Right: a question about an attached datasheet, with another file ready to send. The board is the lab's open-source [Voltage Sensor Card](https://github.com/odtu/Powerlab/tree/master/Hardware/Voltage-Sensor-Board).</sub>
+
 ---
 
 ## ⚠️ Read this first
@@ -129,6 +133,7 @@ Skills teach Claude how the lab does specific jobs. The installer copies them to
 | Skill | What it does | Try |
 |---|---|---|
 | `powerlab-pcb-design-rules` | The lab's [PCB design rules](https://github.com/odtu/Powerlab/blob/master/KiCAD/PCB_DESIGN_RULES.md) (without the lab drawing-sheet rule). It covers the PCBWay standard-price spec, DRC constraints, net classes, schematic rules, and placement, routing, via and pour rules. Claude follows it for any schematic or PCB design work. | *Set up the design rules for this board* |
+| `powerlab-visual-review` | Claude renders the board (2D layer views in colour, plus 3D) after every placement or routing step. It looks at each view against the design rules, fixes what it sees, and shows you the views in the panel. Renders go to `%TEMP%\PowerLabAssistantiews` and are cleaned after a week. | *Show me the routing* |
 | `powerlab-autoroute` | Autoroutes with **Freerouting 2.4.1** (on Java 25). It first sets the lab design rules and net classes (power tracks sized for their current) and expects hand-routed, locked power and gate-drive nets. It then routes, refills zones, runs DRC against a baseline, checks corners, widths and vias against the rules, and reports what's left. | *Autoroute the remaining nets* |
 
 Freerouting 2.4.1 needs Java 25. The installer puts a private copy of Java 25 (Eclipse Temurin) and the Freerouting jar in `%LOCALAPPDATA%\PowerLabKiCadAssistant`, checking both downloads against their published SHA-256 checksums. Any Java already on your computer is left alone; the panel uses this copy only for its own Claude sessions.

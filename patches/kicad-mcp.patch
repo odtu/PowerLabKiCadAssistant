@@ -1,3 +1,84 @@
+diff --git a/python/commands/board/view.py b/python/commands/board/view.py
+index 16a4915..cef014b 100644
+--- a/python/commands/board/view.py
++++ b/python/commands/board/view.py
+@@ -15,7 +15,12 @@ from utils.kicad_cli import kicad_cli_not_found_message, resolve_kicad_cli
+ logger = logging.getLogger("kicad_interface")
+ 
+ 
+-def _svg_to_png(svg_path: str, width: int, height: int) -> Optional[bytes]:
++BOARD_BACKGROUND = (0, 16, 35)  # KiCad's default PCB editor background (PowerLab patch)
++
++
++def _svg_to_png(
++    svg_path: str, width: int, height: int, background: Optional[tuple] = None
++) -> Optional[bytes]:
+     """Convert SVG to PNG. No cffi dependency.
+ 
+     Priority:
+@@ -32,8 +37,17 @@ def _svg_to_png(svg_path: str, width: int, height: int) -> Optional[bytes]:
+ 
+         doc = fitz.open(svg_path)
+         page = doc[0]
+-        mat = fitz.Matrix(width / page.rect.width, height / page.rect.height)
+-        return page.get_pixmap(matrix=mat).tobytes("png")
++        # Fit inside width x height without distorting the board (PowerLab patch)
++        zoom = min(width / page.rect.width, height / page.rect.height)
++        pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=background is not None)
++        if background is None:
++            return pix.tobytes("png")
++        layer = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGBA")
++        canvas = Image.new("RGBA", layer.size, background + (255,))
++        canvas.alpha_composite(layer)
++        buf = io.BytesIO()
++        canvas.convert("RGB").save(buf, format="PNG")
++        return buf.getvalue()
+     except Exception:
+         pass
+ 
+@@ -182,6 +196,10 @@ class BoardViewCommands:
+                 "Edge.Cuts",
+             ]
+             response_mode = params.get("responseMode", "inline")
++            # Layer colours on KiCad's dark background by default, so copper layers
++            # can be told apart when reviewing placement and routing (PowerLab patch).
++            color = params.get("color", True) is not False
++            output_path_param = params.get("outputPath")
+ 
+             kicad_cli = resolve_kicad_cli()
+             if not kicad_cli:
+@@ -206,7 +224,7 @@ class BoardViewCommands:
+                     "--output",
+                     output_svg,
+                     "--mode-single",
+-                    "--black-and-white",
++                    *([] if color else ["--black-and-white"]),
+                     # Render the board, not the drawing sheet. kicad-cli's
+                     # default (page-size-mode 0) plots only the area inside the
+                     # sheet, so board geometry past the page edge is left out.
+@@ -256,7 +274,9 @@ class BoardViewCommands:
+                         image_bytes = f.read()
+                     mime_format = "svg"
+                 else:
+-                    png_bytes = _svg_to_png(svg_path, width, height)
++                    png_bytes = _svg_to_png(
++                        svg_path, width, height, BOARD_BACKGROUND if color else None
++                    )
+                     if png_bytes is None:
+                         # No PNG converter — fall back to SVG inline
+                         with open(svg_path, "r", encoding="utf-8") as f:
+@@ -277,7 +297,10 @@ class BoardViewCommands:
+ 
+                 # --- Package response according to responseMode ---
+                 if response_mode == "file":
+-                    output_path = os.path.join(board_dir, f"{board_name}_2d_view.{mime_format}")
++                    output_path = output_path_param or os.path.join(
++                        board_dir, f"{board_name}_2d_view.{mime_format}"
++                    )
++                    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+                     with open(output_path, "wb") as f:
+                         f.write(image_bytes)
+                     return {
 diff --git a/python/commands/freerouting.py b/python/commands/freerouting.py
 index 0c12af2..14a6161 100644
 --- a/python/commands/freerouting.py
@@ -371,6 +452,41 @@ index c6ac305..dbc3de5 100644
  
              success = self.ipc_board_api.add_zone(
                  points=formatted_points,
+diff --git a/src/tools/board.ts b/src/tools/board.ts
+index 2738ebc..7f0b245 100644
+--- a/src/tools/board.ts
++++ b/src/tools/board.ts
+@@ -522,8 +522,20 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
+         .describe(
+           '"inline" (default): image returned directly; "file": written to disk, filePath returned',
+         ),
++      color: z
++        .boolean()
++        .optional()
++        .describe(
++          "Layer colours on KiCad's dark background (default: true); false = black and white.",
++        ),
++      outputPath: z
++        .string()
++        .optional()
++        .describe(
++          "File mode only: where to write the image (default: <board>_2d_view.<ext> next to the board). Use numbered names to keep a series of review views.",
++        ),
+     },
+-    async ({ pcbPath, layers, width, height, format, responseMode }) => {
++    async ({ pcbPath, layers, width, height, format, responseMode, color, outputPath }) => {
+       logger.debug("Getting 2D board view");
+       const result = await callKicadScript("get_board_2d_view", {
+         pcbPath,
+@@ -532,6 +544,8 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
+         height,
+         format,
+         responseMode,
++        color,
++        outputPath,
+       });
+ 
+       if (result.success) {
 diff --git a/src/tools/freerouting.ts b/src/tools/freerouting.ts
 index d9942f7..585a1ec 100644
 --- a/src/tools/freerouting.ts
