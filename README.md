@@ -48,7 +48,7 @@ Problem reports contain versions, the error and the panel's own stack trace. The
 
 - your Claude login and your GitHub login (if you use one)
 - the panel's settings (`%APPDATA%\PowerLabKiCadAssistant`)
-- your conversation history (`%USERPROFILE%\.claude`)
+- your conversation history (`%USERPROFILE%\.claude`, and the panel's copy in `%APPDATA%\PowerLabKiCadAssistant\chats`)
 
 The repository contains no API keys or tokens. Each user signs in with their own accounts.
 
@@ -112,7 +112,7 @@ The panel shows each step Claude takes, plus any images it renders.
 - **Models:** the model picker under the input box switches between Claude models. The default is **Opus 5.5 at high effort**. To change the effort, set `"effort"` (`low`, `medium`, `high`, `xhigh` or `max`) in `%APPDATA%\PowerLabKiCadAssistant\settings.json`.
 - **Attachments:** attach screenshots, datasheets (PDF) or other files with the 📎 button, or paste or drop them into the input box. Pasted and dropped files are kept for a week in `%TEMP%\PowerLabAssistant\attachments`.
 - **Usage:** the corner under the input box shows how much of your Claude plan's limit is used (e.g. *5h 49%*) and how full this chat's context is. Hover for the reset time. Start a new chat (**+**) when the context gets full.
-- **Keep the editor open:** the panel lives inside the PCB or Schematic Editor, so closing that editor closes the chat.
+- **Chats are kept:** closing the panel, the editor or KiCad doesn't lose the chat. Reopen the panel on the same project and it continues where you left off (the PCB and Schematic Editors each keep their own). **+** starts a new chat.
 
 **PCB Editor:**
 
