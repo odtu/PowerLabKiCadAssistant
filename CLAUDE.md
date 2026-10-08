@@ -1,10 +1,16 @@
 # Notes for Claude (maintainers' sessions)
 
+## Branches
+
+- **`main` is stable.** Users' clones follow it, and the panel's Update button pulls it. Within about 10 minutes of `VERSION` changing on `main`, every panel shows the update bar. So `main` changes only through a release (below), never through a fix or feature PR.
+- **`test` is where changes land first.** Branch from `test` and open PRs against it (`gh pr create --base test`). GitHub's default branch stays `main`, so pick the base when you open a PR.
+- **To try `test` yourself:** in the clone `install.ps1` ran from, `git switch test`, `git pull`, close KiCad, `install.ps1 -Update`. The panel's Update button then pulls `test`. The bar only appears for a newer stable `VERSION`, not for new `test` commits. Switch back with `git switch main`.
+
 ## Handling issues
 
 Problem reports from the panel arrive as public issues on odtu/PowerLabKiCadAssistant.
 
-1. Fix the problem, verify it, and push the fix with `Fixes #N` in the commit message.
+1. Fix the problem, verify it, and merge the fix into `test` with `Fixes #N` in the commit message. GitHub closes the issue when that commit reaches `main` in a release.
 2. **Always reply on the issue** after a fix: what went wrong, which commit fixed it, how it was verified, and what the reporter must do to get it (usually: pull, close KiCad, rerun `install.ps1`).
 3. **Post replies as `github-actions[bot]`, never under a maintainer's personal account.** Don't use a GitHub tool or `gh issue comment` that posts as the signed-in user. Write the reply to a file and run the `reply-to-issue.yml` workflow:
 
@@ -21,9 +27,9 @@ Problem reports from the panel arrive as public issues on odtu/PowerLabKiCadAssi
 - a member or collaborator opens an issue, or
 - a maintainer adds the `auto-fix` label to anyone's issue.
 
-Claude reproduces the bug with a test, fixes it and runs the tests. The workflow then opens a pull request (`Fixes #N`) and comments on the issue as `github-actions[bot]`. Its changes are limited to `plugin/`, `tests/`, `tools/`, `README.md` and the install scripts.
+Claude reproduces the bug with a test, fixes it and runs the tests. The workflow then opens a pull request into `test` (`Fixes #N`) and comments on the issue as `github-actions[bot]`. Its changes are limited to `plugin/`, `tests/`, `tools/`, `README.md` and the install scripts.
 
-A maintainer still reviews and merges the PR, then releases (below) and replies with the version. Bugs that need the KiCad window can't be verified on the runner; Claude lists them under "Needs a human".
+A maintainer still reviews and merges the PR, tests it on `test`, then releases (below) and replies with the version. The workflow file itself runs from `main`, so changes to it take effect once released. Bugs that need the KiCad window can't be verified on the runner; Claude lists them under "Needs a human".
 
 **Limits.** Runs use the maintainer's Claude subscription (the `CLAUDE_CODE_OAUTH_TOKEN` secret), so they count against the same usage limits as their own Claude use.
 - **Model:** Opus 5.5 at high effort.
@@ -32,18 +38,27 @@ A maintainer still reviews and merges the PR, then releases (below) and replies 
 
 ## Releasing
 
-Users only learn about fixes through releases: the panel offers an update when the latest GitHub release is newer than its `VERSION`.
+Users only learn about fixes through releases. Every panel reads `VERSION` from `main` every 5 minutes (`updates.py`), and offers an update when it is newer than its own. The bar's text comes from the GitHub release of that version.
 
-1. Bump `VERSION` in `plugin/powerlab_assistant/config.py` (semantic: patch for fixes, minor for features).
-2. Commit, push, then tag and publish:
+1. On `test`, bump `VERSION` in `plugin/powerlab_assistant/config.py` (semantic: patch for fixes, minor for features).
+2. Merge `test` into `main` with a merge commit, not a squash, so the two branches stay in step:
 
    ```powershell
-   gh release create vX.Y.Z -R odtu/PowerLabKiCadAssistant --title "X.Y.Z" --notes-file notes.md
+   gh pr create -R odtu/PowerLabKiCadAssistant --base main --head test --title "Release X.Y.Z" --body-file notes.md
+   gh pr merge <PR> -R odtu/PowerLabKiCadAssistant --merge
    ```
 
-   The first bullet of the notes appears in the panel's update bar ("PowerLab Assistant X.Y.Z is available: <first bullet>"). Make it a short, user-facing summary.
-3. Issue replies name the version that contains the fix ("Fixed in 0.1.1 — update from the panel"), so reporters know which update brings it.
-4. If the release changes the pinned KiCad MCP server commit, change `$McpCommit` in `install.ps1`. `install.ps1 -Update` rebuilds it only when that pin or `patches/kicad-mcp.patch` changed.
+   Merging is the release: within about 10 minutes every panel shows the update bar.
+3. Right away, tag and publish the release on `main`:
+
+   ```powershell
+   gh release create vX.Y.Z -R odtu/PowerLabKiCadAssistant --target main --title "X.Y.Z" --notes-file notes.md
+   ```
+
+   The first bullet of the notes appears in the panel's update bar ("PowerLab Assistant X.Y.Z is available: <first bullet>"). Make it a short, user-facing summary. Until the release exists, the bar shows without it.
+4. Never commit to `main` directly, not even docs: anything on `main` reaches users with their next Update.
+5. Issue replies name the version that contains the fix ("Fixed in 0.1.1 — update from the panel"), so reporters know which update brings it.
+6. If the release changes the pinned KiCad MCP server commit, change `$McpCommit` in `install.ps1`. `install.ps1 -Update` rebuilds it only when that pin or `patches/kicad-mcp.patch` changed.
 
 ## Fixes to the KiCad MCP server
 
