@@ -3,8 +3,9 @@
 # Runs when a repo member/collaborator opens an issue (e.g. a report from the panel),
 # or when a maintainer adds the "auto-fix" label to anyone's issue. Claude reproduces
 # the bug with a test, fixes it and runs the tests; this workflow then opens a pull
-# request and comments on the issue as github-actions[bot]. A maintainer reviews and
-# merges the PR (plugin code runs on every lab member's computer) and cuts a release.
+# request into `test` and comments on the issue as github-actions[bot]. A maintainer
+# reviews and merges the PR (plugin code runs on every lab member's computer), tests it
+# on `test`, and releases it to `main`, the stable branch users update from.
 #
 # Needs one repository secret: CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`,
 # uses a Claude subscription) or ANTHROPIC_API_KEY (API billing).
@@ -43,7 +44,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: test  # fixes go to `test` first; `main` is what users update to
           fetch-depth: 0
+
+      - name: Remember where the run started
+        shell: bash
+        run: echo "START_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
       - uses: actions/setup-python@v6
         with:
@@ -145,8 +151,8 @@ jobs:
           # Compare with the commit this run started from, so edits count whether they are
           # uncommitted or were committed locally by the action. Scratch files live in
           # RUNNER_TEMP, outside the repo, so they never count as changes.
-          echo "HEAD: $(git rev-parse --short HEAD)  start: ${GITHUB_SHA::7}"; git status --short
-          { git diff --name-only "$GITHUB_SHA"; git ls-files --others --exclude-standard; } \
+          echo "HEAD: $(git rev-parse --short HEAD)  start: ${START_SHA::7}"; git status --short
+          { git diff --name-only "$START_SHA"; git ls-files --others --exclude-standard; } \
             | grep -v '^\.auto-fix-summary\.md$' | sort -u > "$RUNNER_TEMP/changed.txt" || true
           echo "Changed files:"; cat "$RUNNER_TEMP/changed.txt"
           if grep -Ev '^(plugin/|tests/|tools/|README\.md$|install\.ps1$|uninstall\.ps1$)' "$RUNNER_TEMP/changed.txt" | grep -v '^$'; then
@@ -193,14 +199,14 @@ jobs:
             rm -f .auto-fix-summary.md
             git add -A plugin tests tools README.md install.ps1 uninstall.ps1 2>/dev/null || true
             git diff --cached --quiet || git commit -q -m "Fix #${ISSUE} (proposed by Claude)" -m "Fixes #${ISSUE}" -m "Co-Authored-By: Claude <noreply@anthropic.com>"
-            git format-patch -q "$GITHUB_SHA"..HEAD -o "$RUNNER_TEMP/patch"  # kept as an artifact if anything below fails
-            # Rebase onto the current main: if main moved during the run (e.g. a workflow edit),
+            git format-patch -q "$START_SHA"..HEAD -o "$RUNNER_TEMP/patch"  # kept as an artifact if anything below fails
+            # Rebase onto the current test: if test moved during the run (e.g. a workflow edit),
             # the branch would otherwise carry old workflow files, which GITHUB_TOKEN may not push.
-            git fetch -q origin main
-            if ! git rebase -q origin/main; then
+            git fetch -q origin test
+            if ! git rebase -q origin/test; then
               git rebase --abort
               echo "push_failed=conflict" >> "$GITHUB_OUTPUT"
-              printf 'I proposed a fix, but it conflicts with changes made to `main` while I was working, so no pull request was opened. The patch is attached to the [run](%s) (artifact `auto-fix-patch`).\n\n%s%s\n' "$run_url" "$summary" "$footer" > "$reply"
+              printf 'I proposed a fix, but it conflicts with changes made to `test` while I was working, so no pull request was opened. The patch is attached to the [run](%s) (artifact `auto-fix-patch`).\n\n%s%s\n' "$run_url" "$summary" "$footer" > "$reply"
               gh issue comment "$ISSUE" --body-file "$reply"
               exit 1
             fi
@@ -211,9 +217,9 @@ jobs:
               exit 1
             fi
             if [ "$TESTS" = "pass" ]; then tests_line="✅ All unit tests pass."; draft=""; else tests_line="❌ Unit tests fail, see the [run]($run_url). Opened as a draft."; draft="--draft"; fi
-            printf '%s\n\n### Tests\n%s\n\nFixes #%s\n\n> A maintainer reviews and merges this; then release it (CLAUDE.md > Releasing).%s\n' \
+            printf '%s\n\n### Tests\n%s\n\nFixes #%s\n\n> A maintainer reviews and merges this into `test`, tests it, then releases it to `main` (CLAUDE.md > Releasing).%s\n' \
               "$summary" "$tests_line" "$ISSUE" "$footer" > "$RUNNER_TEMP/pr-body.md"
-            if ! pr_url=$(gh pr create $draft --base main --head "$branch" --title "Fix #${ISSUE}: $(gh issue view "$ISSUE" --json title -q .title)" --body-file "$RUNNER_TEMP/pr-body.md"); then
+            if ! pr_url=$(gh pr create $draft --base test --head "$branch" --title "Fix #${ISSUE}: $(gh issue view "$ISSUE" --json title -q .title)" --body-file "$RUNNER_TEMP/pr-body.md"); then
               echo "push_failed=pr" >> "$GITHUB_OUTPUT"
               printf 'I proposed a fix on branch `%s`, but opening the pull request failed ([run](%s)).\n\n%s%s\n' "$branch" "$run_url" "$summary" "$footer" > "$reply"
               gh issue comment "$ISSUE" --body-file "$reply"
