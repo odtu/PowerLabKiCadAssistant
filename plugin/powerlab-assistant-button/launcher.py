@@ -1,5 +1,5 @@
-"""Schematic editor toolbar action: show/hide the PowerLab Assistant panel,
-starting it if it isn't running.
+"""Schematic editor toolbar action: show/hide the PowerLab Assistant panel (the same one
+the PCB editor's button uses), starting it if it isn't running.
 
 KiCad runs this in the plugin's own Python environment, which has no wx, so the
 panel itself is started on KiCad's bundled Python (scripting/plugins/powerlab_assistant).
@@ -12,7 +12,7 @@ import subprocess
 import sys
 import time
 
-PORT = 47615  # must match powerlab_assistant/standalone.py
+PORT = 47615  # this file is a copy of powerlab_assistant/launch.py for the schematic editor
 # This file lives in <KiCad documents>/10.0/plugins/<this plugin>/
 VERSION_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SCRIPTING = os.path.join(VERSION_DIR, "scripting", "plugins")
@@ -21,7 +21,7 @@ CONFIG = os.path.join(os.environ.get("APPDATA", ""), "PowerLabKiCadAssistant", "
 
 
 def code_stamp():
-    """Same as powerlab_assistant/standalone.py: lets an outdated panel know to quit."""
+    """Same as powerlab_assistant/launch.py: lets an outdated panel know to quit."""
     return str(int(max(os.path.getmtime(os.path.join(PACKAGE, f))
                        for f in os.listdir(PACKAGE) if f.endswith((".py", ".html")))))
 
@@ -30,7 +30,7 @@ def toggle_running_panel():
     """True if a current panel handled the click; False if one must be started."""
     try:
         with socket.create_connection(("127.0.0.1", PORT), timeout=0.5) as conn:
-            conn.sendall(f"toggle {code_stamp()}".encode())
+            conn.sendall(f"toggle {code_stamp()} schematic".encode())
             conn.settimeout(2)
             reply = conn.recv(16)
     except OSError:
@@ -59,6 +59,7 @@ def start_panel():
     env = dict(os.environ)  # keeps KICAD_API_SOCKET / KICAD_API_TOKEN from KiCad
     env.pop("PYTHONHOME", None)
     env["POWERLAB_ASSISTANT_STANDALONE"] = "1"
+    env["POWERLAB_ASSISTANT_EDITOR"] = "schematic"
     # KiCad's Python ignores PYTHONPATH, so put the package on the path in code.
     bootstrap = (f"import sys; sys.path.insert(0, {SCRIPTING!r}); "
                  "from powerlab_assistant.standalone import main; main()")

@@ -1,8 +1,7 @@
 """Where the panel gets its KiCad context from.
 
-PcbSource runs inside the PCB editor and reads the board through pcbnew.
-SchematicSource runs in the standalone panel and talks to KiCad over its IPC API
-(Preferences > Plugins > Enable KiCad API).
+KiCadSource serves both editors from the one standalone panel, talking to KiCad over its
+IPC API (Preferences > Plugins > Enable KiCad API).
 """
 
 import ctypes
@@ -19,7 +18,6 @@ if os.name == "nt":
     from . import kicad_window
 else:  # the panel only runs on Windows; this keeps the module importable for tests on Linux CI
     kicad_window = None
-from .pcb import board_state, build_context
 
 
 @dataclass
@@ -43,7 +41,7 @@ def unreachable_hint(processes):
                 "connection. End it in Task Manager > Details > kicad.exe (that process ID), "
                 "then restart KiCad.")
     if not processes:
-        return "KiCad isn't running. Start KiCad and open the schematic, then try again."
+        return "KiCad isn't running. Start KiCad and open the schematic or the board, then try again."
     return ("Can't reach KiCad. Turn on Preferences > Plugins > Enable KiCad API, then restart "
             "KiCad and reopen the panel.")
 
@@ -60,41 +58,6 @@ def unreachable_chip(processes):
 
 def short_list(names, limit=6):
     return ", ".join(names[:limit]) + (f" +{len(names) - limit}" if len(names) > limit else "")
-
-
-class PcbSource:
-    editor = "pcb"
-    suggestions = [
-        ("Create a symbol + footprint library for…", "Create a symbol and footprint library for "),
-        ("Run DRC and summarize violations", "Run DRC on this board and summarize the violations"),
-        ("Check selected footprints", "Check the selected footprints against their datasheets"),
-        ("Autoroute the remaining nets", "Autoroute the remaining nets with Freerouting"),
-        ("Export Gerbers for PCBWay", "Export Gerbers and drill files for PCBWay"),
-    ]
-    can_reload = False
-    changed_note = ("Board changed on disk. Use File → Revert in KiCad to load it "
-                    "(unsaved KiCad edits will be lost).")
-
-    def snapshot(self):
-        board_path, selected = board_state()
-        chips = [os.path.basename(board_path)] if board_path else ["No board saved yet"]
-        if selected:
-            chips.append("Selected: " + short_list(selected))
-        state = "Selected footprints: " + (", ".join(selected) if selected else "none")
-        if board_path:
-            state = f"Open board: {board_path}\n" + state
-        return Snapshot(
-            cwd=os.path.dirname(board_path) if board_path else os.path.expanduser("~"),
-            chips=chips,
-            context="\n".join(filter(None, [build_context(board_path, selected), library_context()])),
-            state=state,
-            watch=[board_path] if board_path else [],
-        )
-
-    def kicad_version(self):
-        import pcbnew
-
-        return pcbnew.GetBuildVersion()
 
 
 def clipboard_sequence():
@@ -130,28 +93,38 @@ def is_kicad_schematic(text):
     return "(lib_id" in text or "(label" in text or "(wire" in text or "(kicad_sch" in text
 
 
-class SchematicSource:
-    """KiCad 10's schematic API only reports which schematic is open (no selection,
-    save or revert). The selection is read by running the editor's Edit > Copy and
-    parsing the clipboard, which is then restored; save/revert go through its menu."""
+EDITOR_TITLES = {"pcb": "PCB Editor", "schematic": "Schematic Editor"}
+EDITOR_NAMES = {"pcb": "PCB editor", "schematic": "schematic editor"}
 
-    editor = "schematic"
+
+def schematic_files(project_dir):
+    return glob.glob(os.path.join(project_dir, "*.kicad_sch")) if project_dir else []
+
+
+class KiCadSource:
+    """Both editors, for the one panel: the toolbar button in either shows or hides it.
+
+    The board and its selected footprints come from KiCad's API. KiCad 10's schematic API only
+    reports which schematic is open (no selection, save or revert): the schematic selection is
+    read by running the editor's Edit > Copy and parsing the clipboard, which is then restored,
+    and save/revert go through its menu."""
+
     suggestions = [
         ("Create a symbol + footprint library for…", "Create a symbol and footprint library for "),
         ("Run ERC and summarize violations", "Run ERC on this schematic and summarize the violations"),
+        ("Run DRC and summarize violations", "Run DRC on this board and summarize the violations"),
         ("Check the selected parts", "Check the selected parts against their datasheets"),
-        ("Export the schematic as PDF", "Export the schematic as a PDF"),
+        ("Autoroute the remaining nets", "Autoroute the remaining nets with Freerouting"),
+        ("Export Gerbers for PCBWay", "Export Gerbers and drill files for PCBWay"),
     ]
-    can_reload = True
-    changed_note = ("Claude changed the schematic, but you have unsaved edits in KiCad, so it "
-                    "wasn't reloaded automatically. Reloading drops those edits.")
 
-    def __init__(self):
+    def __init__(self, editor="schematic"):
+        self.editor = editor  # the editor the user worked in last ("pcb" or "schematic")
         self.token = None  # first connect: the token KiCad put in the launch environment
         self.down_until = 0.0
         self.connect()
         self.clip_seq = clipboard_sequence()  # ignore whatever was copied before the panel opened
-        self.selected = []
+        self.selected = []  # in the schematic editor
 
     def connect(self):
         from kipy import KiCad
@@ -159,22 +132,62 @@ class SchematicSource:
         # Short timeout: these calls run on the panel's GUI thread.
         self.kicad = KiCad(client_name=f"powerlab-assistant-{os.getpid()}", kicad_token=self.token, timeout_ms=600)
 
+
     def call(self, fn):
         """Run fn(kicad). After a KiCad restart the connection and its launch token are
         stale, so reconnect once with a fresh one; while KiCad is unreachable, fail fast
-        for a few seconds instead of stalling the panel on every poll."""
+        for a few seconds instead of stalling the panel on every poll. KiCad's own errors
+        (e.g. an editor that isn't open) are passed on as they are."""
+        from kipy.errors import ApiError
+
         if time.time() < self.down_until:
             raise ConnectionError("KiCad is not reachable")
         try:
             return fn(self.kicad)
+        except ApiError:
+            raise
         except Exception:
             self.token = ""
             self.connect()
             try:
                 return fn(self.kicad)
+            except ApiError:
+                raise
             except Exception:
                 self.down_until = time.time() + 5
                 raise
+
+    def open_document(self, doc_type):
+        """(file name, project folder or "") of the open document of that type, or None.
+        KiCad answers "no handler" while that editor is closed."""
+        from kipy.errors import ApiError
+
+        try:
+            docs = self.call(lambda k: k.get_open_documents(doc_type))
+        except ApiError:
+            return None
+        if not docs:
+            return None
+        # Despite the name, board_filename holds the .kicad_sch file name for a schematic.
+        return docs[0].board_filename, docs[0].project.path
+
+    def board_selection(self):
+        """References of the footprints selected in the PCB editor."""
+        from kipy.board_types import FootprintInstance
+        from kipy.errors import ApiError
+
+        try:
+            items = self.call(lambda k: k.get_board().get_selection())
+        except ApiError:
+            return []
+        return sorted(i.reference_field.text.value for i in items if isinstance(i, FootprintInstance))
+
+    def track_editor(self):
+        """The editor the user is in: the KiCad editor window that last had the focus."""
+        title = kicad_window.foreground_title()
+        for editor, kind in EDITOR_TITLES.items():
+            if title.endswith(kind):
+                self.editor = editor
 
     def project_dir(self, sch_name):
         """The API doesn't say where the schematic lives; KiCad's recent-projects list does."""
@@ -230,46 +243,77 @@ class SchematicSource:
 
         wx.CallLater(40, check)
 
+
     def snapshot(self):
         from kipy.proto.common.types.base_types_pb2 import DocumentType
 
-        docs = self.call(lambda k: k.get_open_documents(DocumentType.DOCTYPE_SCHEMATIC))
-        if not docs:
-            return Snapshot(os.path.expanduser("~"), ["No schematic open"],
-                            "You were launched from KiCad, but no schematic is open.", "No schematic open")
-        sch_name = docs[0].board_filename  # despite the name, this holds the .kicad_sch file name
-        project_dir = self.project_dir(sch_name)
-        self.poll_clipboard()
-        editor = kicad_window.find_editor()
-        sheet = kicad_window.current_sheet(editor) if editor else ""
+        self.track_editor()
+        board = self.open_document(DocumentType.DOCTYPE_PCB)
+        sch = self.open_document(DocumentType.DOCTYPE_SCHEMATIC)
+        if not board and not sch:
+            return Snapshot(os.path.expanduser("~"), ["No schematic or board open"],
+                            "You were launched from KiCad, but no schematic or board is open.",
+                            "No schematic or board open")
+        project_dir = (board or sch)[1] or (self.project_dir(sch[0]) if sch else None) or ""
+        stem = os.path.splitext((board or sch)[0])[0]
+        board_path = os.path.join(project_dir, board[0] if board else stem + ".kicad_pcb")
+        sch_path = os.path.join(project_dir, sch[0] if sch else stem + ".kicad_sch")
+        footprints = self.board_selection() if board else []
+        sheet = ""
+        if sch:
+            self.poll_clipboard()
+            hwnd = kicad_window.find_editor()
+            sheet = kicad_window.current_sheet(hwnd) if hwnd else ""
 
-        chips = [f"Sheet: {sheet.split('/')[-1]}" if sheet else sch_name]
-        if self.selected:
-            chips.append("Selected: " + short_list([p.split(" (")[0] for p in self.selected]))
-        context = [
-            "You were launched from KiCad's schematic editor.",
-            f"Root schematic: {os.path.join(project_dir, sch_name) if project_dir else sch_name}",
-            "Use the kicad MCP tools to inspect or edit the schematic and libraries. Schematic "
-            "edits are written to the .kicad_sch files. The panel makes sure the schematic is "
-            "saved before each message and reloads it in KiCad after you change a sheet, so "
-            "don't tell the user to save or revert.",
-            "The message state lists the sheet shown in the schematic editor and the items "
-            "selected there when the message was sent (read via the editor's Edit > Copy).",
-        ]
+        if self.editor == "pcb" and board or not sch:
+            chips, selected = [board[0]], footprints
+        else:
+            chips, selected = [f"Sheet: {sheet.split('/')[-1]}" if sheet else sch[0]], \
+                [p.split(" (")[0] for p in self.selected]
+        if selected:
+            chips.append("Selected: " + short_list(selected))
+
+        context = ["You were launched from KiCad. This one panel serves both the PCB editor and "
+                   "the schematic editor."]
         if project_dir:
-            context.insert(1, f"KiCad project folder: {project_dir}")
-        context.append(library_context())
-        selected = ", ".join(self.selected) if self.selected else "nothing"
+            context.append(f"KiCad project folder: {project_dir}")
+            if sch or os.path.isfile(sch_path):
+                context.append(f"Root schematic: {sch_path}")
+            if board or os.path.isfile(board_path):
+                context.append(f"Board file: {board_path}")
+        context += [
+            "Use the kicad MCP tools to inspect or edit the schematic, the board and libraries. "
+            "Schematic edits are written to the .kicad_sch files. Board tools edit the open board "
+            "live in the PCB editor.",
+            "The message state says which editor the user is working in, which editors are open, "
+            "the sheet shown in the schematic editor and what is selected in each editor (the "
+            "schematic selection is read via the editor's Edit > Copy).",
+            library_context(),
+        ]
+        state = [f"The user is working in the {EDITOR_NAMES[self.editor]}."]
+        if board:
+            state += [f"PCB editor: board {board[0]}",
+                      "Selected footprints in the PCB editor: " + (", ".join(footprints) or "none")]
+        else:
+            state.append("PCB editor: not open")
+        if sch:
+            state += [f"Schematic editor: root {sch[0]}, showing sheet {sheet or 'unknown'}",
+                      "Selected in the schematic editor: " + (", ".join(self.selected) or "nothing")]
+        else:
+            state.append("Schematic editor: not open")
+        watch = schematic_files(project_dir) + ([board_path] if project_dir and os.path.isfile(board_path) else [])
         return Snapshot(
             cwd=project_dir or os.path.expanduser("~"),
             chips=chips,
             context="\n".join(filter(None, context)),
-            state=(f"Schematic editor: root {sch_name}, showing sheet {sheet or 'unknown'}\n"
-                   f"Selected in the schematic editor: {selected}"),
-            watch=glob.glob(os.path.join(project_dir, "*.kicad_sch")) if project_dir else [],
+            state="\n".join(state),
+            watch=watch,
         )
 
-    # ---- driving the editor window (no API for these in KiCad 10) ----------
+    # ---- driving the schematic editor window (no API for these in KiCad 10) ----
+
+    def schematic_open(self):
+        return bool(kicad_window.find_editor())
 
     def unsaved(self):
         hwnd = kicad_window.find_editor()

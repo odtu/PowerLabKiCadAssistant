@@ -230,8 +230,8 @@ foreach ($pair in @(@("plugin\powerlab_assistant", $PanelDest), @("plugin\powerl
     New-Item -ItemType Directory -Force $pair[1] | Out-Null
     Copy-Item -Recurse -Force (Join-Path $Root "$($pair[0])\*") $pair[1]
 }
-Ok "PCB editor panel   -> $PanelDest"
-Ok "Schematic button   -> $ButtonDest"
+Ok "Panel, PCB button -> $PanelDest"
+Ok "Schematic button  -> $ButtonDest"
 $null = Save-Config
 
 # ---- 4b. Skills and the tools they need ------------------------------------
@@ -285,7 +285,7 @@ if ($Update) {
     $version = (Select-String -Path (Join-Path $PanelDest "config.py") -Pattern '^VERSION = "([^"]+)"').Matches[0].Groups[1].Value
     Write-Host ""
     Write-Host "Updated to PowerLab KiCad Assistant $version." -ForegroundColor White
-    Write-Host "  Restart KiCad to load it. The schematic panel restarts by itself on its next button click."
+    Write-Host "  Restart KiCad to load it. An open panel restarts by itself on its next button click."
     exit 0
 }
 
@@ -312,7 +312,7 @@ $explain = @()
 if ($Library -and (Ask "Point KiCad's METUPOWERLAB_* paths and library tables at this clone? (backed up first)")) {
     $configure += @("--library", $Library); $explain += "library paths"
 }
-if (Ask "Turn on KiCad's API server and set its plugin Python to KiCad 10? (needed for the schematic panel)") {
+if (Ask "Turn on KiCad's API server and set its plugin Python to KiCad 10? (the panel needs it)") {
     $configure += "--enable-api"; $explain += "API server"
 }
 if ($explain.Count -gt 0) {
