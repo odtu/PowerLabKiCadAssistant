@@ -26,7 +26,10 @@ try:
 except ImportError:
     wx = types.ModuleType("wx")
     wx.FindWindowByName = lambda *args: None
+    wx.Frame = object
+    wx.html2 = types.ModuleType("wx.html2")
     sys.modules["wx"] = wx
+    sys.modules["wx.html2"] = wx.html2
 os.environ["POWERLAB_ASSISTANT_STANDALONE"] = "1"  # don't register the PCB plugin
 sys.path.insert(0, os.path.join(ROOT, "plugin"))
 sys.path.insert(0, os.path.join(ROOT, "tools"))
@@ -198,6 +201,103 @@ class UsageTests(unittest.TestCase):
         self.assertEqual(usage.summary([], 0, 0), ("", ""))
 
 
+class ChatHistoryTests(unittest.TestCase):
+    """Closing the panel, the editor or KiCad must not forget the chat."""
+
+    def setUp(self):
+        from powerlab_assistant import history
+        self.history = history
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.old_folder, history.FOLDER = history.FOLDER, self.tmp.name
+        self.addCleanup(setattr, history, "FOLDER", self.old_folder)
+        self.project = os.path.join(self.tmp.name, "project")
+
+    def fake_panel(self):
+        """The panel's chat methods on a plain object (no window, page or Claude process)."""
+        try:
+            from powerlab_assistant.panel import ClaudePanel
+        except ImportError as exc:
+            self.skipTest(f"panel needs wx.html2: {exc}")
+        names = ("say", "save_chat", "open_chat", "handle", "finished", "show_image")
+
+        class Fake:
+            pass
+
+        for name in names:
+            setattr(Fake, name, getattr(ClaudePanel, name))
+        panel = Fake()
+        panel.source = types.SimpleNamespace(editor="pcb", can_reload=False)
+        panel.session_id, panel.chat_cwd, panel.events = None, None, []
+        panel.retry, panel.stale_session, panel.proc = None, False, None
+        panel.got_result, panel.watched, panel.image_reads = False, {}, {}
+        panel.last_text, panel.limits, panel.started, panel.effort = "", [], 0.0, "high"
+        panel.emitted = []
+        panel.emit = lambda kind, **data: panel.emitted.append(dict(data, kind=kind))
+        panel.load_page = lambda: panel.emitted.clear()
+        return panel
+
+    def test_chat_is_kept_per_project_and_editor(self):
+        h = self.history
+        image = h.stored("image", {"src": "data:image/png;base64,AAAA", "name": "v.png", "path": "C:\\v.png"})
+        self.assertEqual(image, {"kind": "image", "name": "v.png", "path": "C:\\v.png"})
+        h.save("pcb", self.project, "abc", [{"kind": "user", "text": "hi", "files": []}, image])
+        self.assertEqual(h.load("pcb", self.project), ("abc", [{"kind": "user", "text": "hi", "files": []}, image]))
+        self.assertEqual(h.load("schematic", self.project), (None, []))
+        self.assertEqual(h.load("pcb", self.project + "2"), (None, []))
+        h.save("pcb", self.project, "abc", [{"kind": "text", "text": str(i)} for i in range(h.MAX_EVENTS + 5)])
+        self.assertEqual(len(h.load("pcb", self.project)[1]), h.MAX_EVENTS)
+        h.save("pcb", self.project, None, [])  # New chat
+        self.assertEqual(os.listdir(self.tmp.name), [])
+
+    def test_reopened_panel_continues_the_last_chat(self):
+        first = self.fake_panel()
+        first.open_chat(self.project)
+        self.assertEqual(first.emitted, [])  # nothing saved yet
+        first.say("user", text="Place the connectors", files=[])
+        first.handle({"type": "system", "subtype": "init", "session_id": "s-1"})
+        first.handle({"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "Done."},
+            {"type": "tool_use", "id": "t1", "name": "mcp__kicad__move_component", "input": {"reference": "J1"}}]}})
+        first.save_chat()  # the editor closes (on_parent_destroy); a new panel opens on the project
+        second = self.fake_panel()
+        second.open_chat(self.project)
+        self.assertEqual(second.session_id, "s-1")  # the next message resumes it
+        kinds = [e["kind"] for e in second.emitted]
+        self.assertEqual(kinds, ["user", "text", "tool", "busy", "note"])
+        self.assertEqual(second.emitted[1]["text"], "Done.")
+        self.assertIn("Continuing your last chat", second.emitted[-1]["text"])
+        # Another project has its own chat.
+        second.open_chat(self.project + "-other")
+        self.assertEqual((second.session_id, second.events, second.emitted), (None, [], []))
+
+    def test_echoed_kicad_state_is_not_shown(self):
+        panel = self.fake_panel()
+        state = "<kicad_state>\nOpen board: C:/p/b.kicad_pcb\nSelected footprints: U1\n</kicad_state>"
+        panel.handle({"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "Which part do you mean?\n\n" + state},
+            {"type": "text", "text": state}]}})
+        self.assertEqual([e["text"] for e in panel.emitted], ["Which part do you mean?"])
+        self.assertEqual(panel.last_text, "Which part do you mean?")
+
+    def test_expired_session_is_sent_again_as_a_new_chat(self):
+        panel = self.fake_panel()
+        panel.chat_cwd, panel.session_id = self.project, "gone"
+        panel.retry = ("Run DRC", [])
+        sent = []
+
+        def launch(text, files=None):
+            sent.append((text, files, panel.session_id))
+            panel.proc = object()
+
+        panel.launch = launch
+        panel.handle({"type": "result", "subtype": "error_during_execution", "is_error": True,
+                      "errors": ["No conversation found with session ID: gone"]})
+        panel.finished(0)
+        self.assertEqual(sent, [("Run DRC", [], None)])
+        self.assertFalse(any(e["kind"] == "meta" or e.get("level") == "error" for e in panel.emitted))
+
+
 class McpPatchTests(unittest.TestCase):
     """Issue #10: fixes shipped as a patch on the pinned KiCad MCP server."""
 
@@ -294,6 +394,7 @@ class PanelDefaultsTests(unittest.TestCase):
         self.assertEqual(c["MODELS"][0][0], c["DEFAULT_MODEL"])
         self.assertIn("powerlab-pcb-design-rules", "".join(c["PANEL_NOTE"]))
         self.assertIn("Never ask the user to close", c["PANEL_NOTE"])  # issue #10
+        self.assertIn("the chat is kept", c["PANEL_NOTE"])
         self.assertIn("powerlab-visual-review", c["PANEL_NOTE"])  # look at the board while working
 
     def test_board_minimums_are_the_pcbway_floor(self):

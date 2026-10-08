@@ -8,6 +8,7 @@ for the schematic editor (SchematicSource).
 import base64
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -16,7 +17,7 @@ import time
 import wx
 import wx.html2
 
-from . import attachments, config, library, report, updates, usage
+from . import attachments, config, history, library, report, updates, usage
 from .common import find_gh, open_console, open_terminal, clean_env
 from .sources import PcbSource
 
@@ -38,9 +39,10 @@ PANEL_NOTE = (
     "command at a time. Keep replies to a few short lines. You cannot ask for permission "
     "mid-run; if you need a decision from the user, stop and ask in your reply.\n"
     "This panel lives inside the open KiCad editor window: closing that editor (or KiCad) "
-    "closes the panel and ends this chat. Never ask the user to close the PCB or schematic "
-    "editor or KiCad. Board tools edit the open board live; after you change a file on disk, "
-    "ask the user to use File > Revert instead.\n"
+    "closes the panel; the chat is kept and continues when the panel is opened again on this "
+    "project. Never ask the user to close the PCB or schematic editor or KiCad. Board tools "
+    "edit the open board live; after you change a file on disk, ask the user to use "
+    "File > Revert instead.\n"
     "Images you open with the Read tool are shown to the user in the panel automatically, "
     "so never try to open them in another program.\n"
     "kicad-cli is already on PATH. Run it by name as a single plain command, e.g. "
@@ -50,6 +52,7 @@ PANEL_NOTE = (
     "itself. Write outputs inside the project folder.\n"
     "Each message ends with a <kicad_state> block giving the live KiCad selection at the "
     "moment it was sent. Words like 'this', 'that', 'it' or 'selected' refer to that selection. "
+    "It is for you only: never repeat it in your reply. "
     "Change designs only through the kicad MCP tools (board tools edit KiCad live when its "
     "API server is on); never hand-edit .kicad_pcb or .kicad_sch files. Never delete files or "
     "folders unless the user names them explicitly; if a request is ambiguous, ask.\n"
@@ -86,6 +89,14 @@ def kicad_frame():
     if frame:
         return frame
     return next((w for w in wx.GetTopLevelWindows() if w.IsShown()), None)
+
+
+STATE_BLOCK = re.compile(r"\s*<kicad_state>.*?(</kicad_state>|$)", re.S)
+
+
+def strip_state(text):
+    """Claude sometimes echoes the message's <kicad_state> block; don't show it."""
+    return STATE_BLOCK.sub("", text).strip()
 
 
 def describe_tool(name, args):
@@ -163,6 +174,10 @@ class ClaudePanel(wx.Frame):
         self.source = source
         self.proc = None
         self.session_id = None
+        self.chat_cwd = None  # project folder of the chat shown (one saved chat per project)
+        self.events = []  # the chat's messages, saved so they come back after a restart
+        self.retry = None  # (text, files) of the last message sent into a resumed session
+        self.stale_session = False
         self.watched = {}
         self.started = 0.0
         self.last_text = ""
@@ -222,6 +237,8 @@ class ClaudePanel(wx.Frame):
     def load_page(self):
         self.ready = False
         self.context_items = None
+        # Messages still waiting for the old page belong to the chat being cleared.
+        self.pending = [d for d in self.pending if d["kind"] not in history.KINDS + ("note", "busy")]
         with open(HTML_PATH, encoding="utf-8") as f:
             self.web.SetPage(f.read(), "")
 
@@ -231,6 +248,32 @@ class ClaudePanel(wx.Frame):
             self.pending.append(data)
             return
         self.web.RunScript(f"app.event({json.dumps(data)})")
+
+    def say(self, kind, **data):
+        """Emit a chat message and keep it in the saved chat."""
+        self.events.append(history.stored(kind, data))
+        self.emit(kind, **data)
+
+    def save_chat(self):
+        if self.chat_cwd:
+            history.save(self.source.editor, self.chat_cwd, self.session_id, self.events)
+
+    def open_chat(self, cwd):
+        """Switch to the project's chat, continuing the last one if it was saved."""
+        self.save_chat()
+        if self.events:
+            self.load_page()
+        self.chat_cwd = cwd
+        self.session_id, self.events = history.load(self.source.editor, cwd)
+        for event in self.events:
+            if event["kind"] == "image":
+                self.show_image(event.get("path", ""), record=False)
+            else:
+                self.emit(**event)
+        if self.events:
+            self.emit("busy", value=False)  # tools cut off last time stop spinning
+            self.emit("note", level="info", text="Continuing your last chat on this project. "
+                                                 "Press + for a new one.")
 
     def in_background(self, work, done):
         """Run work() off the GUI thread (network, git, subprocesses), then done(result)."""
@@ -314,6 +357,8 @@ class ClaudePanel(wx.Frame):
         if self.proc:
             self.proc.terminate()
         self.session_id = None
+        self.events = []
+        self.save_chat()
         self.load_page()
 
     def msg_open(self, msg):
@@ -377,6 +422,7 @@ class ClaudePanel(wx.Frame):
         # wx destroys this panel along with the editor; just stop everything that
         # could call back into it, and let the next toolbar click build a new one.
         self.timer.Stop()
+        self.save_chat()
         if self.proc:
             self.proc.terminate()
         ClaudePanel._instance = None
@@ -400,6 +446,8 @@ class ClaudePanel(wx.Frame):
                 self.unreachable_text = status()
                 self.unreachable_at = time.time()
             items = [self.unreachable_text]
+        if snap and snap.cwd != self.chat_cwd and not self.proc and not self.sending:
+            self.open_chat(snap.cwd)
         if items != self.context_items and self.ready:
             self.context_items = items
             self.emit("context", items=items)
@@ -667,8 +715,10 @@ class ClaudePanel(wx.Frame):
 
             capture(self.GetHandle(), lambda: self.safe(done))
 
-    def launch(self, text):
+    def launch(self, text, files=None):
+        """Start Claude on a message. files is given only when resending (see finished)."""
         self.sending = False
+        self.stale_session = False
         snap = self.snapshot()
         if snap is None:
             reason = getattr(self.source, "unreachable_reason", None)
@@ -676,12 +726,16 @@ class ClaudePanel(wx.Frame):
                                             "Enable KiCad API, then reopen the panel.")
             self.problem("error", text, "kicad not reachable")
             return
+        if snap.cwd != self.chat_cwd:
+            self.open_chat(snap.cwd)
         args = [
             self.claude, "-p",
             "--output-format", "stream-json", "--verbose",
             "--append-system-prompt", snap.context + "\n" + PANEL_NOTE + views_note(),
         ]
-        files, self.attached = self.attached, []
+        resend = files is not None
+        if not resend:
+            files, self.attached = self.attached, []
         extra = attachments.folders(files) + [VIEWS_DIR]
         for d in config.work_dirs() + [f for f in extra if f not in config.work_dirs()]:
             args += ["--add-dir", d]
@@ -692,8 +746,11 @@ class ClaudePanel(wx.Frame):
         args += ["--effort", self.effort]
         args += ["--allowedTools", ",".join(ALLOWED_TOOLS)]
 
-        self.emit("user", text=text, files=[os.path.basename(p) for p in files])
-        self.emit_attached()
+        if not resend:
+            self.say("user", text=text, files=[os.path.basename(p) for p in files])
+            self.emit_attached()
+            self.save_chat()
+        self.retry = (text, files) if self.session_id else None
         report.note_event("send", self.source.editor)
         self.watched = {p: os.path.getmtime(p) for p in snap.watch if os.path.isfile(p)}
         self.started = time.time()
@@ -720,8 +777,8 @@ class ClaudePanel(wx.Frame):
     def read_stream(self, proc):
         for line in proc.stdout:
             line = line.strip()
-            if not line:
-                continue
+            if not line or line.startswith("No conversation found"):
+                continue  # an expired session; handled with the result
             try:
                 msg = json.loads(line)
             except ValueError:
@@ -735,19 +792,21 @@ class ClaudePanel(wx.Frame):
         kind = msg.get("type")
         if kind == "system" and msg.get("subtype") == "init":
             self.session_id = msg.get("session_id")
+            self.save_chat()
         elif kind == "rate_limit_event":
             self.limits = usage.limits(msg) or self.limits
             text, tip = usage.summary(self.limits, 0, 0)
             self.emit("usage", text=text, tip=tip)
         elif kind == "assistant":
             for block in msg.get("message", {}).get("content", []):
-                if block.get("type") == "text" and block.get("text", "").strip():
-                    self.last_text = block["text"].strip()
-                    self.emit("text", text=self.last_text)
+                text = strip_state(block.get("text", "")) if block.get("type") == "text" else ""
+                if text:
+                    self.last_text = text
+                    self.say("text", text=text)
                 elif block.get("type") == "tool_use":
                     args = block.get("input") or {}
                     name, detail = describe_tool(block.get("name", ""), args)
-                    self.emit("tool", id=block.get("id"), name=name, detail=detail)
+                    self.say("tool", id=block.get("id"), name=name, detail=detail)
                     self.image_reads[block.get("id")] = (
                         tool_kind(block.get("name", "")),
                         args.get("file_path", "") if block.get("name") == "Read" else "")
@@ -763,13 +822,16 @@ class ClaudePanel(wx.Frame):
                     if isinstance(detail, list):
                         detail = " ".join(b.get("text", "") for b in detail if isinstance(b, dict))
                     detail = str(detail)[:200]
-                self.emit("tool_done", id=block.get("tool_use_id"), error=failed, text=detail)
+                self.say("tool_done", id=block.get("tool_use_id"), error=failed, text=detail)
                 name, image = self.image_reads.pop(block.get("tool_use_id"), ("tool", ""))
                 report.note_event("tool", f"{name} {'error' if failed else 'ok'}")
                 if image and not failed and os.path.splitext(image)[1].lower() in IMAGE_TYPES:
                     self.show_image(image)
         elif kind == "result":
             self.got_result = True
+            if msg.get("is_error") and any("No conversation found" in str(e) for e in msg.get("errors") or []):
+                self.stale_session = True  # Claude Code deleted the saved session; resent in finished
+                return
             result = str(msg.get("result") or msg.get("subtype"))
             report.note_event("result", f"{msg.get('subtype', '')} error={bool(msg.get('is_error'))}")
             if "Not logged in" in result:
@@ -785,7 +847,7 @@ class ClaudePanel(wx.Frame):
             labels = {i: l for i, l, _, _ in MODELS if i}
             used = [labels.get(m, m) for m in (msg.get("modelUsage") or {})]
             tokens, window = usage.context(msg)
-            self.emit("meta", text=f"{secs:.0f}s" + (f" · {turns} steps" if turns > 1 else "")
+            self.say("meta", text=f"{secs:.0f}s" + (f" · {turns} steps" if turns > 1 else "")
                       + (f" · {', '.join(used)} · {self.effort} effort" if used else ""))
             text, tip = usage.summary(self.limits, tokens, window)
             self.emit("usage", text=text, tip=tip)
@@ -795,7 +857,7 @@ class ClaudePanel(wx.Frame):
         self.problems[pid] = {"kind": kind, "detail": detail}
         return pid
 
-    def show_image(self, path):
+    def show_image(self, path, record=True):
         try:
             if os.path.getsize(path) > MAX_IMAGE_BYTES:
                 return
@@ -804,11 +866,21 @@ class ClaudePanel(wx.Frame):
         except OSError:
             return
         mime = IMAGE_TYPES[os.path.splitext(path)[1].lower()]
-        self.emit("image", src=f"data:{mime};base64,{data}", name=os.path.basename(path), path=path)
+        (self.say if record else self.emit)("image", src=f"data:{mime};base64,{data}",
+                                            name=os.path.basename(path), path=path)
 
     def finished(self, returncode):
         self.proc = None
+        if self.stale_session and self.retry:
+            text, files = self.retry
+            self.session_id = None
+            self.emit("note", level="info", text="Claude Code no longer has the earlier conversation "
+                                                 "(it deletes old chats), so this starts a new one.")
+            self.launch(text, files)
+            if self.proc:
+                return
         self.emit("busy", value=False)
+        self.save_chat()
         if not self.got_result and returncode not in (0, None, 1, 15, -15):
             self.problem("error", f"Claude Code stopped unexpectedly (exit code {returncode}).",
                          "claude exited without a result", f"exit code {returncode}")

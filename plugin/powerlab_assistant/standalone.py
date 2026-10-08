@@ -83,6 +83,7 @@ def main():
     panel = ClaudePanel(None, claude, source)
 
     def quit_panel():
+        panel.save_chat()
         if panel.proc:
             panel.proc.terminate()
         srv.close()
