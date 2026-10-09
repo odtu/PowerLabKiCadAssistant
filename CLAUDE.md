@@ -86,7 +86,12 @@ Report real bugs upstream too.
 - **Writing one:** the description decides when Claude uses it, so name the user phrasings. Keep the body to the lab's procedure and judgement; the kicad MCP tools do the work.
 - **External tools:** a skill that needs one gets it from `install.ps1`. Pin the version and its SHA-256, install it under `%LOCALAPPDATA%\PowerLabKiCadAssistant`, record its path in `config.json`, and expose it to the panel's sessions in `common.clean_env()`. That's how Java 25 and Freerouting 2.4.1 are set up. Never change system-wide PATH or Java.
 - **The `Skill` tool** is in the panel's `ALLOWED_TOOLS`.
-- **`powerlab-pcb-design-rules`** is a copy of the lab's [PCB_DESIGN_RULES.md](https://github.com/odtu/Powerlab/blob/master/KiCAD/PCB_DESIGN_RULES.md). It differs in two ways: it is renamed, and the drawing-sheet template rule (§1.1) is removed because the panel is public. When the source changes, copy it again with the same two edits. Other skills (e.g. autoroute) refer to its section numbers, so check those still match. `PANEL_NOTE` tells Claude to load it for any design work.
+- **`powerlab-pcb-design-rules`** is a copy of the lab's [PCB_DESIGN_RULES.md](https://github.com/odtu/Powerlab/blob/master/KiCAD/PCB_DESIGN_RULES.md). It differs in three ways:
+  - it is renamed;
+  - the drawing-sheet template rule (§1.1) is removed, because the panel is public;
+  - §3.3 has a marked panel addition, "Pour nets, power rails and track paths" (issue #21). It stays until the lab's file has the same rules.
+
+  When the source changes, copy it again with the same three edits. Other skills (e.g. autoroute) refer to its section numbers, so check those still match. `PANEL_NOTE` tells Claude to load it for any design work.
 
 ## Working on the code
 

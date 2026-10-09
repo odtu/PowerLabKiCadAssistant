@@ -283,12 +283,33 @@ Follow these steps in order when laying out a board. Before starting, collect ev
 
 ### 3.3 Routing
 
-Route in this order: critical high-current paths → clocks and high-speed signals → differential pairs → sensitive analog → everything else.
+Route in this order: critical high-current paths → clocks and high-speed signals → differential pairs → sensitive analog → everything else. Pour-net fan-out vias come before all of these, and the power rails are routed before the signals.
 
 **General**
 - **Keep traces short and direct. Use 45° corners; never use 90°.** No acute angles (they trap etchant), no stubs, and no dangling traces.
 - Don't route traces between fine-pitch pads. Leave pads straight out, then turn.
 - Enable teardrops on pad and via connections (KiCad: Edit → Edit Teardrops). They're free and make the joints stronger.
+
+**Pour nets, power rails and track paths** *(panel addition, issue #21: not in the lab's source file yet; keep this block when re-copying it)*
+- **Never route a pour net between pads.** This covers GND, or any net that has a plane or pour.
+  - Each pad connects to the pour directly: through its own via to the plane, right at the pad (plane → via → pad), or through the pour on its own layer.
+  - The only tracks a pour net has are the short stubs from a pad to its own via.
+  - Place these fan-out vias before routing anything else.
+- **Power pins that sit close together share copper.** When several pins of one rail are within a few mm of each other (decoupling caps, regulator input/output, a cap row), join them with a local pour on the parts layer instead of separate tracks.
+  - Don't do this when a pad of another net lies inside the group (e.g. a switch node between them); route the rail instead.
+- **Power rails run at their class width from end to end** (Power class, ≥ 0.5 mm).
+  - Neck down only right at a pin that forces it (a fine-pitch IC pin), and widen again right after it.
+  - Check this after every router: Freerouting 2.4.1 ignores net-class widths and routes every net at the default width.
+- **Shortest path, fewest corners.**
+  - A track only has to end inside the pad copper, so don't always leave or enter a pad from its centre. Use the side that faces the destination when that is shorter.
+  - No detours and no staircases.
+  - Every corner is 45° or an arc. Never 90° or sharper, also where two track widths meet.
+  - No stubs: remove unused neck-downs and dangling ends.
+- **Keep escape room at fine-pitch parts.**
+  - Keep about 1.5 mm in front of every fine-pitch pin free of other nets' tracks, on every layer, and keep that lane free of fan-out vias.
+  - Don't route other nets under a fine-pitch IC until its pins have escaped.
+  - Don't place test points or passives within about 2 mm of a pin row that still has to escape.
+  - Give a fine-pitch part its room from the board edge and from holes, e.g. a QFN row facing a shaft hole.
 
 **High current**
 - **Use polygons/power planes for high-current paths if you can. Otherwise, use a wide trace.** Size width for the current using IPC-2221:
