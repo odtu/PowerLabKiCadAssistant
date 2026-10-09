@@ -156,6 +156,20 @@ class SkillToolsEnvTests(unittest.TestCase):
         with open(os.path.join(skills, "powerlab-autoroute", "SKILL.md"), encoding="utf-8") as f:
             self.assertIn("powerlab-pcb-design-rules", f.read())
 
+    def test_routing_rules_from_issue_21_stay(self):
+        # GND to the pours (no pad-to-pad tracks), power at class width, short paths:
+        # the panel addition must survive a re-copy of the lab's rules file
+        skills = os.path.join(ROOT, "skills")
+        with open(os.path.join(skills, "powerlab-pcb-design-rules", "SKILL.md"), encoding="utf-8") as f:
+            rules = f.read()
+        self.assertIn("Never route a pour net between pads", rules)
+        self.assertIn("Power rails run at their class width", rules)
+        self.assertIn("Shortest path, fewest corners", rules)
+        with open(os.path.join(skills, "powerlab-autoroute", "SKILL.md"), encoding="utf-8") as f:
+            route = f.read()
+        self.assertIn("Freerouting 2.4.1 ignores the net-class width", route)
+        self.assertIn("Fan out the pour nets first", route)
+
 
 class AttachmentTests(unittest.TestCase):
     """Issue #10: images and documents can be attached to a message."""
