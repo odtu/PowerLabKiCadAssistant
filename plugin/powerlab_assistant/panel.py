@@ -1,8 +1,7 @@
 """The PowerLab Assistant panel: a WebView chat UI that runs Claude Code headlessly.
 
 Each message runs `claude -p` in the project folder with the KiCad context attached.
-The same panel is used inside the PCB editor (PcbSource) and as a standalone window
-for the schematic editor (SchematicSource).
+One standalone window serves both the PCB and the schematic editor (KiCadSource).
 """
 
 import base64
@@ -19,7 +18,6 @@ import wx.html2
 
 from . import attachments, config, history, library, report, updates, usage
 from .common import find_gh, open_console, open_terminal, clean_env
-from .sources import PcbSource
 
 # Tools Claude may use without asking. Headless runs can't show permission
 # prompts, so anything else (including shell rm/del/mkdir) is denied.
@@ -38,9 +36,14 @@ PANEL_NOTE = (
     "You are running in a narrow command panel docked beside KiCad, one headless "
     "command at a time. Keep replies to a few short lines. You cannot ask for permission "
     "mid-run; if you need a decision from the user, stop and ask in your reply.\n"
-    "This panel lives inside the open KiCad editor window: closing that editor (or KiCad) "
-    "closes the panel; the chat is kept and continues when the panel is opened again on this "
-    "project. Never ask the user to close the PCB or schematic editor or KiCad. Board tools "
+    "This one panel serves both KiCad's PCB editor and its schematic editor: the toolbar "
+    "button in either shows or hides it, and closing KiCad closes it; the chat is kept and "
+    "continues when the panel is opened again on this project. Work on both the schematic and "
+    "the board from here with the kicad MCP tools. Each message's <kicad_state> says which "
+    "editor the user is working in and what is selected in each. The panel saves the schematic "
+    "before each message and reloads it in the schematic editor after you change a sheet, so "
+    "don't tell the user to save or revert the schematic. "
+    "Never ask the user to close the PCB or schematic editor or KiCad. Board tools "
     "edit the open board live; after you change a file on disk, ask the user to use "
     "File > Revert instead.\n"
     "Images you open with the Read tool are shown to the user in the panel automatically, "
@@ -80,15 +83,12 @@ EFFORTS = ("low", "medium", "high", "xhigh", "max")
 HTML_PATH = os.path.join(os.path.dirname(__file__), "panel.html")
 DETAIL_KEYS = ("name", "symbol_name", "footprint_name", "library", "reference", "net",
                "file_path", "path", "pattern", "query", "url", "command")
+BOARD_CHANGED = ("Board changed on disk. Use File → Revert in KiCad to load it "
+                 "(unsaved KiCad edits will be lost).")
+SCHEMATIC_CHANGED = ("Claude changed the schematic, but you have unsaved edits in KiCad, so it "
+                     "wasn't reloaded automatically. Reloading drops those edits.")
 
 _live_panel = None  # the panel that receives reports of this plugin's own exceptions
-
-
-def kicad_frame():
-    frame = wx.FindWindowByName("PcbFrame")
-    if frame:
-        return frame
-    return next((w for w in wx.GetTopLevelWindows() if w.IsShown()), None)
 
 
 STATE_BLOCK = re.compile(r"\s*<kicad_state>.*?(</kicad_state>|$)", re.S)
@@ -147,29 +147,16 @@ def install_excepthook():
 
 
 class ClaudePanel(wx.Frame):
-    _instance = None
-
-    @classmethod
-    def toggle(cls, claude):
-        panel = cls._instance
-        if panel and panel.IsShown():
-            panel.Hide()
-            return
-        if not panel:
-            panel = cls._instance = ClaudePanel(kicad_frame(), claude, PcbSource())
-        panel.present()
-
     def present(self):
         self.Show()
         self.Raise()
         self.web.SetFocus()
 
-    def __init__(self, parent, claude, source):
+    def __init__(self, claude, source):
         global _live_panel
-        style = wx.DEFAULT_FRAME_STYLE | wx.FRAME_TOOL_WINDOW
-        # Inside the PCB editor the panel floats over its window; standalone it floats over everything.
-        style |= wx.FRAME_FLOAT_ON_PARENT if parent else wx.STAY_ON_TOP
-        super().__init__(parent, title="PowerLab Assistant", style=style)
+        # A window of its own (not KiCad's), so it floats over both editors.
+        style = wx.DEFAULT_FRAME_STYLE | wx.FRAME_TOOL_WINDOW | wx.STAY_ON_TOP
+        super().__init__(None, title="PowerLab Assistant", style=style)
         self.claude = claude
         self.source = source
         self.proc = None
@@ -215,22 +202,13 @@ class ClaudePanel(wx.Frame):
         self.Bind(wx.EVT_SHOW, self.on_show)
         self.Bind(wx.EVT_ACTIVATE, self.capture_on_activate)
         self.Bind(wx.EVT_CLOSE, lambda evt: self.Hide())
-        self.parent_id = parent.GetId() if parent else None
-        if parent:
-            parent.Bind(wx.EVT_CLOSE, self.on_parent_close)
-            parent.Bind(wx.EVT_WINDOW_DESTROY, self.on_parent_destroy)
 
+        # The display the user just clicked the toolbar button on.
         width = 380
-        if parent:
-            rect = parent.GetScreenRect()
-            self.SetSize(width, max(rect.height - 160, 460))
-            self.SetPosition((rect.right - width - 30, rect.top + 110))
-        else:
-            # The display the user just clicked the toolbar button on.
-            index = wx.Display.GetFromPoint(wx.GetMousePosition())
-            area = wx.Display(max(index, 0)).GetClientArea()
-            self.SetSize(width, max(area.height - 200, 460))
-            self.SetPosition((area.right - width - 30, area.top + 120))
+        index = wx.Display.GetFromPoint(wx.GetMousePosition())
+        area = wx.Display(max(index, 0)).GetClientArea()
+        self.SetSize(width, max(area.height - 200, 460))
+        self.SetPosition((area.right - width - 30, area.top + 120))
 
     # ---- page bridge -------------------------------------------------------
 
@@ -256,7 +234,7 @@ class ClaudePanel(wx.Frame):
 
     def save_chat(self):
         if self.chat_cwd:
-            history.save(self.source.editor, self.chat_cwd, self.session_id, self.events)
+            history.save(self.chat_cwd, self.session_id, self.events)
 
     def open_chat(self, cwd):
         """Switch to the project's chat, continuing the last one if it was saved."""
@@ -264,7 +242,7 @@ class ClaudePanel(wx.Frame):
         if self.events:
             self.load_page()
         self.chat_cwd = cwd
-        self.session_id, self.events = history.load(self.source.editor, cwd)
+        self.session_id, self.events = history.load(cwd)
         for event in self.events:
             if event["kind"] == "image":
                 self.show_image(event.get("path", ""), record=False)
@@ -366,8 +344,7 @@ class ClaudePanel(wx.Frame):
             os.startfile(msg["path"])
 
     def msg_reload(self, msg):
-        if self.source.can_reload:
-            self.reload_editor()
+        self.reload_editor()
 
     def msg_model(self, msg):
         if msg.get("id") in [m[0] for m in MODELS]:
@@ -403,31 +380,6 @@ class ClaudePanel(wx.Frame):
         else:
             self.timer.Stop()
         evt.Skip()
-
-    def on_parent_close(self, evt):
-        # Stop polling the board before KiCad frees it; resume if the close is cancelled.
-        self.timer.Stop()
-        evt.Skip()
-        wx.CallAfter(self.safe, self.resume_polling)
-
-    def resume_polling(self):
-        if self.IsShown() and self.GetParent():
-            self.timer.Start(1000)
-
-    def on_parent_destroy(self, evt):
-        global _live_panel
-        evt.Skip()
-        if evt.GetId() != self.parent_id:
-            return  # a child of the editor, not the editor itself
-        # wx destroys this panel along with the editor; just stop everything that
-        # could call back into it, and let the next toolbar click build a new one.
-        self.timer.Stop()
-        self.save_chat()
-        if self.proc:
-            self.proc.terminate()
-        ClaudePanel._instance = None
-        if _live_panel is self:
-            _live_panel = None
 
     def snapshot(self):
         try:
@@ -885,12 +837,12 @@ class ClaudePanel(wx.Frame):
             self.problem("error", f"Claude Code stopped unexpectedly (exit code {returncode}).",
                          "claude exited without a result", f"exit code {returncode}")
         changed = [p for p, t in self.watched.items() if os.path.isfile(p) and os.path.getmtime(p) != t]
-        if not changed:
+        if any(p.endswith(".kicad_pcb") for p in changed):
+            self.emit("note", level="warn", text=BOARD_CHANGED)
+        if not any(p.endswith(".kicad_sch") for p in changed) or not self.source.schematic_open():
             return
-        if self.source.can_reload and not self.has_unsaved():
+        if not self.has_unsaved():
             self.reload_editor()  # nothing in the editor to lose: show Claude's change live
             return
-        action = None
-        if self.source.can_reload:
-            action = {"label": "Reload (drops unsaved edits)", "type": "reload"}
-        self.emit("note", level="warn", text=self.source.changed_note, action=action)
+        self.emit("note", level="warn", text=SCHEMATIC_CHANGED,
+                  action={"label": "Reload (drops unsaved edits)", "type": "reload"})

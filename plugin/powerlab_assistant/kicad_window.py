@@ -22,6 +22,7 @@ user32.GetMenuItemID.restype = wt.UINT
 user32.GetMenuStringW.argtypes = [wt.HMENU, wt.UINT, wt.LPWSTR, ctypes.c_int, wt.UINT]
 user32.PostMessageW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
 user32.GetWindowThreadProcessId.argtypes = [wt.HWND, ctypes.POINTER(wt.DWORD)]
+user32.GetForegroundWindow.restype = wt.HWND
 
 WM_COMMAND = 0x0111
 BM_CLICK = 0x00F5
@@ -76,6 +77,11 @@ def find_editor(kind="Schematic Editor"):
         if window_text(hwnd).endswith(kind):
             return hwnd
     return None
+
+
+def foreground_title():
+    """Title of the window the user is working in."""
+    return window_text(user32.GetForegroundWindow())
 
 
 def is_dirty(hwnd):

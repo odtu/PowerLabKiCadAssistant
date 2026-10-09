@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import types
 import unittest
 
@@ -155,6 +156,23 @@ class SkillToolsEnvTests(unittest.TestCase):
         with open(os.path.join(skills, "powerlab-autoroute", "SKILL.md"), encoding="utf-8") as f:
             self.assertIn("powerlab-pcb-design-rules", f.read())
 
+    def test_routing_rules_from_issue_21_stay(self):
+        # GND to the pours (no pad-to-pad tracks), power at class width, short paths:
+        # the panel addition must survive a re-copy of the lab's rules file
+        skills = os.path.join(ROOT, "skills")
+        with open(os.path.join(skills, "powerlab-pcb-design-rules", "SKILL.md"), encoding="utf-8") as f:
+            rules = f.read()
+        self.assertIn("Never route a pour net between pads", rules)
+        self.assertIn("Power rails are copper areas, not traces", rules)
+        self.assertIn("Enter a pad straight and end at its centre", rules)
+        self.assertIn("No copper islands or slivers next to pads", rules)
+        self.assertIn("Shortest path, fewest corners", rules)
+        with open(os.path.join(skills, "powerlab-autoroute", "SKILL.md"), encoding="utf-8") as f:
+            route = f.read()
+        self.assertIn("Freerouting 2.4.1 ignores the net-class width", route)
+        self.assertIn("Fan out the pour nets first", route)
+        self.assertIn("Don't give every GND pad its own via", rules)
+
 
 class AttachmentTests(unittest.TestCase):
     """Issue #10: images and documents can be attached to a message."""
@@ -227,7 +245,7 @@ class ChatHistoryTests(unittest.TestCase):
         for name in names:
             setattr(Fake, name, getattr(ClaudePanel, name))
         panel = Fake()
-        panel.source = types.SimpleNamespace(editor="pcb", can_reload=False)
+        panel.source = types.SimpleNamespace(editor="pcb")
         panel.session_id, panel.chat_cwd, panel.events = None, None, []
         panel.retry, panel.stale_session, panel.proc = None, False, None
         panel.got_result, panel.watched, panel.image_reads = False, {}, {}
@@ -237,18 +255,38 @@ class ChatHistoryTests(unittest.TestCase):
         panel.load_page = lambda: panel.emitted.clear()
         return panel
 
-    def test_chat_is_kept_per_project_and_editor(self):
+    def write_old(self, editor, session_id, events):
+        """A chat saved by 0.5, when each editor had its own panel and chat."""
+        import json
+        name = os.path.basename(self.history.chat_path(self.project)).replace("chat-", editor + "-")
+        path = os.path.join(self.tmp.name, name)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"cwd": self.project, "session_id": session_id, "events": events}, f)
+        return path
+
+    def test_chat_is_kept_per_project(self):
         h = self.history
         image = h.stored("image", {"src": "data:image/png;base64,AAAA", "name": "v.png", "path": "C:\\v.png"})
         self.assertEqual(image, {"kind": "image", "name": "v.png", "path": "C:\\v.png"})
-        h.save("pcb", self.project, "abc", [{"kind": "user", "text": "hi", "files": []}, image])
-        self.assertEqual(h.load("pcb", self.project), ("abc", [{"kind": "user", "text": "hi", "files": []}, image]))
-        self.assertEqual(h.load("schematic", self.project), (None, []))
-        self.assertEqual(h.load("pcb", self.project + "2"), (None, []))
-        h.save("pcb", self.project, "abc", [{"kind": "text", "text": str(i)} for i in range(h.MAX_EVENTS + 5)])
-        self.assertEqual(len(h.load("pcb", self.project)[1]), h.MAX_EVENTS)
-        h.save("pcb", self.project, None, [])  # New chat
+        h.save(self.project, "abc", [{"kind": "user", "text": "hi", "files": []}, image])
+        self.assertEqual(h.load(self.project), ("abc", [{"kind": "user", "text": "hi", "files": []}, image]))
+        self.assertEqual(h.load(self.project + "2"), (None, []))
+        h.save(self.project, "abc", [{"kind": "text", "text": str(i)} for i in range(h.MAX_EVENTS + 5)])
+        self.assertEqual(len(h.load(self.project)[1]), h.MAX_EVENTS)
+        h.save(self.project, None, [])  # New chat
         self.assertEqual(os.listdir(self.tmp.name), [])
+
+    def test_old_per_editor_chats_are_carried_over(self):
+        h = self.history
+        self.write_old("pcb", "old-pcb", [{"kind": "text", "text": "pcb"}] * 3)
+        newer = self.write_old("schematic", "old-sch", [{"kind": "text", "text": "hi"}])
+        os.utime(newer, (time.time() + 10, time.time() + 10))
+        self.assertEqual(h.load(self.project)[0], "old-pcb")  # the longer one, not a newer "hi"
+        self.write_old("schematic", "old-sch", [{"kind": "text", "text": "sch"}] * 3)
+        os.utime(newer, (time.time() + 10, time.time() + 10))
+        self.assertEqual(h.load(self.project)[0], "old-sch")  # as long: the newer one
+        h.save(self.project, "old-sch", h.load(self.project)[1])
+        self.assertEqual(os.listdir(self.tmp.name), [os.path.basename(h.chat_path(self.project))])
 
     def test_reopened_panel_continues_the_last_chat(self):
         first = self.fake_panel()
@@ -259,8 +297,9 @@ class ChatHistoryTests(unittest.TestCase):
         first.handle({"type": "assistant", "message": {"content": [
             {"type": "text", "text": "Done."},
             {"type": "tool_use", "id": "t1", "name": "mcp__kicad__move_component", "input": {"reference": "J1"}}]}})
-        first.save_chat()  # the editor closes (on_parent_destroy); a new panel opens on the project
+        first.save_chat()  # KiCad closes; the panel opens again on the project, from either editor
         second = self.fake_panel()
+        second.source.editor = "schematic"
         second.open_chat(self.project)
         self.assertEqual(second.session_id, "s-1")  # the next message resumes it
         kinds = [e["kind"] for e in second.emitted]
@@ -296,6 +335,91 @@ class ChatHistoryTests(unittest.TestCase):
         panel.finished(0)
         self.assertEqual(sent, [("Run DRC", [], None)])
         self.assertFalse(any(e["kind"] == "meta" or e.get("level") == "error" for e in panel.emitted))
+
+
+class OnePanelTests(unittest.TestCase):
+    """One panel serves both editors: Claude sees the board and the schematic from either."""
+
+    def setUp(self):
+        try:
+            from kipy.board_types import FootprintInstance
+            from kipy.errors import ApiError
+            from kipy.proto.common.types.base_types_pb2 import DocumentSpecifier, DocumentType
+        except ImportError as exc:
+            self.skipTest(f"needs kicad-python: {exc}")
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.project = self.tmp.name
+        for name in ("esp.kicad_pro", "esp.kicad_sch", "power.kicad_sch", "esp.kicad_pcb"):
+            open(os.path.join(self.project, name), "w").close()
+        self.open = {"pcb", "schematic"}
+        self.foreground = "esp — PCB Editor"
+        self.footprints = ["U2", "C5"]
+
+        def doc(doc_type, filename):
+            d = DocumentSpecifier()
+            d.type, d.board_filename, d.project.path = doc_type, filename, self.project
+            return d
+
+        def get_open_documents(doc_type):
+            editor = "pcb" if doc_type == DocumentType.DOCTYPE_PCB else "schematic"
+            if editor not in self.open:
+                raise ApiError("KiCad returned error: no handler available for request")
+            return [doc(doc_type, "esp.kicad_pcb" if editor == "pcb" else "esp.kicad_sch")]
+
+        def selection():
+            items = []
+            for ref in self.footprints:
+                fp = FootprintInstance()
+                fp.reference_field.text.value = ref
+                items.append(fp)
+            return items
+
+        kicad = types.SimpleNamespace(
+            get_open_documents=get_open_documents,
+            get_board=lambda: types.SimpleNamespace(get_selection=selection))
+        self.source = sources.KiCadSource.__new__(sources.KiCadSource)
+        self.source.editor, self.source.kicad, self.source.down_until = "schematic", kicad, 0.0
+        self.source.selected, self.source.clip_seq = ["R1 (10k)"], 0
+        self.source.poll_clipboard = lambda: None
+        window = types.SimpleNamespace(
+            foreground_title=lambda: self.foreground,
+            find_editor=lambda kind="Schematic Editor": 1 if "schematic" in self.open else None,
+            current_sheet=lambda hwnd: "esp/Power")
+        old, sources.kicad_window = sources.kicad_window, window
+        self.addCleanup(setattr, sources, "kicad_window", old)
+
+    def test_sees_both_editors_and_follows_the_one_in_use(self):
+        snap = self.source.snapshot()
+        self.assertEqual(self.source.editor, "pcb")  # the PCB editor has the focus
+        self.assertEqual(snap.cwd, self.project)
+        self.assertEqual(snap.chips, ["esp.kicad_pcb", "Selected: C5, U2"])
+        self.assertIn("The user is working in the PCB editor.", snap.state)
+        self.assertIn("Selected footprints in the PCB editor: C5, U2", snap.state)
+        self.assertIn("showing sheet esp/Power", snap.state)
+        self.assertIn("Selected in the schematic editor: R1 (10k)", snap.state)
+        self.assertIn("Root schematic: " + os.path.join(self.project, "esp.kicad_sch"), snap.context)
+        self.assertIn("Board file: " + os.path.join(self.project, "esp.kicad_pcb"), snap.context)
+        self.assertEqual(sorted(os.path.basename(p) for p in snap.watch),
+                         ["esp.kicad_pcb", "esp.kicad_sch", "power.kicad_sch"])
+        # The user clicks into the schematic editor; the panel itself having the focus changes nothing.
+        self.foreground = "esp [esp/Power] — Schematic Editor"
+        self.assertEqual(self.source.snapshot().chips, ["Sheet: Power", "Selected: R1"])
+        self.foreground = "PowerLab Assistant"
+        self.assertIn("working in the schematic editor", self.source.snapshot().state)
+
+    def test_works_with_only_one_editor_open(self):
+        self.open = {"schematic"}
+        snap = self.source.snapshot()
+        self.assertEqual(snap.cwd, self.project)
+        self.assertIn("PCB editor: not open", snap.state)
+        self.assertIn("Board file: " + os.path.join(self.project, "esp.kicad_pcb"), snap.context)
+        self.open = {"pcb"}
+        snap = self.source.snapshot()
+        self.assertIn("Schematic editor: not open", snap.state)
+        self.assertIn("Root schematic:", snap.context)
+        self.open = set()
+        self.assertEqual(self.source.snapshot().chips, ["No schematic or board open"])
 
 
 class McpPatchTests(unittest.TestCase):

@@ -77,7 +77,7 @@ The repository contains no API keys or tokens. Each user signs in with their own
    - Download KiCAD-MCP-Server at a tested version, build it, and install its Python packages into KiCad's own Python. No admin rights are needed.
    - Copy the panel into your KiCad 10 folder.
    - Clone the METU Power Lab library and point KiCad's `METUPOWERLAB_*` paths at it. Your KiCad settings are backed up first.
-   - Turn on KiCad's API server, which the schematic panel needs.
+   - Turn on KiCad's API server, which the panel needs.
    - Optionally install GitHub CLI and sign you in.
 
    If you already have a clone of the library, add `-LibraryPath D:\path\to\PowerLabKiCadLibraries`.
@@ -112,19 +112,18 @@ The panel shows each step Claude takes, plus any images it renders.
 - **Models:** the model picker under the input box switches between Claude models. The default is **Opus 5.5 at high effort**. To change the effort, set `"effort"` (`low`, `medium`, `high`, `xhigh` or `max`) in `%APPDATA%\PowerLabKiCadAssistant\settings.json`.
 - **Attachments:** attach screenshots, datasheets (PDF) or other files with the 📎 button, or paste or drop them into the input box. Pasted and dropped files are kept for a week in `%TEMP%\PowerLabAssistant\attachments`.
 - **Usage:** the corner under the input box shows how much of your Claude plan's limit is used (e.g. *5h 49%*) and how full this chat's context is. Hover for the reset time. Start a new chat (**+**) when the context gets full.
-- **Chats are kept:** closing the panel, the editor or KiCad doesn't lose the chat. Reopen the panel on the same project and it continues where you left off (the PCB and Schematic Editors each keep their own). **+** starts a new chat.
+- **One panel for both editors:** the button in the PCB Editor and the one in the Schematic Editor show or hide the same panel, with one chat per project. Ask about either side from wherever you are: Claude sees the board and the schematic, which editor you're working in, and what is selected in each.
+- **Chats are kept:** closing the panel, the editor or KiCad doesn't lose the chat. Reopen the panel on the same project and it continues where you left off. **+** starts a new chat.
 
-**PCB Editor:**
+**Board:**
 
-- Claude sees the footprints you have selected.
-- Some board edits (move, rotate, delete and others) can apply live through KiCad's API server.
+- Some board edits (move, rotate, delete and others) apply live through KiCad's API server.
 - When Claude changes the board file instead, the panel tells you to use **File → Revert**.
 
-**Schematic Editor:**
+**Schematic:**
 
-- Claude sees the sheet you're on and the items you have selected.
 - Before each message, the panel makes sure the schematic is saved.
-- After Claude changes a sheet, the panel reloads it in KiCad for you.
+- After Claude changes a sheet, the panel reloads it in the Schematic Editor for you.
 
 ## Skills
 
