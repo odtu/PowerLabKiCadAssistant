@@ -44,7 +44,8 @@ def find_gh():
 def clean_env():
     """Environment for child processes: no KiCad-embedded Python variables, KiCad's
     bin folder on PATH so Claude can call kicad-cli by name, and the assistant's own
-    Java 25 + Freerouting for the kicad MCP server's autoroute tool."""
+    Java 25 + Freerouting for the kicad MCP server's autoroute tool, and Windows' own
+    tar (it writes zips) ahead of Git's GNU tar."""
     env = dict(os.environ)
     for var in ("PYTHONHOME", "PYTHONPATH"):
         env.pop(var, None)
@@ -58,6 +59,9 @@ def clean_env():
     bin_dir = config.kicad_bin()
     if bin_dir:
         first.append(bin_dir)
+    system32 = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32")
+    if os.path.isfile(os.path.join(system32, "tar.exe")):
+        first.append(system32)
     if first:
         env["PATH"] = os.pathsep.join(first + [env.get("PATH", "")])
     jar = config.freerouting_jar()
