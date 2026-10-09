@@ -63,12 +63,12 @@ Before routing, confirm with the user, or check with the kicad tools:
   Steps 1–4 must be routed by hand and locked first. KiCad exports locked tracks as protected, so Freerouting keeps them. If they aren't done, say so and recommend doing them first. Only autoroute them if the user explicitly insists, and warn that loop area, current capacity and return paths won't be considered.
   - The **power rails** belong to step 1 even when they carry little current. Route them at the Power class width (≥ 0.5 mm) and lock them. Where several pins of a rail sit close together, give them a local pour instead (design rules §3.3).
   - KiCad's session import clears the locked flag. Lock the hand-routed copper again after every `autoroute` run.
-- **Fan out the pour nets first (design rules §3.3, issue #21):** every GND pad gets its own via to the GND plane right at the pad, with a pad-wide stub.
-  - For a decoupling cap, the via goes at the cap's GND pad.
-  - A GND pin of a fine-pitch IC next to a GND exposed pad joins the exposed pad straight across the gap.
-  - Other fine-pitch GND pins neck down to a via just outside the pin row.
+- **Fan out the pour nets first (design rules §3.3, issue #21):** the pours connect the GND pads. Don't give every GND pad a via; that only clutters the board and blocks routing.
+  - **Decoupling caps:** a via to the GND plane right at each cap's GND pad.
+  - **Fine-pitch IC GND pins:** a pin next to a GND exposed pad joins the exposed pad straight across the gap. Other fine-pitch GND pins neck down to a via just outside the pin row.
   - Keep about 1.5 mm in front of every fine-pitch pin free of these vias, so the signal pins can still escape.
-  - Lock the fan-out. GND then never needs a track between pads.
+  - Lock the fan-out.
+  - **After routing and the zone fill:** a GND pad the pour can't reach shows up as unconnected in DRC. Give only that pad a via. GND never needs a track between pads.
 - **Pours first (§3.1, §3.5):** never let Freerouting draw GND as tracks.
   - **Check for existing pours first** with `query_zones`. Never add a second pour for the same net on a layer that already has one: overlapping same-net zones give DRC "zones intersect" errors. To change an existing pour, ask the user.
   - If the board has no GND pour, create one before routing with `add_copper_pour` (layer, net and clearance; leave out `outline` to cover the whole board outline), on the bottom layer and also on the top. On 4 layers, use the inner GND plane layer. Do the same for any power net the user wants as a pour (above ~3 A).

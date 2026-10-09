@@ -169,6 +169,7 @@ class SkillToolsEnvTests(unittest.TestCase):
             route = f.read()
         self.assertIn("Freerouting 2.4.1 ignores the net-class width", route)
         self.assertIn("Fan out the pour nets first", route)
+        self.assertIn("Don't give every GND pad its own via", rules)
 
 
 class AttachmentTests(unittest.TestCase):

@@ -292,9 +292,12 @@ Route in this order: critical high-current paths → clocks and high-speed signa
 
 **Pour nets, power rails and track paths** *(panel addition, issue #21: not in the lab's source file yet; keep this block when re-copying it)*
 - **Never route a pour net between pads.** This covers GND, or any net that has a plane or pour.
-  - Each pad connects to the pour directly: through its own via to the plane, right at the pad (plane → via → pad), or through the pour on its own layer.
-  - The only tracks a pour net has are the short stubs from a pad to its own via.
-  - Place these fan-out vias before routing anything else.
+  - A pad on a layer with a pour connects through that pour. Don't give every GND pad its own via.
+  - Add a via at the pad only in these cases:
+    - **Decoupling caps:** a via at the cap's GND pad (§3.2: plane → via → cap → pin).
+    - **Fine-pitch IC GND pins:** when the pour can't get between the neighbouring pins.
+    - **Boxed-in pads:** a pad on a layer without a pour, or one the pour can't reach because tracks surround it. Check after the pours are filled: DRC lists these as unconnected.
+  - The only tracks a pour net has are the short stubs from these pads to their vias.
 - **Power pins that sit close together share copper.** When several pins of one rail are within a few mm of each other (decoupling caps, regulator input/output, a cap row), join them with a local pour on the parts layer instead of separate tracks.
   - Don't do this when a pad of another net lies inside the group (e.g. a switch node between them); route the rail instead.
 - **Power rails run at their class width from end to end** (Power class, ≥ 0.5 mm).
