@@ -89,7 +89,7 @@ Report real bugs upstream too.
 - **`powerlab-pcb-design-rules`** is a copy of the lab's [PCB_DESIGN_RULES.md](https://github.com/odtu/Powerlab/blob/master/KiCAD/PCB_DESIGN_RULES.md). It differs in three ways:
   - it is renamed;
   - the drawing-sheet template rule (§1.1) is removed, because the panel is public;
-  - §3.3 has a marked panel addition, "Pour nets, power rails and track paths" (issue #21). It stays until the lab's file has the same rules.
+  - §3.3 has a marked panel addition, "Pour nets, power rails and pad connections" (issue #21), with matching lines in §3.2, §3.5 and §3.7. The same text is proposed for the lab's file in odtu/Powerlab#147. Once that PR is merged, drop the marker and copy the file as usual.
 
   When the source changes, copy it again with the same three edits. Other skills (e.g. autoroute) refer to its section numbers, so check those still match. `PANEL_NOTE` tells Claude to load it for any design work.
 

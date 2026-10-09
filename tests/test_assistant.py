@@ -163,7 +163,9 @@ class SkillToolsEnvTests(unittest.TestCase):
         with open(os.path.join(skills, "powerlab-pcb-design-rules", "SKILL.md"), encoding="utf-8") as f:
             rules = f.read()
         self.assertIn("Never route a pour net between pads", rules)
-        self.assertIn("Power rails run at their class width", rules)
+        self.assertIn("Power rails are copper areas, not traces", rules)
+        self.assertIn("Enter a pad straight and end at its centre", rules)
+        self.assertIn("No copper islands or slivers next to pads", rules)
         self.assertIn("Shortest path, fewest corners", rules)
         with open(os.path.join(skills, "powerlab-autoroute", "SKILL.md"), encoding="utf-8") as f:
             route = f.read()

@@ -61,7 +61,10 @@ Before routing, confirm with the user, or check with the kicad tools:
   5. **Everything else:** Freerouting.
 
   Steps 1–4 must be routed by hand and locked first. KiCad exports locked tracks as protected, so Freerouting keeps them. If they aren't done, say so and recommend doing them first. Only autoroute them if the user explicitly insists, and warn that loop area, current capacity and return paths won't be considered.
-  - The **power rails** belong to step 1 even when they carry little current. Route them at the Power class width (≥ 0.5 mm) and lock them. Where several pins of a rail sit close together, give them a local pour instead (design rules §3.3).
+  - The **power rails** belong to step 1 even when they carry little current.
+    - Make them copper areas (pours) wherever they fit (design rules §3.3).
+    - Where a pour doesn't fit, use tracks at the Power class width (≥ 0.5 mm).
+    - Lock them before running Freerouting.
   - KiCad's session import clears the locked flag. Lock the hand-routed copper again after every `autoroute` run.
 - **Fan out the pour nets first (design rules §3.3, issue #21):** the pours connect the GND pads. Don't give every GND pad a via; that only clutters the board and blocks routing.
   - **Decoupling caps:** a via to the GND plane right at each cap's GND pad.
@@ -95,8 +98,11 @@ Before routing, confirm with the user, or check with the kicad tools:
 - **Pour-net pads:** in the DRC's unconnected items, find pads of the pour nets that the pour can't reach, e.g. a GND pad boxed in by tracks. Add a via next to each one (`add_via`, 0.4/0.8 mm), connected with a short track, so it reaches the bottom pour. Then refill again.
 - **DRC:** run `run_drc` and compare it with the baseline. The goal is **0 new errors**. Track-width or clearance errors mean the net classes don't match the board constraints; fix the rules and re-route rather than hiding the errors.
 - **Corners:** Freerouting routes at 45° but still leaves some 90° corners. On a test board it left 26. The rules forbid them (§3.3). Find them with `query_traces`: two segments of the same net and layer meeting at 90° or less, including where two widths meet. List them for the user, who can fix them with the interactive router or by dragging the corner with `D`.
-- **Paths (§3.3, issue #21):** look for tracks that detour or staircase, and for tracks that run to a pad's centre and back when the pad's near edge was on the way. Freerouting always ends at the pad centre.
-  - Report these and fix them with the interactive router (`X` with walkaround, then **Optimize** with "smart pads" on), or by dragging.
+- **Paths and pad connections (§3.3, issue #21):**
+  - Look for tracks that detour or staircase.
+  - Look for tracks that touch a pad's edge or clip its corner instead of entering straight and ending at the pad centre.
+  - Look for pour slivers or islands between a track and a pad's clearance ring (refill first).
+  - Report these and fix them with the interactive router (`X` with walkaround), or by dragging the last segment straight into the pad centre.
   - Remove dangling stubs (DRC `track_dangling`).
 - **GND tracks:** list the GND tracks (`query_traces`). Every one must be a short pad-to-via stub. A GND track from pad to pad means a pad was routed instead of being fanned out to the plane: replace it with a via at the pad.
 - **Widths and vias on power nets:**
