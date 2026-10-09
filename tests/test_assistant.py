@@ -521,6 +521,12 @@ class PanelDefaultsTests(unittest.TestCase):
         self.assertIn("the chat is kept", c["PANEL_NOTE"])
         self.assertIn("powerlab-visual-review", c["PANEL_NOTE"])  # look at the board while working
 
+    def test_gerbers_can_be_zipped(self):
+        # Issue #24: PCBWay wants the Gerbers zipped, but only kicad-cli was allowed in the shell.
+        c = self.constants()
+        self.assertIn("PowerShell(Compress-Archive:*)", c["ALLOWED_TOOLS"])
+        self.assertIn("Compress-Archive -Path", c["PANEL_NOTE"])
+
     def test_board_minimums_are_the_pcbway_floor(self):
         with open(os.path.join(ROOT, "skills", "powerlab-pcb-design-rules", "SKILL.md"), encoding="utf-8") as f:
             rules = f.read()

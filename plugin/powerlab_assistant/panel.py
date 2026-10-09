@@ -24,6 +24,7 @@ from .common import find_gh, open_console, open_terminal, clean_env
 ALLOWED_TOOLS = [
     "mcp__kicad", "Skill", "Read", "Glob", "Grep", "Edit", "Write", "WebSearch", "WebFetch",
     "PowerShell(kicad-cli:*)", "Bash(kicad-cli:*)",
+    "PowerShell(Compress-Archive:*)",  # zip Gerbers for PCBWay (issue #24)
 ]
 
 IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
@@ -53,6 +54,9 @@ PANEL_NOTE = (
     "use variables, `&`, `;`, pipes or its full path: the panel only allows a plain "
     "`kicad-cli ...` command and blocks everything else. It creates missing output folders "
     "itself. Write outputs inside the project folder.\n"
+    "To zip outputs (e.g. Gerbers and drill files for PCBWay), use the PowerShell tool with one "
+    "plain command, e.g. `Compress-Archive -Path fab\\gerbers\\* -DestinationPath "
+    "fab\\gerbers.zip -Force`; it is the only other shell command the panel allows.\n"
     "Each message ends with a <kicad_state> block giving the live KiCad selection at the "
     "moment it was sent. Words like 'this', 'that', 'it' or 'selected' refer to that selection. "
     "It is for you only: never repeat it in your reply. "
