@@ -137,6 +137,20 @@ class SkillToolsEnvTests(unittest.TestCase):
         self.assertEqual(env["JAVA_HOME"], java_home)
         self.assertEqual(env["FREEROUTING_JAR"], jar)
 
+    def test_windows_tar_before_git_tar(self):
+        # Issue #24: Git's GNU tar can't write zips; Windows' own tar in System32 can.
+        from powerlab_assistant import common
+        system32 = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32")
+        if not os.path.isfile(os.path.join(system32, "tar.exe")):
+            self.skipTest("no Windows tar.exe")
+        saved = os.environ["PATH"]
+        os.environ["PATH"] = os.pathsep.join([r"C:\Program Files\Git\usr\bin", saved])
+        try:
+            path = common.clean_env()["PATH"].split(os.pathsep)
+        finally:
+            os.environ["PATH"] = saved
+        self.assertLess(path.index(system32), path.index(r"C:\Program Files\Git\usr\bin"))
+
     def test_shipped_skills_have_frontmatter(self):
         skills = os.path.join(ROOT, "skills")
         names = sorted(os.listdir(skills))
@@ -520,6 +534,14 @@ class PanelDefaultsTests(unittest.TestCase):
         self.assertIn("Never ask the user to close", c["PANEL_NOTE"])  # issue #10
         self.assertIn("the chat is kept", c["PANEL_NOTE"])
         self.assertIn("powerlab-visual-review", c["PANEL_NOTE"])  # look at the board while working
+
+    def test_gerbers_can_be_zipped(self):
+        # Issue #24: PCBWay wants the Gerbers zipped, but only kicad-cli was allowed in the shell.
+        c = self.constants()
+        # Compress-Archive is blocked by Claude Code as a file write; Windows' tar is not.
+        self.assertIn("PowerShell(tar -a -cf:*)", c["ALLOWED_TOOLS"])
+        self.assertNotIn("PowerShell(tar:*)", c["ALLOWED_TOOLS"])  # never extraction
+        self.assertIn(r"tar -a -cf fab\gerbers.zip -C fab\gerbers *", c["PANEL_NOTE"])
 
     def test_board_minimums_are_the_pcbway_floor(self):
         with open(os.path.join(ROOT, "skills", "powerlab-pcb-design-rules", "SKILL.md"), encoding="utf-8") as f:
