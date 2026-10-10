@@ -612,10 +612,6 @@ class PanelDefaultsTests(unittest.TestCase):
         self.assertIn("the chat is kept", c["PANEL_NOTE"])
         self.assertIn("powerlab-visual-review", c["PANEL_NOTE"])  # look at the board while working
         self.assertIn("<choices>", c["PANEL_NOTE"])  # questions come back as answer buttons
-        self.assertIn("one long silent think", c["PANEL_NOTE"])  # the user follows the work
-        self.assertIn(c["DEFAULT_MODEL"], c["SUMMARY_MODELS"])  # thinking shown live
-        # Haiku 4.5 answers "400 adaptive thinking is not supported on this model".
-        self.assertFalse(any("haiku-4" in m for m in c["SUMMARY_MODELS"]))
 
     def test_gerbers_can_be_zipped(self):
         # Issue #24: PCBWay wants the Gerbers zipped, but only kicad-cli was allowed in the shell.
@@ -624,6 +620,12 @@ class PanelDefaultsTests(unittest.TestCase):
         self.assertIn("PowerShell(tar -a -cf:*)", c["ALLOWED_TOOLS"])
         self.assertNotIn("PowerShell(tar:*)", c["ALLOWED_TOOLS"])  # never extraction
         self.assertIn(r"tar -a -cf fab\gerbers.zip -C fab\gerbers *", c["PANEL_NOTE"])
+
+    def test_board_minimums_are_the_pcbway_floor(self):
+        with open(os.path.join(ROOT, "skills", "powerlab-pcb-design-rules", "SKILL.md"), encoding="utf-8") as f:
+            rules = f.read()
+        self.assertIn("| Minimum track width | 0.15 mm |", rules)
+        self.assertIn("| Default | 0.2 mm | 0.2 mm |", rules)  # lab default stays in the net class
 
     def test_page_scripts_never_run_synchronously(self):
         # A burst of tool events nested synchronous RunScript calls, each waiting in its
@@ -634,11 +636,19 @@ class PanelDefaultsTests(unittest.TestCase):
         self.assertIn(".RunScriptAsync(", source)
         self.assertEqual(re.findall(r"\.RunScript\(", source), [])
 
-    def test_board_minimums_are_the_pcbway_floor(self):
-        with open(os.path.join(ROOT, "skills", "powerlab-pcb-design-rules", "SKILL.md"), encoding="utf-8") as f:
-            rules = f.read()
-        self.assertIn("| Minimum track width | 0.15 mm |", rules)
-        self.assertIn("| Default | 0.2 mm | 0.2 mm |", rules)  # lab default stays in the net class
+    def test_user_can_follow_the_work(self):
+        c = self.constants()
+        self.assertIn("one long silent think", c["PANEL_NOTE"])  # a running commentary instead
+        self.assertIn(c["DEFAULT_MODEL"], c["SUMMARY_MODELS"])  # thinking shown live
+        # Haiku 4.5 answers "400 adaptive thinking is not supported on this model".
+        self.assertFalse(any("haiku-4" in m for m in c["SUMMARY_MODELS"]))
+
+    def test_files_are_not_parsed_with_scripts(self):
+        # Issue #30: Claude ran `python -c` to parse a saved get_pads result, which is blocked.
+        c = self.constants()
+        self.assertIn("Never run a script (python -c", c["PANEL_NOTE"])
+        self.assertIn("Read tool in parts (offset and limit)", c["PANEL_NOTE"])
+        self.assertFalse(any(t.startswith(("Bash(python", "PowerShell(python")) for t in c["ALLOWED_TOOLS"]))
 
 
 class LibraryCommitTests(unittest.TestCase):
