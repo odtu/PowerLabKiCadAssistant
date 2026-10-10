@@ -333,6 +333,25 @@ class ChatHistoryTests(unittest.TestCase):
         self.assertEqual([e["text"] for e in panel.emitted], ["Which part do you mean?"])
         self.assertEqual(panel.last_text, "Which part do you mean?")
 
+    def test_questions_become_answer_buttons(self):
+        panel = self.fake_panel()
+        panel.handle({"type": "assistant", "message": {"content": [{"type": "text", "text": (
+            "Two things to confirm.\n\n<choices>\n1. Keep 25.4 mm row spacing?\n"
+            "- Yes, 25.4 mm (Recommended)\n- No, use 28 mm\nMounting holes?\n* None\n* Four M3 holes\n"
+            "A question without options\n</choices>")}]}})
+        self.assertEqual(panel.emitted, [{"kind": "text", "text": "Two things to confirm.", "choices": [
+            {"question": "Keep 25.4 mm row spacing?", "options": ["Yes, 25.4 mm (Recommended)", "No, use 28 mm"]},
+            {"question": "Mounting holes?", "options": ["None", "Four M3 holes"]}]}])
+        self.assertEqual(panel.events[0]["choices"][1]["options"], ["None", "Four M3 holes"])  # kept in the chat
+        # Only the block (no text above it), and replies without one stay plain text.
+        panel.emitted.clear()
+        panel.handle({"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "<choices>\nRoute GND?\n- Pour\n- Tracks"},
+            {"type": "text", "text": "Done."}]}})
+        self.assertEqual(panel.emitted, [
+            {"kind": "text", "text": "", "choices": [{"question": "Route GND?", "options": ["Pour", "Tracks"]}]},
+            {"kind": "text", "text": "Done."}])
+
     def test_expired_session_is_sent_again_as_a_new_chat(self):
         panel = self.fake_panel()
         panel.chat_cwd, panel.session_id = self.project, "gone"
@@ -534,6 +553,7 @@ class PanelDefaultsTests(unittest.TestCase):
         self.assertIn("Never ask the user to close", c["PANEL_NOTE"])  # issue #10
         self.assertIn("the chat is kept", c["PANEL_NOTE"])
         self.assertIn("powerlab-visual-review", c["PANEL_NOTE"])  # look at the board while working
+        self.assertIn("<choices>", c["PANEL_NOTE"])  # questions come back as answer buttons
 
     def test_gerbers_can_be_zipped(self):
         # Issue #24: PCBWay wants the Gerbers zipped, but only kicad-cli was allowed in the shell.
