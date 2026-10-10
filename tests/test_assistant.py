@@ -661,6 +661,12 @@ class PanelDefaultsTests(unittest.TestCase):
         self.assertIn("Read tool in parts (offset and limit)", c["PANEL_NOTE"])
         self.assertFalse(any(t.startswith(("Bash(python", "PowerShell(python")) for t in c["ALLOWED_TOOLS"]))
 
+    def test_grep_patterns_are_ripgrep_syntax(self):
+        # Issue #34: Claude gave Grep a look-ahead `(?!...)`, which ripgrep rejects.
+        c = self.constants()
+        self.assertIn("Grep uses ripgrep", c["PANEL_NOTE"])
+        self.assertIn("no look-ahead, look-behind", c["PANEL_NOTE"])
+
 
 class LibraryCommitTests(unittest.TestCase):
     def setUp(self):
