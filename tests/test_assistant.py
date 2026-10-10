@@ -554,6 +554,9 @@ class PanelDefaultsTests(unittest.TestCase):
         self.assertIn("the chat is kept", c["PANEL_NOTE"])
         self.assertIn("powerlab-visual-review", c["PANEL_NOTE"])  # look at the board while working
         self.assertIn("<choices>", c["PANEL_NOTE"])  # questions come back as answer buttons
+        # Issue #27: file-only tools (get_design_rules) say "No board is loaded" with KiCad open
+        self.assertIn('says "No board is loaded"', c["PANEL_NOTE"])
+        self.assertIn("call open_board with the 'Board file' path", c["PANEL_NOTE"])
 
     def test_gerbers_can_be_zipped(self):
         # Issue #24: PCBWay wants the Gerbers zipped, but only kicad-cli was allowed in the shell.
