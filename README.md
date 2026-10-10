@@ -167,7 +167,7 @@ Reports are public, so don't add confidential details to the description.
 ## Known limitations
 
 - **KiCad 10's schematic API is limited.** It can't report the selection, save or reload. The panel works around this by using the editor's own **Edit → Copy**, **File → Save** and **File → Revert**. Your clipboard is restored afterwards. This needs KiCad's menus in **English**.
-- **Claude's permissions are limited.** Inside the panel, Claude can only use the KiCad tools, read and write files, search the web, and run `kicad-cli`. Other shell commands are blocked, because the panel can't ask you for permission mid-run. Use the terminal button to continue a conversation in a full Claude Code session.
+- **Claude's permissions are limited.** Inside the panel, Claude can only use the KiCad tools, read and write files, search the web, run `kicad-cli`, and zip outputs with `tar -a -cf`. Other shell commands are blocked, because the panel can't ask you for permission mid-run. Use the terminal button to continue a conversation in a full Claude Code session.
 - **The KiCad tools get small fixes from this repository.** `patches/kicad-mcp.patch` keeps 3D models when parts are rotated (kipy 0.8 drops them), and adds pour-aware autorouting. The installer applies it on top of the pinned KiCad MCP server.
 - **Windows only, KiCad 10 only.**
 

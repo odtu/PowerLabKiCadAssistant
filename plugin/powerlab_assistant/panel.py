@@ -24,6 +24,10 @@ from .common import find_gh, open_console, open_terminal, clean_env
 ALLOWED_TOOLS = [
     "mcp__kicad", "Skill", "Read", "Glob", "Grep", "Edit", "Write", "WebSearch", "WebFetch",
     "PowerShell(kicad-cli:*)", "Bash(kicad-cli:*)",
+    # Zip outputs for PCBWay (issue #24) with Windows' tar, create only. Compress-Archive
+    # doesn't work: Claude Code blocks it as a file write unless all edits are auto-accepted,
+    # which would also allow Remove-Item.
+    "PowerShell(tar -a -cf:*)",
 ]
 
 IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
@@ -36,6 +40,14 @@ PANEL_NOTE = (
     "You are running in a narrow command panel docked beside KiCad, one headless "
     "command at a time. Keep replies to a few short lines. You cannot ask for permission "
     "mid-run; if you need a decision from the user, stop and ask in your reply.\n"
+    "The AskUserQuestion tool doesn't work here. Instead, when a question has a few clear "
+    "answers, end your reply with a <choices> block: each question on a line of its own, "
+    "followed by its 2-4 short options as '- ' lines, the one you recommend first, marked "
+    "' (Recommended)'. The panel shows the options as buttons and sends the user's pick as "
+    "their next message (they can still type their own answer), so don't also list the "
+    "questions in the text above it. Example:\n"
+    "<choices>\nKeep 25.4 mm row spacing?\n- Yes, 25.4 mm (Recommended)\n- No, use 28 mm\n"
+    "Mounting holes?\n- None\n- Four M3 holes\n</choices>\n"
     "This one panel serves both KiCad's PCB editor and its schematic editor: the toolbar "
     "button in either shows or hides it, and closing KiCad closes it; the chat is kept and "
     "continues when the panel is opened again on this project. Work on both the schematic and "
@@ -53,6 +65,10 @@ PANEL_NOTE = (
     "use variables, `&`, `;`, pipes or its full path: the panel only allows a plain "
     "`kicad-cli ...` command and blocks everything else. It creates missing output folders "
     "itself. Write outputs inside the project folder.\n"
+    "To zip outputs (e.g. Gerbers and drill files for PCBWay), run one plain command with the "
+    "PowerShell tool: `tar -a -cf fab\\gerbers.zip -C fab\\gerbers *` (the zip first, then -C "
+    "and the folder whose files go in). It is the only other shell command the panel allows; "
+    "Compress-Archive is blocked.\n"
     "Each message ends with a <kicad_state> block giving the live KiCad selection at the "
     "moment it was sent. Words like 'this', 'that', 'it' or 'selected' refer to that selection. "
     "It is for you only: never repeat it in your reply. "
@@ -97,6 +113,27 @@ STATE_BLOCK = re.compile(r"\s*<kicad_state>.*?(</kicad_state>|$)", re.S)
 def strip_state(text):
     """Claude sometimes echoes the message's <kicad_state> block; don't show it."""
     return STATE_BLOCK.sub("", text).strip()
+
+
+CHOICES_BLOCK = re.compile(r"\s*<choices>(.*?)(</choices>|$)", re.S)
+MAX_OPTIONS = 6
+
+
+def split_choices(text):
+    """(text, questions): Claude's <choices> block (see PANEL_NOTE) becomes answer buttons.
+
+    Each question is {"question": str, "options": [str, ...]}; questions without options
+    are dropped."""
+    questions = []
+    for block in CHOICES_BLOCK.findall(text):
+        for line in block[0].splitlines():
+            line = line.strip()
+            option = re.match(r"^[-*•]\s+(.+)", line)
+            if option and questions and len(questions[-1]["options"]) < MAX_OPTIONS:
+                questions[-1]["options"].append(option.group(1).strip())
+            elif line and not option:
+                questions.append({"question": re.sub(r"^\d+[.)]\s*", "", line), "options": []})
+    return CHOICES_BLOCK.sub("", text).strip(), [q for q in questions if q["options"]]
 
 
 def describe_tool(name, args):
@@ -697,6 +734,7 @@ class ClaudePanel(wx.Frame):
             args += ["--model", self.model]
         args += ["--effort", self.effort]
         args += ["--allowedTools", ",".join(ALLOWED_TOOLS)]
+        args += ["--disallowedTools", "AskUserQuestion"]  # no one to answer it; see <choices>
 
         if not resend:
             self.say("user", text=text, files=[os.path.basename(p) for p in files])
@@ -752,9 +790,10 @@ class ClaudePanel(wx.Frame):
         elif kind == "assistant":
             for block in msg.get("message", {}).get("content", []):
                 text = strip_state(block.get("text", "")) if block.get("type") == "text" else ""
-                if text:
+                text, choices = split_choices(text)
+                if text or choices:
                     self.last_text = text
-                    self.say("text", text=text)
+                    self.say("text", text=text, **({"choices": choices} if choices else {}))
                 elif block.get("type") == "tool_use":
                     args = block.get("input") or {}
                     name, detail = describe_tool(block.get("name", ""), args)

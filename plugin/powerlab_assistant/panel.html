@@ -148,6 +148,28 @@ header {
 .ti.ok { color: var(--ok); } .ti.bad { color: var(--err); }
 .ti svg { width: 14px; height: 14px; }
 
+/* answer buttons for Claude's questions */
+.choices {
+  border: 1px solid var(--border); border-radius: 10px; background: var(--surface);
+  padding: 8px 10px 10px; margin: 0 0 12px; animation: rise .18s ease-out;
+}
+.choices .q { font-weight: 600; font-size: 12.5px; margin: 6px 0 5px; }
+.choices .q:first-child { margin-top: 0; }
+.choices .opts { display: flex; flex-wrap: wrap; gap: 6px; }
+.opt {
+  border: 1px solid var(--border); background: var(--bg); border-radius: 8px; padding: 4px 10px;
+  font-size: 12.5px; text-align: left; transition: border-color .15s, background .15s;
+}
+.opt:hover:not(:disabled) { border-color: var(--accent); }
+.opt.rec { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.opt .tag { display: inline; color: var(--muted); font-size: 11px; }
+.opt.sel { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.opt.sel .tag { color: inherit; opacity: .8; }
+.opt:disabled { cursor: default; }
+.choices.done .opt:not(.sel) { opacity: .45; }
+.choices .foot { display: flex; align-items: center; gap: 8px; margin-top: 9px; font-size: 11px; color: var(--muted); }
+.choices .foot .btn { margin-left: auto; padding: 2px 10px; font-size: 12px; }
+.choices.done .foot { display: none; }
 /* notes */
 .note { font-size: 12px; padding: 8px 10px; border-radius: 8px; margin: 0 0 12px; display: flex; gap: 8px; align-items: flex-start; }
 .note.error { background: color-mix(in srgb, var(--err) 12%, transparent); color: var(--err); }
@@ -413,6 +435,7 @@ const app = {
     switch (e.kind) {
       case 'user': {
         toolGroup = null;
+        closeChoices();
         const files = (e.files || []).length ? `<div class="att">📎 ${esc(e.files.join(', '))}</div>` : '';
         add(div('msg user', `<div><div class="bubble">${esc(e.text)}</div>${files}</div>`)); break;
       }
@@ -424,7 +447,9 @@ const app = {
       }
       case 'text':
         toolGroup = null;
-        add(div('msg assistant', markdown(e.text))); break;
+        if (e.text) add(div('msg assistant', markdown(e.text)));
+        if ((e.choices || []).length) add(choicesCard(e.choices));
+        break;
       case 'tool': {
         if (!toolGroup) toolGroup = add(div('tools'));
         const row = div('tool', `<span class="ti run"></span><span class="name">${esc(e.name)}</span><span class="detail">${esc(e.detail || '')}</span>`);
@@ -498,6 +523,49 @@ const app = {
   }
 };
 
+// Claude's <choices>: one click answers a single question; several questions are
+// answered together with "Send answers". Typing a message instead answers too.
+const RECOMMENDED = /\s*\(recommended\)\s*$/i;
+function closeChoices() {
+  document.querySelectorAll('.choices:not(.done)').forEach(c => {
+    c.classList.add('done');
+    c.querySelectorAll('button').forEach(b => { b.disabled = true; });
+  });
+}
+function choicesCard(questions) {
+  const card = div('choices'), picked = new Array(questions.length).fill(null);
+  const single = questions.length === 1;
+  const sendBtn = single ? null : button('Send answers', 'primary', () => answer());
+  function answer() {
+    if (busy || picked.includes(null)) return;
+    const text = single ? picked[0]
+      : questions.map((q, i) => `${q.question} → ${picked[i]}`).join('\n');
+    post({ type: 'send', text });
+    closeChoices();
+  }
+  questions.forEach((q, qi) => {
+    card.appendChild(div('q')).textContent = q.question;
+    const opts = card.appendChild(div('opts'));
+    q.options.forEach(o => {
+      const label = o.replace(RECOMMENDED, ''), rec = RECOMMENDED.test(o);
+      const b = document.createElement('button');
+      b.className = 'opt' + (rec ? ' rec' : '');
+      b.textContent = label;
+      if (rec) b.appendChild(div('tag')).textContent = ' · Recommended';
+      b.onclick = () => {
+        if (busy) return;
+        opts.querySelectorAll('.opt').forEach(x => x.classList.toggle('sel', x === b));
+        picked[qi] = label;
+        if (single) answer(); else sendBtn.disabled = picked.includes(null);
+      };
+      opts.appendChild(b);
+    });
+  });
+  const foot = card.appendChild(div('foot'));
+  foot.appendChild(document.createElement('span')).textContent = 'Or type your own answer below.';
+  if (sendBtn) { sendBtn.disabled = true; foot.appendChild(sendBtn); }
+  return card;
+}
 function submit() {
   if (busy) { post({ type: 'stop' }); return; }
   const text = input.value.trim();
