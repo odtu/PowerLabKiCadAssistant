@@ -69,6 +69,8 @@ PANEL_NOTE = (
     "PowerShell tool: `tar -a -cf fab\\gerbers.zip -C fab\\gerbers *` (the zip first, then -C "
     "and the folder whose files go in). It is the only other shell command the panel allows; "
     "Compress-Archive is blocked.\n"
+    "Read, list and search files only with the Read, Grep and Glob tools, never with shell "
+    "commands such as cd, grep, cat, ls, dir or Select-String: the panel blocks them.\n"
     "Each message ends with a <kicad_state> block giving the live KiCad selection at the "
     "moment it was sent. Words like 'this', 'that', 'it' or 'selected' refer to that selection. "
     "It is for you only: never repeat it in your reply. "

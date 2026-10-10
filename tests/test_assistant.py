@@ -563,6 +563,14 @@ class PanelDefaultsTests(unittest.TestCase):
         self.assertNotIn("PowerShell(tar:*)", c["ALLOWED_TOOLS"])  # never extraction
         self.assertIn(r"tar -a -cf fab\gerbers.zip -C fab\gerbers *", c["PANEL_NOTE"])
 
+    def test_files_are_read_with_tools_not_the_shell(self):
+        # Issue #29: Claude ran `cd ...; grep ...` in Bash to search a project file, and the
+        # panel blocked it. Shell grep/cat/cd aren't allowed, so it must use Read/Grep/Glob.
+        c = self.constants()
+        self.assertNotIn("Bash", c["ALLOWED_TOOLS"])
+        self.assertIn("Read, Grep and Glob tools", c["PANEL_NOTE"])
+        self.assertIn("never with shell commands", c["PANEL_NOTE"])
+
     def test_board_minimums_are_the_pcbway_floor(self):
         with open(os.path.join(ROOT, "skills", "powerlab-pcb-design-rules", "SKILL.md"), encoding="utf-8") as f:
             rules = f.read()
