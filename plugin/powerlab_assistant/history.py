@@ -13,7 +13,7 @@ import os
 from . import config
 
 FOLDER = os.path.join(config.CONFIG_DIR, "chats")
-KINDS = ("user", "text", "tool", "tool_done", "meta", "image")  # panel events that make up a chat
+KINDS = ("user", "text", "thought", "tool", "tool_done", "meta", "image")  # panel events that make up a chat
 MAX_EVENTS = 600  # older messages are dropped from the panel (Claude still has them)
 EDITORS = ("pcb", "schematic")  # before 0.6 each editor had its own panel and chat file
 
