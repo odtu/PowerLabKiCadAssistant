@@ -35,11 +35,27 @@ IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 VIEWS_DIR = os.path.join(os.path.dirname(attachments.FOLDER), "views")  # board renders for review
 LIBRARY_CHECK_EVERY = 10 * 60  # seconds between GitHub checks for library updates
+# What Claude is doing, shown with a timer while it works: a long think shows no messages,
+# and looked like a hang. Content blocks of the streamed reply -> the activity they show.
+STREAM_ACTIVITY = {"thinking": "thinking", "redacted_thinking": "thinking", "text": "writing",
+                   "tool_use": "preparing"}
+ALIVE_EVERY = 3  # seconds; resend an unchanged activity this often, so the page knows Claude is alive
+# Claude's thinking, readable: on these models the API leaves it out unless asked for a
+# summary. Claude Code has no setting for that in headless runs, so it goes in the request
+# body. Haiku 4.5 rejects it (no adaptive thinking); Fable 5.1 is untested.
+THINKING_SUMMARIES = '{"thinking": {"type": "adaptive", "display": "summarized"}}'
+SUMMARY_MODELS = ("claude-opus-5-5", "claude-sonnet-5-5")
+LIVE_THOUGHT_CHARS = 1500  # the end of the thinking so far, shown while Claude thinks
 
 PANEL_NOTE = (
     "You are running in a narrow command panel docked beside KiCad, one headless "
     "command at a time. Keep replies to a few short lines. You cannot ask for permission "
     "mid-run; if you need a decision from the user, stop and ask in your reply.\n"
+    "The user watches you work and sees only your text and tool calls, not your thinking. "
+    "So don't work through a big job (a review, a placement plan, a routing strategy) in one "
+    "long silent think: go part by part, e.g. one block or group of parts at a time, and "
+    "after each part write one short line of what you found or decided, like a designer "
+    "talking through a review. Take as long as the design needs; just keep the user posted.\n"
     "The AskUserQuestion tool doesn't work here. Instead, when a question has a few clear "
     "answers, end your reply with a <choices> block: each question on a line of its own, "
     "followed by its 2-4 short options as '- ' lines, the one you recommend first, marked "
@@ -216,6 +232,11 @@ class ClaudePanel(wx.Frame):
         self.pending = []
         self.context_items = None
         self.image_reads = {}
+        self.activity, self.activity_sent = ("waiting", ""), 0.0
+        self.thinking_tokens = 0
+        self.thought, self.thought_started = "", 0.0
+        self.summaries = True  # turned off if the model refuses THINKING_SUMMARIES
+        self.summaries_on = False  # asked for in the current run
         self.problems = {}  # id -> error details offered for reporting
         self.share_files = []
         self.sharing = False
@@ -253,7 +274,8 @@ class ClaudePanel(wx.Frame):
         self.ready = False
         self.context_items = None
         # Messages still waiting for the old page belong to the chat being cleared.
-        self.pending = [d for d in self.pending if d["kind"] not in history.KINDS + ("note", "busy")]
+        self.pending = [d for d in self.pending
+                        if d["kind"] not in history.KINDS + ("note", "busy", "activity")]
         with open(HTML_PATH, encoding="utf-8") as f:
             self.web.SetPage(f.read(), "")
 
@@ -262,7 +284,13 @@ class ClaudePanel(wx.Frame):
         if not self.ready:
             self.pending.append(data)
             return
-        self.web.RunScript(f"app.event({json.dumps(data)})")
+        self.send_to_page(data)
+
+    def send_to_page(self, data):
+        # Never the synchronous RunScript: it waits in a nested event loop, which runs the
+        # next queued emit, which waits in another one... A burst of tool events nested them
+        # until the panel froze at 100% CPU. The page runs async scripts in order.
+        self.web.RunScriptAsync(f"app.event({json.dumps(data)})")
 
     def say(self, kind, **data):
         """Emit a chat message and keep it in the saved chat."""
@@ -314,7 +342,7 @@ class ClaudePanel(wx.Frame):
     def msg_ready(self, msg):
         self.ready = True
         for data in self.pending:
-            self.web.RunScript(f"app.event({json.dumps(data)})")
+            self.send_to_page(data)
         self.pending = []
         self.emit("suggestions", items=[{"label": l, "text": t} for l, t in self.source.suggestions])
         self.emit("models", current=self.model,
@@ -719,7 +747,7 @@ class ClaudePanel(wx.Frame):
             self.open_chat(snap.cwd)
         args = [
             self.claude, "-p",
-            "--output-format", "stream-json", "--verbose",
+            "--output-format", "stream-json", "--verbose", "--include-partial-messages",
             "--append-system-prompt", snap.context + "\n" + PANEL_NOTE + views_note(),
         ]
         resend = files is not None
@@ -746,9 +774,17 @@ class ClaudePanel(wx.Frame):
         self.started = time.time()
         self.last_text = ""
         self.got_result = False
+        self.activity, self.activity_sent = ("waiting", ""), time.time()
+        self.thinking_tokens = 0
+        self.thought = ""
+        env = clean_env()
+        self.summaries_on = (self.summaries and self.model in SUMMARY_MODELS
+                             and "CLAUDE_CODE_EXTRA_BODY" not in env)
+        if self.summaries_on:
+            env["CLAUDE_CODE_EXTRA_BODY"] = THINKING_SUMMARIES
         try:
             self.proc = subprocess.Popen(
-                args, cwd=snap.cwd, env=clean_env(),
+                args, cwd=snap.cwd, env=env,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 encoding="utf-8", errors="replace",
                 creationflags=subprocess.CREATE_NO_WINDOW,
@@ -783,6 +819,25 @@ class ClaudePanel(wx.Frame):
         if kind == "system" and msg.get("subtype") == "init":
             self.session_id = msg.get("session_id")
             self.save_chat()
+        elif kind == "system" and msg.get("subtype") == "api_retry":
+            self.set_activity("retry")
+        elif kind == "system" and msg.get("subtype") == "thinking_tokens":
+            self.thinking_tokens = msg.get("estimated_tokens") or self.thinking_tokens
+            self.set_activity("thinking")
+        elif kind == "stream_event":
+            event = msg.get("event") or {}
+            block = event.get("content_block") or {}
+            if event.get("type") == "content_block_start" and block.get("type") in STREAM_ACTIVITY:
+                name = describe_tool(block.get("name", ""), {})[0] if block.get("type") == "tool_use" else ""
+                self.thinking_tokens = 0
+                if block["type"] == "thinking":
+                    self.thought, self.thought_started = "", time.time()
+                self.set_activity(STREAM_ACTIVITY[block["type"]], name)
+            else:
+                delta = event.get("delta") or {}
+                if delta.get("type") == "thinking_delta":
+                    self.thought += delta.get("thinking") or ""
+                self.set_activity(*self.activity)  # still streaming
         elif kind == "rate_limit_event":
             self.limits = usage.limits(msg) or self.limits
             text, tip = usage.summary(self.limits, 0, 0)
@@ -794,10 +849,15 @@ class ClaudePanel(wx.Frame):
                 if text or choices:
                     self.last_text = text
                     self.say("text", text=text, **({"choices": choices} if choices else {}))
+                elif block.get("type") == "thinking" and block.get("thinking", "").strip():
+                    secs = time.time() - self.thought_started if self.thought_started else 0
+                    self.say("thought", text=strip_state(block["thinking"]), secs=round(secs))
+                    self.thought, self.thought_started = "", 0.0
                 elif block.get("type") == "tool_use":
                     args = block.get("input") or {}
                     name, detail = describe_tool(block.get("name", ""), args)
                     self.say("tool", id=block.get("id"), name=name, detail=detail)
+                    self.set_activity("tool", name)
                     self.image_reads[block.get("id")] = (
                         tool_kind(block.get("name", "")),
                         args.get("file_path", "") if block.get("name") == "Read" else "")
@@ -818,6 +878,8 @@ class ClaudePanel(wx.Frame):
                 report.note_event("tool", f"{name} {'error' if failed else 'ok'}")
                 if image and not failed and os.path.splitext(image)[1].lower() in IMAGE_TYPES:
                     self.show_image(image)
+                if not self.image_reads:  # every tool of this step is done
+                    self.set_activity("waiting")
         elif kind == "result":
             self.got_result = True
             if msg.get("is_error") and any("No conversation found" in str(e) for e in msg.get("errors") or []):
@@ -828,6 +890,10 @@ class ClaudePanel(wx.Frame):
             if "Not logged in" in result:
                 self.emit("note", level="warn", text="Claude Code isn't signed in yet.",
                           action={"label": "Sign in", "type": "terminal"})
+            elif msg.get("is_error") and self.summaries_on and "thinking" in result.lower():
+                self.summaries = False  # until the panel restarts
+                self.emit("note", level="warn", text="This model can't show its thinking live, so the "
+                          "panel stopped asking for it. Send your message again.")
             elif msg.get("is_error") and result.strip() != self.last_text:
                 # Claude's own error text can mention the project, so it isn't put in reports.
                 self.emit("note", level="error", text=result,
@@ -842,6 +908,19 @@ class ClaudePanel(wx.Frame):
                       + (f" · {', '.join(used)} · {self.effort} effort" if used else ""))
             text, tip = usage.summary(self.limits, tokens, window)
             self.emit("usage", text=text, tip=tip)
+
+    def set_activity(self, phase, name=""):
+        """Tell the page what Claude is doing: on a change, and every ALIVE_EVERY seconds
+        while it streams (not on every chunk, which would flood the page)."""
+        now = time.time()
+        if (phase, name) != self.activity or now - self.activity_sent >= ALIVE_EVERY:
+            self.activity, self.activity_sent = (phase, name), now
+            extra = {}
+            if phase == "thinking" and self.thinking_tokens:
+                extra["tokens"] = self.thinking_tokens
+            if phase == "thinking" and self.thought.strip():
+                extra["thought"] = self.thought[-LIVE_THOUGHT_CHARS:]
+            self.emit("activity", phase=phase, name=name, **extra)
 
     def _remember(self, kind, detail=""):
         pid = str(len(self.problems) + 1)

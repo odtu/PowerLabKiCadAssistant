@@ -186,9 +186,26 @@ header {
 }
 .shot img { display: block; width: 100%; max-height: 320px; object-fit: contain; cursor: zoom-in; background: var(--surface-2); }
 .shot .cap { font-size: 11px; color: var(--muted); padding: 4px 9px; }
-.typing { display: flex; gap: 4px; padding: 4px 2px 12px; }
-.typing span { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); animation: blink 1.2s infinite; }
+.typing { padding: 4px 2px 12px; }
+.typing .row { display: flex; align-items: center; gap: 4px; }
+.typing span { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--muted); animation: blink 1.2s infinite; }
 .typing span:nth-child(2) { animation-delay: .2s; } .typing span:nth-child(3) { animation-delay: .4s; }
+.typing .status { margin-left: 6px; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.typing.quiet .status { color: var(--warn); }
+/* Claude's thinking: live while it thinks, then kept as a collapsed row */
+.typing .thought-live {
+  margin: 6px 0 0 2px; padding-left: 9px; border-left: 2px solid var(--border);
+  font-size: 12px; line-height: 1.45; color: var(--muted); font-style: italic;
+  max-height: 5.8em; overflow: hidden; white-space: pre-wrap;
+  display: flex; flex-direction: column; justify-content: flex-end;
+}
+.typing .thought-live:empty { display: none; }
+details.thought { margin: 0 0 10px; font-size: 12px; color: var(--muted); }
+details.thought summary { cursor: pointer; list-style: none; user-select: none; }
+details.thought summary::before { content: '▸ '; }
+details.thought[open] summary::before { content: '▾ '; }
+details.thought .body { margin: 6px 0 0 2px; padding-left: 9px; border-left: 2px solid var(--border); font-style: italic; }
+details.thought .body p { margin: 0 0 6px; }
 
 /* empty state */
 #empty { margin: auto 0; padding: 24px 6px; text-align: center; color: var(--muted); }
@@ -398,10 +415,47 @@ function setBusy(v) {
   send.title = v ? 'Stop' : 'Send (Enter)';
   updateSend();
   if (v && !typing) {
-    typing = div('typing', '<span></span><span></span><span></span>');
+    typing = div('typing', '<div class="row"><span></span><span></span><span></span><div class="status"></div></div>'
+      + '<div class="thought-live"></div>');
     log.appendChild(typing); log.scrollTop = log.scrollHeight;
-  } else if (!v && typing) { typing.remove(); typing = null; }
+    setActivity('waiting', '');
+  } else if (!v && typing) { typing.remove(); typing = null; activity = null; }
 }
+
+// What Claude is doing, with a timer: a long think shows no messages and looked like a hang.
+const ACTIVITY = {
+  waiting: 'Waiting for Claude', thinking: 'Thinking', writing: 'Writing', preparing: 'Preparing',
+  tool: 'Running', retry: "Claude's servers are busy, retrying",
+};
+const LIVE_THOUGHT_CHARS = 1500;  // as in panel.py
+const QUIET_MS = 5 * 60 * 1000;  // no sign of Claude for this long (outside a tool): suggest Stop
+let activity = null;
+function setActivity(phase, name, tokens, thought) {
+  const now = Date.now();
+  if (!activity || activity.phase !== phase || activity.name !== name) activity = { phase, name, since: now };
+  activity.alive = now;
+  activity.tokens = tokens || 0;
+  if (typing) {
+    const live = typing.querySelector('.thought-live');
+    // The panel sends only the end of a long thought; start that at a sentence, not mid-word.
+    const cut = thought && thought.length >= LIVE_THOUGHT_CHARS;
+    const text = !thought ? '' : cut ? '…' + thought.replace(/^[^]*?[.!?\n]\s*/, '') : thought;
+    if (live.textContent !== text) { live.textContent = text; log.scrollTop = log.scrollHeight; }
+  }
+  showActivity();
+}
+function clock(ms) { const s = Math.floor(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; }
+function showActivity() {
+  if (!typing || !activity) return;
+  const now = Date.now(), quietMs = now - activity.alive;
+  const quiet = activity.phase !== 'tool' && quietMs >= QUIET_MS;
+  typing.classList.toggle('quiet', quiet);
+  typing.querySelector('.status').textContent = quiet
+    ? `Nothing from Claude for ${Math.floor(quietMs / 60000)} min. If it stays quiet, press Stop, then send “continue”.`
+    : `${ACTIVITY[activity.phase] || 'Working'}${activity.name ? ' ' + activity.name : ''} · ${clock(now - activity.since)}`
+      + (activity.tokens ? ` · ${activity.tokens.toLocaleString('en-US')} tokens` : '');
+}
+setInterval(showActivity, 1000);
 
 let attachedCount = 0;
 function updateSend() { send.disabled = !busy && !input.value.trim() && !attachedCount; }
@@ -492,6 +546,15 @@ const app = {
           document.querySelectorAll('.ti.run').forEach(t => { t.className = 'ti'; t.textContent = '·'; });
         }
         break;
+      case 'activity': if (typing) setActivity(e.phase, e.name || '', e.tokens, e.thought); break;
+      case 'thought': {
+        const d = document.createElement('details');
+        d.className = 'thought';
+        const s = document.createElement('summary');
+        s.textContent = e.secs >= 1 ? `Thought for ${clock(e.secs * 1000)}` : 'Thought';
+        d.append(s, div('body', markdown(e.text)));
+        add(d); toolGroup = null; break;
+      }
       case 'session': break;
       case 'context': {
         const c = $('context'); c.innerHTML = '';

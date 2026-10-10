@@ -251,7 +251,7 @@ class ChatHistoryTests(unittest.TestCase):
             from powerlab_assistant.panel import ClaudePanel
         except ImportError as exc:
             self.skipTest(f"panel needs wx.html2: {exc}")
-        names = ("say", "save_chat", "open_chat", "handle", "finished", "show_image")
+        names = ("say", "save_chat", "open_chat", "handle", "finished", "show_image", "set_activity")
 
         class Fake:
             pass
@@ -264,6 +264,9 @@ class ChatHistoryTests(unittest.TestCase):
         panel.retry, panel.stale_session, panel.proc = None, False, None
         panel.got_result, panel.watched, panel.image_reads = False, {}, {}
         panel.last_text, panel.limits, panel.started, panel.effort = "", [], 0.0, "high"
+        panel.activity, panel.activity_sent = ("waiting", ""), time.time()
+        panel.thinking_tokens = 0
+        panel.thought, panel.thought_started, panel.summaries_on = "", 0.0, False
         panel.emitted = []
         panel.emit = lambda kind, **data: panel.emitted.append(dict(data, kind=kind))
         panel.load_page = lambda: panel.emitted.clear()
@@ -351,6 +354,61 @@ class ChatHistoryTests(unittest.TestCase):
         self.assertEqual(panel.emitted, [
             {"kind": "text", "text": "", "choices": [{"question": "Route GND?", "options": ["Pour", "Tracks"]}]},
             {"kind": "text", "text": "Done."}])
+
+    def test_panel_shows_what_claude_is_doing(self):
+        # A 12-minute think showed nothing at all, and looked like a hang.
+        panel = self.fake_panel()
+
+        def stream(event):
+            panel.handle({"type": "stream_event", "event": event})
+
+        def shown():
+            done = [(e["phase"], e["name"]) for e in panel.emitted if e["kind"] == "activity"]
+            panel.emitted.clear()
+            return done
+
+        stream({"type": "message_start"})
+        stream({"type": "content_block_start", "content_block": {"type": "thinking"}})
+        for _ in range(50):  # chunks of the same activity aren't each sent to the page
+            stream({"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": ""}})
+        self.assertEqual(shown(), [("thinking", "")])
+        panel.activity_sent -= 30  # a quiet think still tells the page Claude is alive
+        stream({"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": ""}})
+        self.assertEqual(shown(), [("thinking", "")])
+        panel.activity_sent -= 30  # how far the think has got
+        panel.handle({"type": "system", "subtype": "thinking_tokens", "estimated_tokens": 4200})
+        self.assertEqual(panel.emitted, [{"kind": "activity", "phase": "thinking", "name": "", "tokens": 4200}])
+        panel.emitted.clear()
+        # With summaries on, the thinking itself is shown while it streams...
+        stream({"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": "Checking U3 decoupling. "}})
+        stream({"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": "C5 is 9 mm away."}})
+        panel.activity_sent -= 30
+        stream({"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": ""}})
+        self.assertEqual(panel.emitted[-1]["thought"], "Checking U3 decoupling. C5 is 9 mm away.")
+        panel.emitted.clear()
+        # ...then kept in the chat, collapsed.
+        panel.handle({"type": "assistant", "message": {"content": [
+            {"type": "thinking", "thinking": "Checking U3 decoupling. C5 is 9 mm away.", "signature": "x"}]}})
+        self.assertEqual([(e["kind"], e["text"]) for e in panel.emitted],
+                         [("thought", "Checking U3 decoupling. C5 is 9 mm away.")])
+        self.assertEqual(panel.events[-1]["kind"], "thought")
+        panel.handle({"type": "assistant", "message": {"content": [{"type": "thinking", "thinking": ""}]}})
+        self.assertEqual(len(panel.events), 1)  # omitted thinking (no summary) adds nothing
+        panel.emitted.clear()
+
+        stream({"type": "content_block_start", "content_block": {"type": "tool_use", "name": "mcp__kicad__get_pads"}})
+        panel.handle({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "a", "name": "mcp__kicad__get_pads", "input": {}},
+            {"type": "tool_use", "id": "b", "name": "Grep", "input": {"pattern": "x"}}]}})
+        self.assertEqual(shown(), [("preparing", "Get pads"), ("tool", "Get pads"), ("tool", "Grep")])
+        panel.handle({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "a"}]}})
+        self.assertEqual(shown(), [])  # Grep is still running
+        panel.handle({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "b"}]}})
+        self.assertEqual(shown(), [("waiting", "")])
+        panel.handle({"type": "system", "subtype": "api_retry", "attempt": 1})
+        self.assertEqual(shown(), [("retry", "")])
+        # Activity isn't part of the saved chat.
+        self.assertFalse(any(e["kind"] == "activity" for e in panel.events))
 
     def test_expired_session_is_sent_again_as_a_new_chat(self):
         panel = self.fake_panel()
@@ -554,6 +612,10 @@ class PanelDefaultsTests(unittest.TestCase):
         self.assertIn("the chat is kept", c["PANEL_NOTE"])
         self.assertIn("powerlab-visual-review", c["PANEL_NOTE"])  # look at the board while working
         self.assertIn("<choices>", c["PANEL_NOTE"])  # questions come back as answer buttons
+        self.assertIn("one long silent think", c["PANEL_NOTE"])  # the user follows the work
+        self.assertIn(c["DEFAULT_MODEL"], c["SUMMARY_MODELS"])  # thinking shown live
+        # Haiku 4.5 answers "400 adaptive thinking is not supported on this model".
+        self.assertFalse(any("haiku-4" in m for m in c["SUMMARY_MODELS"]))
 
     def test_gerbers_can_be_zipped(self):
         # Issue #24: PCBWay wants the Gerbers zipped, but only kicad-cli was allowed in the shell.
@@ -562,6 +624,15 @@ class PanelDefaultsTests(unittest.TestCase):
         self.assertIn("PowerShell(tar -a -cf:*)", c["ALLOWED_TOOLS"])
         self.assertNotIn("PowerShell(tar:*)", c["ALLOWED_TOOLS"])  # never extraction
         self.assertIn(r"tar -a -cf fab\gerbers.zip -C fab\gerbers *", c["PANEL_NOTE"])
+
+    def test_page_scripts_never_run_synchronously(self):
+        # A burst of tool events nested synchronous RunScript calls, each waiting in its
+        # own event loop, until the panel froze at 100% CPU and outlived KiCad.
+        import re
+        with open(os.path.join(ROOT, "plugin", "powerlab_assistant", "panel.py"), encoding="utf-8") as f:
+            source = f.read()
+        self.assertIn(".RunScriptAsync(", source)
+        self.assertEqual(re.findall(r"\.RunScript\(", source), [])
 
     def test_board_minimums_are_the_pcbway_floor(self):
         with open(os.path.join(ROOT, "skills", "powerlab-pcb-design-rules", "SKILL.md"), encoding="utf-8") as f:
