@@ -1,6 +1,6 @@
 ---
 name: powerlab-visual-review
-description: Render the PCB and look at it while working, the METU Power Lab way. Use for any placement or routing work (placing, moving or rotating parts, routing tracks, pours, autorouting, stitching vias, layout clean-up) and whenever the user asks to see, check or review the board. Covers which views to render, when, how to review them against the design rules, and showing them to the user.
+description: Render the PCB and look at it while working. Use for any placement or routing work (placing, moving or rotating parts, routing tracks, pours, autorouting, stitching vias, layout clean-up) and whenever the user asks to see, check or review the board. Covers which views to render, when, how to review them against the design rules, and showing them to the user.
 ---
 
 # Look at the board while you work
@@ -10,7 +10,7 @@ Tool results and DRC numbers don't show what a layout looks like:
 - parts crowding each other, or silkscreen on pads
 - tracks that wander or take odd detours
 
-A rendered view shows all of these at a glance. On the lab's ESC3Phase board, rendering and reviewing at every step made the biggest difference to the result. **This is a rule, not an option:** render, look, fix, render again.
+A rendered view shows all of these at a glance. On a three-phase ESC board, rendering and reviewing at every step made the biggest difference to the result. **This is a rule, not an option:** render, look, fix, render again.
 
 ## When
 - **Before you start:** one baseline view, so you know what's there.

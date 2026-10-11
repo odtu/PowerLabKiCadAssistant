@@ -1,11 +1,9 @@
 ﻿---
 name: powerlab-pcb-design-rules
-description: METU PowerLab PCB design rules for KiCad work — PCBWay standard-price (no-surcharge) spec, fab limits and lab default DRC values, schematic rules, and common PCB layout rules. Use whenever designing, reviewing, or editing a schematic or PCB, setting up KiCad board/DRC constraints or net classes, sizing traces/vias/copper, or checking a layout for manufacturability and layout quality.
+description: PCB design rules for KiCad work — PCBWay standard-price (no-surcharge) spec, fab limits and default DRC values, schematic rules, and common PCB layout rules. Use whenever designing, reviewing, or editing a schematic or PCB, setting up KiCad board/DRC constraints or net classes, sizing traces/vias/copper, or checking a layout for manufacturability and layout quality.
 ---
 
-# PCB Design Rules — METU PowerLab
-
-Source: https://github.com/odtu/Powerlab/blob/master/KiCAD/PCB_DESIGN_RULES.md, minus the lab's drawing-sheet template rule (this panel is public).
+# PCB Design Rules
 
 Target fab: **PCBWay Standard PCB, at standard (no-surcharge) spec**, IPC Class 2.
 Sources: https://www.pcbway.com/capabilities.html and the quote form at https://www.pcbway.com/orderonline.aspx (both checked 2026-09-25).
@@ -13,7 +11,7 @@ Sources: https://www.pcbway.com/capabilities.html and the quote form at https://
 ## How to apply these rules
 
 - **Cost comes first.** Every board must fit the standard-price spec in §2.0. Anything outside it adds a surcharge, so ask the user before using it and say which option costs extra.
-- Every numeric rule has two columns: **PCBWay min** (the manufacturing limit, already capped at the standard-price spec) and **Lab default** (what to actually use). Design to the lab default. Go below it only locally, only when the part forces it (e.g. fine-pitch pads), and never below the PCBWay min.
+- Every numeric rule has two columns: **PCBWay min** (the manufacturing limit, already capped at the standard-price spec) and **Default** (what to actually use). Design to the default. Go below it only locally, only when the part forces it (e.g. fine-pitch pads), and never below the PCBWay min.
 - When two rules conflict, the stricter one wins. A project's own `CLAUDE.md` or README can override these; it wins over this file.
 - If a design can't meet a rule, don't silently break it. Tell the user which rule, where, and why.
 - Copper weight changes the limits. Always confirm the copper weight (outer and inner) before setting constraints.
@@ -41,10 +39,10 @@ Follow these steps in order when starting a new schematic.
   - revision history, if the project keeps one
 - **Connections between sheets use global net labels.** Local labels are only for nets that stay inside one sheet. Power rails use power symbols (§1.5).
 
-### 1.3 Components: PowerLabKiCadLibraries only
+### 1.3 Components: the project's libraries
 
-- **Every** symbol and footprint comes from https://github.com/odtu/PowerLabKiCadLibraries. Don't use KiCad's stock libraries or project-local libraries.
-- If a part isn't in the repo, **stop and tell the user**. The part is added to PowerLabKiCadLibraries first (symbol + footprint + 3D model), then used. Never silently substitute a "similar" part or a stock-library part.
+- Use the symbol and footprint libraries the project or the user already uses. If unsure, ask which ones before adding parts.
+- If a part isn't in them, **stop and tell the user**. Add the part (symbol + footprint + 3D model) first, then use it. Never silently substitute a "similar" part or one from another library.
 
 ### 1.4 Wiring
 
@@ -96,7 +94,7 @@ Set these up in Schematic Setup → Net Classes, so every wire picks up its styl
 
 - [ ] A4 on every sheet; title block filled, no raw `${...}`
 - [ ] Hierarchical structure, main page with info and images, global labels between sheets
-- [ ] All parts come from PowerLabKiCadLibraries
+- [ ] All parts come from the project's libraries
 - [ ] No pin-to-pin or pin-on-junction connections
 - [ ] No bare VCC/VDD; every rail named by voltage and domain; GND symbols point down, supplies up
 - [ ] GND and Power net classes set: GND nets blue and thick, supply nets red and thick
@@ -133,7 +131,7 @@ Cost-driven design habits:
 
 ### 2.1 Board
 
-| Item | PCBWay limit | Lab default |
+| Item | PCBWay limit | Default |
 |---|---|---|
 | Layers | 1–14 | **2** (4 if justified and approved) |
 | Thickness | 0.2–3.2 mm | **1.6 mm** |
@@ -146,7 +144,7 @@ Cost-driven design habits:
 
 ### 2.2 Tracks and spacing (per copper weight, "normal process")
 
-| Copper | Width/space min (standard price) | **Lab default width/space** |
+| Copper | Width/space min (standard price) | **Default width/space** |
 |---|---|---|
 | 1 oz (35 µm) | 6 / 6 mil (0.15 / 0.15 mm) | **0.20 / 0.20 mm** |
 | 2 oz (70 µm) | outer 7 / 8 mil (0.18 / 0.20 mm), inner 6 / 8 mil | **0.25 / 0.25 mm** |
@@ -157,7 +155,7 @@ Hatched/grid copper needs larger values (1 oz: 9/11 mil). Prefer solid pours.
 
 ### 2.3 Drills, vias, annular ring
 
-| Item | PCBWay limit | Lab default |
+| Item | PCBWay limit | Default |
 |---|---|---|
 | Min drill | **0.3 mm** at standard price (0.15–0.25 mm costs extra) | 0.3 mm |
 | Max drill | 6.0 mm (larger is milled) | — |
@@ -174,13 +172,13 @@ Hatched/grid copper needs larger values (1 oz: 9/11 mil). Prefer solid pours.
 | Castellated holes | Ø ≥ 0.5 mm, edge-to-edge ≥ 0.3 mm | Ø 0.6 mm |
 | Via plugging (for via-in-pad) | Ø 0.2–0.4 mm, board 0.4–2.4 mm, **costs extra** | Don't use; tented vias are standard |
 
-**Standard lab vias:**
+**Standard vias:**
 - Signal: **0.3 mm drill / 0.6 mm pad**
 - Power / thermal: **0.4 mm drill / 0.8 mm pad** (2 oz: 0.4 / 0.85 mm)
 
 ### 2.4 Solder mask and silkscreen
 
-| Item | PCBWay limit | Lab default |
+| Item | PCBWay limit | Default |
 |---|---|---|
 | Mask expansion (opening beyond pad) | ≥ 2 mil (0.05 mm) | 0.05 mm |
 | Mask bridge (web), < 2 oz, green | 4 mil (0.10 mm) | 0.10 mm |
@@ -195,7 +193,7 @@ Green, red, yellow and blue mask, and white or black silk, cost nothing extra.
 
 ### 2.5 Board edge and panelization
 
-| Item | PCBWay limit | Lab default |
+| Item | PCBWay limit | Default |
 |---|---|---|
 | Copper to CNC-routed edge | 0.25 mm (0.20 mm "medium") | **0.5 mm** |
 | Copper to V-score line | — | 1.0 mm |
@@ -207,7 +205,7 @@ Green, red, yellow and blue mask, and white or black silk, cost nothing extra.
 
 Defaults for a **1 oz** board. For 2 oz or 3 oz, take the values from the tables above.
 
-The board minimums are the **PCBWay standard-price floor** (§2.2), so DRC only rejects what can't be made without a surcharge. The **net classes** below carry the lab defaults, and that's what tracks are routed at. A track may go below the class width, down to 0.15 mm, only locally where a part forces it, e.g. escaping between fine-pitch pads (QFN, ESP32 module, USB-C).
+The board minimums are the **PCBWay standard-price floor** (§2.2), so DRC only rejects what can't be made without a surcharge. The **net classes** below carry the defaults, and that's what tracks are routed at. A track may go below the class width, down to 0.15 mm, only locally where a part forces it, e.g. escaping between fine-pitch pads (QFN, ESP32 module, USB-C).
 
 | KiCad constraint | Value |
 |---|---|
@@ -319,7 +317,7 @@ I = k · ΔT^0.44 · A^0.725       A = cross-section in mil², ΔT = temperature
 k = 0.048 (outer layer), 0.024 (inner layer);  width [mil] = A / (1.378 · oz)
 ```
 
-  Lab default is **ΔT = 10 °C** on **1 oz** copper (standard price, §2.0):
+  Default is **ΔT = 10 °C** on **1 oz** copper (standard price, §2.0):
 
 | Current | Outer layer width | Inner layer width |
 |---|---|---|
@@ -421,11 +419,9 @@ Copper comes first (§3.3): power pads, power rails and pour nets (no GND fan-ou
 - Label connector pins and signals. Show voltage and polarity at every power input (e.g. `+24V  GND`, `+  −`).
 - **Put the board information on every board:**
   - project name, version, date
-  - design team members' names
-  - organization logos (METU PowerLab)
-  - website: `power.eee.odtu.edu.tr` / `github.com/odtu`, or a QR code
+  - the text `Designed with PowerLab KiCad Assistant and Claude`, at least 1.0 mm high, next to the board info
   - Use text variables in the PCB text (`${PROJECT_NAME}`, `${REVISION}`, `${ISSUE_DATE}`) so the board info stays in sync with the schematic title block.
-  - Make the logo and QR code into footprints with KiCad's Image Converter. The lab QR code image is `PowerLabQrCode.png` at https://github.com/odtu/Powerlab/tree/master/KiCAD. Make the QR code at least ~12 mm wide and check that it scans in the 3D viewer render.
+  - Designer names, an organization logo, a website or a QR code only if the user asks for them. Make a logo or QR code into a footprint with KiCad's Image Converter, and check that a QR code scans in the 3D viewer render.
 
 ### 3.7 Final checks and outputs
 
@@ -439,7 +435,7 @@ Copper comes first (§3.3): power pads, power rails and pour nets (no GND fan-ou
 - [ ] GND pads reach the pours (vias only at decoupling caps, plus pads still unconnected after routing); power rails as pours, or tracks at class width; every track enters its pad straight at the centre; no slivers or islands next to pads (§3.3, §3.4)
 - [ ] Only through-hole vias, all tented (except thermal pads)
 - [ ] Polarized parts aligned; assembly spacing and fiducials per §3.2
-- [ ] Silkscreen clean; board info, logo and website/QR present
+- [ ] Silkscreen clean; board info and the "Designed with PowerLab KiCad Assistant and Claude" text present
 - [ ] 3D viewer: no part collisions, connectors facing out, polarities right
 - [ ] Print the layout 1:1 on paper and check footprints against the real parts
 - [ ] Gerbers checked in the Gerber viewer before ordering

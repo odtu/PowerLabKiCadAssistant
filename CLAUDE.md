@@ -88,8 +88,11 @@ Report real bugs upstream too.
 - **External tools:** a skill that needs one gets it from `install.ps1`. Pin the version and its SHA-256, install it under `%LOCALAPPDATA%\PowerLabKiCadAssistant`, record its path in `config.json`, and expose it to the panel's sessions in `common.clean_env()`. That's how Java 25 and Freerouting 2.4.1 are set up. Never change system-wide PATH or Java.
 - **The `Skill` tool** is in the panel's `ALLOWED_TOOLS`.
 - **`powerlab-pcb-design-rules`** is a copy of the lab's [PCB_DESIGN_RULES.md](https://github.com/odtu/Powerlab/blob/master/KiCAD/PCB_DESIGN_RULES.md). It differs in two ways:
-  - it is renamed, with a `Source:` line under the title;
-  - the drawing-sheet template rule (§1.1, and its §1.9 checklist item) is removed, because the panel is public.
+  - it is renamed;
+  - it is general, because everyone uses the panel, not just the lab. Nothing names METU Power Lab:
+    - the title, the description and "Lab default" columns (now "Default");
+    - §1.1: no lab drawing-sheet template; §1.3: the project's own libraries, not PowerLabKiCadLibraries only (and the §1.9 checklist items);
+    - §3.6: no lab logo, website or QR code. Instead, every board gets the silkscreen text `Designed with PowerLab KiCad Assistant and Claude` (and its §3.7 checklist item).
 
   When the source changes, copy it again with the same edits. Change rules in the lab's file too (a PR to odtu/Powerlab), so the two stay the same. §3.3 pours, §3.4 routing, §3.5 vias: other skills (autoroute, visual review) refer to these numbers, so check they still match. `PANEL_NOTE` tells Claude to load it for any design work.
 
