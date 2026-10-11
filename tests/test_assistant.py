@@ -692,6 +692,64 @@ class McpPatchTests(unittest.TestCase):
         self.assertIn(f"(net {module.PLACEHOLDER_NET})", out)  # GND wire kept as an obstacle
         self.assertEqual(out.count("("), out.count(")"))
 
+        # keepout pour nets: not routed, and their pours become keepouts
+        out, dropped = module.leave_to_pours(dsn, ["GND"], ["VBUS"])
+        self.assertNotIn("(plane VBUS", out)
+        self.assertIn('(keepout "" (polygon F.Cu 0 0 0 10 0 10 10 0 10))', out)
+        self.assertEqual(out.count("("), out.count(")"))
+
+    def test_session_vias_keep_their_annular_ring(self):
+        self.assertIn("via_drills = _repair_via_drills(self.board)", self.patch())
+
+    def test_clean_up_routing(self):
+        """Post-route clean-up: stubs, dead ends, net-class widths and 90 degree corners."""
+        try:
+            import pcbnew
+        except ImportError:
+            self.skipTest("needs KiCad's Python")
+        cli = os.path.join(os.path.dirname(sys.executable), "kicad-cli.exe")
+        if not os.path.isfile(cli):
+            self.skipTest("needs kicad-cli")
+        module = types.ModuleType("route_cleanup")
+        exec(self.new_file("python/commands/route_cleanup.py"), module.__dict__)
+        self.assertIn('"clean_up_routing": self._handle_clean_up_routing,', self.patch())
+
+        mm, P = pcbnew.FromMM, lambda x, y: pcbnew.VECTOR2I(pcbnew.FromMM(x), pcbnew.FromMM(y))
+        board = pcbnew.BOARD()
+        net = pcbnew.NETINFO_ITEM(board, "SIG")
+        board.Add(net)
+        for a, b in (((0, 0), (40, 0)), ((40, 0), (40, 40)), ((40, 40), (0, 40)), ((0, 40), (0, 0))):
+            edge = pcbnew.PCB_SHAPE(board, pcbnew.SHAPE_T_SEGMENT)
+            edge.SetStart(P(*a)); edge.SetEnd(P(*b)); edge.SetLayer(pcbnew.Edge_Cuts); edge.SetWidth(mm(0.1))
+            board.Add(edge)
+        for x, y in ((10, 10), (25, 20)):
+            via = pcbnew.PCB_VIA(board)
+            via.SetPosition(P(x, y)); via.SetWidth(mm(0.6)); via.SetDrill(mm(0.3)); via.SetNet(net)
+            board.Add(via)
+        path = [(10, 10), (20, 10), (20, 15), (20.05, 15.05), (25, 20)]  # 90 degree corner, 0.07 mm stub
+        segments = list(zip(path, path[1:])) + [((25, 20), (30, 25)), ((20, 30), (20, 30))]  # dead end, zero length
+        for a, b in segments:
+            track = pcbnew.PCB_TRACK(board)
+            track.SetStart(P(*a)); track.SetEnd(P(*b)); track.SetWidth(mm(0.15))
+            track.SetLayer(pcbnew.F_Cu); track.SetNet(net)
+            board.Add(track)
+        folder = tempfile.mkdtemp()
+        path = os.path.join(folder, "cleanup.kicad_pcb")
+        board.Save(path)
+        board = pcbnew.LoadBoard(path)
+        class_width = board.GetDesignSettings().m_NetSettings.GetEffectiveNetClass("SIG").GetTrackWidth()
+
+        report = module.clean_up(board, path, cli)
+        self.assertEqual(report["stubs"], {"zero_length": 1, "merged_into_pad": 0, "joined": 1, "put_back": 0})
+        self.assertEqual(report["dangling"]["removed"], 1)
+        self.assertEqual(report["widths"]["full_width"], 3)
+        self.assertEqual(report["miter"]["mitered"], 1)
+        self.assertEqual(report["sharp_corners_left"]["count"], 0)
+        self.assertEqual(report["thin_tracks_left"]["count"], 0)
+        tracks = [t for t in board.GetTracks() if t.Type() == pcbnew.PCB_TRACE_T]
+        self.assertEqual(len(tracks), 4)  # two legs, the chamfer and the diagonal
+        self.assertTrue(all(t.GetWidth() == class_width for t in tracks))
+
 
 class PanelDefaultsTests(unittest.TestCase):
     """panel.py needs wx.html2, so read its constants without importing it."""
