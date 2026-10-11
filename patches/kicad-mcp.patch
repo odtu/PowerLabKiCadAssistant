@@ -317,7 +317,7 @@ index 6f9a813..827e3fa 100644
              # Apply changes
              commit = board.begin_commit()
 diff --git a/python/kicad_interface.py b/python/kicad_interface.py
-index c6ac305..dbc3de5 100644
+index c6ac305..58605c3 100644
 --- a/python/kicad_interface.py
 +++ b/python/kicad_interface.py
 @@ -558,6 +558,7 @@ class KiCADInterface(SchematicHandlersMixin):
@@ -343,7 +343,15 @@ index c6ac305..dbc3de5 100644
          "refill_zones": "_ipc_refill_zones",
          # Board commands
          "add_text": "_ipc_add_text",
-@@ -1236,6 +1239,7 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -779,6 +782,7 @@ class KiCADInterface(SchematicHandlersMixin):
+         "get_component_list": "_ipc_get_component_list",
+         "get_component_properties": "_ipc_get_component_properties",
+         "set_footprint_type": "_ipc_set_footprint_type",
++        "move_footprint_text": "_ipc_move_footprint_text",  # PowerLab patch
+         "add_component_3d_model": "_ipc_add_component_3d_model",
+         # Save command
+         "save_project": "_ipc_save_project",
+@@ -1236,6 +1240,7 @@ class KiCADInterface(SchematicHandlersMixin):
          "add_board_text",
          "move_footprint_text",
          "add_copper_pour",
@@ -351,7 +359,7 @@ index c6ac305..dbc3de5 100644
          "refill_zones",
          "import_svg_logo",
          "sync_schematic_to_board",
-@@ -1848,6 +1852,17 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -1848,6 +1853,17 @@ class KiCADInterface(SchematicHandlersMixin):
          state = self._dirty_state(board_path)
          return {"success": True, "boardPath": board_path, **state}
  
@@ -369,7 +377,7 @@ index c6ac305..dbc3de5 100644
      def _handle_batch_move_components(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """Batch move wrapper that preserves the external-edit save guard."""
          if getattr(self, "session_backend", None) == "ipc" and not self._ipc_session_alive():
-@@ -5079,6 +5094,65 @@ print("ok")
+@@ -5079,6 +5095,65 @@ print("ok")
              logger.error(f"IPC route_arc_trace error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -435,7 +443,7 @@ index c6ac305..dbc3de5 100644
      def _ipc_add_via(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for add_via - adds via with real-time UI update"""
          try:
-@@ -5131,21 +5205,37 @@ print("ok")
+@@ -5131,21 +5206,37 @@ print("ok")
              net = params.get("net")
              clearance = params.get("clearance", 0.5)
              min_width = params.get("minWidth", 0.25)
@@ -480,6 +488,107 @@ index c6ac305..dbc3de5 100644
  
              success = self.ipc_board_api.add_zone(
                  points=formatted_points,
+@@ -5833,6 +5924,100 @@ print("ok")
+             logger.error(f"IPC set_footprint_type error: {e}")
+             return {"success": False, "message": str(e)}
+ 
++    def _ipc_move_footprint_text(self, params: Dict[str, Any]) -> Dict[str, Any]:
++        """IPC handler for move_footprint_text (PowerLab patch).
++
++        Without it the SWIG handler moved the text on the tool's own copy of the
++        board, and the next save wrote KiCad's live board over it.
++        """
++        try:
++            from kipy.board_types import BoardText, Field
++            from kipy.geometry import Vector2
++            from kipy.proto.board.board_types_pb2 import BoardLayer
++
++            reference = params.get("reference") or params.get("ref")
++            field = params.get("field") or "reference"
++            if not reference:
++                return {"success": False, "message": "reference is required"}
++
++            board = self.ipc_board_api._get_board()
++            target_fp = None
++            for fp in board.get_footprints():
++                if fp.reference_field and fp.reference_field.text.value == reference:
++                    target_fp = fp
++                    break
++            if not target_fp:
++                return {
++                    "success": False,
++                    "message": "Component not found",
++                    "errorDetails": f"Could not find component: {reference}",
++                }
++
++            key = field.lower()
++            item = None
++            if key in ("reference", "ref"):
++                item = target_fp.reference_field
++            elif key in ("value", "val"):
++                item = target_fp.value_field
++            else:
++                texts = target_fp.texts_and_fields
++                item = next(
++                    (t for t in texts if isinstance(t, Field) and t.name.lower() == key), None
++                ) or next(
++                    (t for t in texts if isinstance(t, BoardText) and t.value == field), None
++                )
++            if item is None:
++                return {
++                    "success": False,
++                    "message": "Footprint text not found",
++                    "errorDetails": f"Could not find field '{field}' on {reference}",
++                }
++            text = item.text if isinstance(item, Field) else item
++
++            scale = {"mm": 1_000_000, "inch": 25_400_000, "mil": 25_400}.get(
++                params.get("unit", "mm"), 1_000_000
++            )
++            if params.get("x") is not None and params.get("y") is not None:
++                text.position = Vector2.from_xy(
++                    int(float(params["x"]) * scale), int(float(params["y"]) * scale)
++                )
++            if params.get("rotation") is not None:
++                text.attributes.angle = float(params["rotation"])
++            if params.get("layer"):
++                layer_name = "BL_" + str(params["layer"]).replace(".", "_")
++                try:
++                    layer = BoardLayer.Value(layer_name)
++                except ValueError:
++                    return {"success": False, "message": f"Unknown layer: {params['layer']}"}
++                if isinstance(item, Field):
++                    item.layer = layer
++                else:
++                    text.layer = layer
++            if params.get("visible") is not None:
++                if isinstance(item, Field):
++                    item.visible = bool(params["visible"])
++                else:
++                    text.attributes.visible = bool(params["visible"])
++
++            commit = board.begin_commit()
++            board.update_items([target_fp])
++            board.push_commit(commit, f"Moved {reference} {field} text")
++
++            pos = text.position
++            return {
++                "success": True,
++                "message": f"Moved {reference} {field} text (visible in KiCAD UI)",
++                "text": {
++                    "reference": reference,
++                    "field": field,
++                    "position": {"x": pos.x / 1_000_000, "y": pos.y / 1_000_000, "unit": "mm"},
++                    "layer": self._normalize_ipc_layer_name(BoardLayer.Name(text.layer)),
++                },
++            }
++        except Exception as e:
++            logger.error(f"IPC move_footprint_text error: {e}")
++            return {"success": False, "message": str(e)}
++
+     # =========================================================================
+     # Legacy IPC command handlers (explicit ipc_* commands)
+ 
 diff --git a/src/tools/board.ts b/src/tools/board.ts
 index 2738ebc..7f0b245 100644
 --- a/src/tools/board.ts

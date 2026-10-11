@@ -553,6 +553,13 @@ class McpPatchTests(unittest.TestCase):
         self.assertIn("def _ipc_add_gnd_stitching_vias", patch)
         self.assertIn('plan_params["clearance"] = max(', patch)  # net-class clearance, not a fixed 0.2
 
+    def test_footprint_text_moves_in_live_mode(self):
+        """Issue #36: move_footprint_text edited the offline copy, and saves dropped the move."""
+        patch = self.patch()
+        self.assertIn('+        "move_footprint_text": "_ipc_move_footprint_text",', patch)
+        self.assertIn("def _ipc_move_footprint_text", patch)
+        self.assertIn("+            board.update_items([target_fp])\n+            board.push_commit(commit, f\"Moved {reference} {field} text\")", patch)
+
     def test_pour_nets_are_left_out_of_routing(self):
         module = types.ModuleType("pour_nets")
         exec(self.new_file("python/commands/pour_nets.py"), module.__dict__)
