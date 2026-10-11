@@ -39,8 +39,11 @@ A rendered view shows all of these at a glance. On the lab's ESC3Phase board, re
      - assembly spacing: ≥ 1 mm pad to pad, ≥ 2 mm around fine-pitch ICs, nothing on top of anything else
      - silkscreen readable, not on pads
    - **Routing (§3.3–3.5):**
-     - high-current paths short and wide
+     - every power pad in its copper area; high-current paths short and wide
      - small gate-drive and switching loops, return path directly beside or below
+     - switching tracks not on the same layer as the high-current copper beside them
+     - no tracks under inductors or transformers
+     - fast signals on one layer, without vias where possible
      - no 90° corners, no acute angles, no detours or stubs
      - clocks short, and none crosses a split in the plane below
      - vias doubled on power layer changes
