@@ -7,7 +7,7 @@ description: Autoroute a KiCad PCB with Freerouting 2.4.1 (Java 25) through the 
 
 Freerouting is good at the many small signal connections and bad at power electronics judgement. Use it to finish a board, not to design the critical paths.
 
-**The lab design rules come first.** Before anything else, load the `powerlab-pcb-design-rules` skill. Every width, clearance, via and routing-order decision below comes from it: §2.6 for constraints and net classes, §3.3 for routing, §3.4 for vias, §3.5 for pours. Freerouting only routes as well as the rules it is given. With the default net class it routes everything as thin signal tracks, and the result is useless for a power board.
+**The lab design rules come first.** Before anything else, load the `powerlab-pcb-design-rules` skill. Every width, clearance, via and routing-order decision below comes from it: §2.6 for constraints and net classes, §3.3 for pours and high-current copper, §3.4 for routing, §3.5 for vias. Freerouting only routes as well as the rules it is given. With the default net class it routes everything as thin signal tracks, and the result is useless for a power board.
 
 ## 0. Is Freerouting the right tool for this board?
 Check with `get_board_info` / `query_zones` / `get_ratsnest` before promising anything.
@@ -53,9 +53,9 @@ Before routing, confirm with the user, or check with the kicad tools:
   - crystals at the MCU
   - analog, digital and power sections apart
   - assembly spacing
-- **Route in the §3.3 order, and only the last step is for Freerouting:**
-  1. **High-current paths:** pours or hand-routed wide tracks. This covers power input and output, switch nodes, half-bridge and DC-bus loops.
-  2. **Clocks and gate-drive loops:** driver → gate → source return. Keep them short with a small loop.
+- **Copper first (§3.3), then route in the §3.4 order. Only the last step is for Freerouting:**
+  1. **Power pads and high-current paths:** every power pad gets its copper area first (MOSFET, diode, inductor, shunt, bulk-cap, regulator and power-connector pads). Pours, or hand-routed wide tracks where no pour fits. This covers power input and output, switch nodes, half-bridge and DC-bus loops.
+  2. **Gate-drive loops and clocks:** driver → gate → source return, short with a small loop. Keep them off the layer that carries high-current copper in that area, and keep fast signals on one layer, without vias where possible (§3.4).
   3. **Differential pairs.**
   4. **Sensitive analog:** current-sense and Kelvin connections, references, ADC inputs.
   5. **Everything else:** Freerouting.
@@ -66,19 +66,17 @@ Before routing, confirm with the user, or check with the kicad tools:
     - Where a pour doesn't fit, use tracks at the Power class width (≥ 0.5 mm).
     - Lock them before running Freerouting.
   - KiCad's session import clears the locked flag. Lock the hand-routed copper again after every `autoroute` run.
-- **Fan out the pour nets first (design rules §3.3, issue #21):** the pours connect the GND pads. Don't give every GND pad a via; that only clutters the board and blocks routing.
-  - **Decoupling caps:** a via to the GND plane right at each cap's GND pad.
-  - **Fine-pitch IC GND pins:** a pin next to a GND exposed pad joins the exposed pad straight across the gap. Other fine-pitch GND pins neck down to a via just outside the pin row.
-  - Keep about 1.5 mm in front of every fine-pitch pin free of these vias, so the signal pins can still escape.
-  - Lock the fan-out.
-  - **After routing and the zone fill:** a GND pad the pour can't reach shows up as unconnected in DRC. Give only that pad a via. GND never needs a track between pads.
-- **Pours first (§3.1, §3.5):** never let Freerouting draw GND as tracks.
+- **No GND fan-out before routing (design rules §3.3, issue #21):** the pours connect the GND pads. Never give every GND pad a via up front; that only clutters the board and blocks routing.
+  - **Decoupling caps** are the only exception: a via to the GND plane right at each cap's GND pad. Lock these.
+  - A fine-pitch IC GND pin next to a GND exposed pad joins the exposed pad straight across the gap, without a via.
+  - **After routing and the zone fill:** a GND pad the pour can't reach (boxed in by tracks, or a fine-pitch GND pin) shows up as unconnected in DRC. Give only that pad a via (step 5). GND never needs a track between pads.
+- **Pours first (§3.3):** never let Freerouting draw GND as tracks.
   - **Check for existing pours first** with `query_zones`. Never add a second pour for the same net on a layer that already has one: overlapping same-net zones give DRC "zones intersect" errors. To change an existing pour, ask the user.
   - If the board has no GND pour, create one before routing with `add_copper_pour` (layer, net and clearance; leave out `outline` to cover the whole board outline), on the bottom layer and also on the top. On 4 layers, use the inner GND plane layer. Do the same for any power net the user wants as a pour (above ~3 A).
   - Then route with `pourNets` set to those nets, e.g. `pourNets: ["GND"]`. Freerouting leaves them out, routes on all layers, and keeps their existing tracks. The pours are refilled around the new tracks afterwards.
-  - **Check the fan-out survived:** Freerouting 2.4.1 can drop the fixed vias of a plane net and route other nets straight over them.
+  - **Check the decoupling-cap vias survived:** Freerouting 2.4.1 can drop the fixed vias of a plane net and route other nets straight over them.
     - After the run, any `shorting_items` or `clearance` error between a signal and a GND via or stub means this happened.
-    - Undo (File → Revert) and tell the user. Those nets need keepouts over the fan-out copper, or routing by hand around the fan-out.
+    - Undo (File → Revert) and tell the user. Those nets need keepouts over the cap vias, or routing by hand around them.
   - **A 4-layer board's GND plane layer stays a plane.** If tracks land on the plane layer (e.g. In1.Cu), the plane was routed over: undo and say so.
 - **3D models:** check that the footprints still have their 3D models (`get_component_properties` or the 3D viewer). If they are missing, tell the user to run **Tools → Update Footprints from Library** with **Reset 3D models** ticked. It restores them without moving the parts.
 
@@ -97,29 +95,30 @@ Before routing, confirm with the user, or check with the kicad tools:
 - **Look at it** (`powerlab-visual-review`): save, then render top copper, bottom copper and both layers together. Review them for detours, 90° corners, long or looping power and gate-drive paths, and pours chopped into islands. Fix what you see and render again before reporting.
 - **Pour-net pads:** in the DRC's unconnected items, find pads of the pour nets that the pour can't reach, e.g. a GND pad boxed in by tracks. Add a via next to each one (`add_via`, 0.4/0.8 mm), connected with a short track, so it reaches the bottom pour. Then refill again.
 - **DRC:** run `run_drc` and compare it with the baseline. The goal is **0 new errors**. Track-width or clearance errors mean the net classes don't match the board constraints; fix the rules and re-route rather than hiding the errors.
-- **Corners:** Freerouting routes at 45° but still leaves some 90° corners. On a test board it left 26. The rules forbid them (§3.3). Find them with `query_traces`: two segments of the same net and layer meeting at 90° or less, including where two widths meet. List them for the user, who can fix them with the interactive router or by dragging the corner with `D`.
-- **Paths and pad connections (§3.3, issue #21):**
+- **Corners:** Freerouting routes at 45° but still leaves some 90° corners. On a test board it left 26. The rules forbid them (§3.4). Find them with `query_traces`: two segments of the same net and layer meeting at 90° or less, including where two widths meet. List them for the user, who can fix them with the interactive router or by dragging the corner with `D`.
+- **Paths and pad connections (§3.4, issue #21):**
   - Look for tracks that detour or staircase.
   - Look for tracks that touch a pad's edge or clip its corner instead of entering straight and ending at the pad centre.
   - Look for pour slivers or islands between a track and a pad's clearance ring (refill first).
   - Report these and fix them with the interactive router (`X` with walkaround), or by dragging the last segment straight into the pad centre.
   - Remove dangling stubs (DRC `track_dangling`).
-- **GND tracks:** list the GND tracks (`query_traces`). Every one must be a short pad-to-via stub. A GND track from pad to pad means a pad was routed instead of being fanned out to the plane: replace it with a via at the pad.
+- **GND tracks:** list the GND tracks (`query_traces`). Every one must be a short pad-to-via stub. A GND track from pad to pad means a pad was routed instead of reaching the pour: remove it, and if the pad is then unconnected, give it a via.
 - **Widths and vias on power nets:**
   - check every power and GND track against its class width (`query_traces`). Freerouting routes them at the default width (step 2).
     - Widen every segment that has room.
     - A narrower section is only allowed right at a pin that forces it.
     - List the rest for the user.
   - no track below the board minimum: Freerouting necks down to 0.10–0.12 mm at fine-pitch pins (DRC `track_width`)
-  - at least 2 vias at each power layer change, 0.4 mm drill (§3.4)
+  - at least 2 vias at each power layer change, 0.4 mm drill (§3.5)
   - no vias in SMD pads except thermal pads
-- **Pours and stitching:** after the pours are filled, save the board (Ctrl+S, or `save_board`), then add GND stitching vias every ~5 mm with `add_gnd_stitching_vias` (`strategies: ["grid", "in_zones"]`, `viaSize: 0.8`, `viaDrill: 0.4`; §3.4). With KiCad open, it plans on the saved file and places the vias live, keeping the board's largest net-class clearance. Remove copper islands or stitch them to GND (§3.5).
-- **High-speed:** no clock or fast signal crosses a gap in its reference plane (§3.3).
+- **Pours and stitching:** after the pours are filled, save the board (Ctrl+S, or `save_board`), then add GND stitching vias every ~5 mm with `add_gnd_stitching_vias` (`strategies: ["grid", "in_zones"]`, `viaSize: 0.8`, `viaDrill: 0.4`; §3.5). With KiCad open, it plans on the saved file and places the vias live, keeping the board's largest net-class clearance. Remove copper islands or stitch them to GND (§3.3).
+- **High-speed:** no clock or fast signal crosses a gap in its reference plane, and none changes layer unless it must (§3.4). Freerouting adds vias freely; list fast signals that got vias.
+- **Magnetics and switching (§3.4):** no track runs under an inductor or transformer body, and no gate-drive or other switching track runs on the same layer as the high-current copper beside it. Freerouting doesn't know either rule. List what you find and reroute it by hand. For the next run, the user can draw a rule area (Place → Add Rule Area, keep out tracks) over each magnetic part.
 - **Unrouted nets:** report what is still unrouted (`get_ratsnest`). Name the nets and suggest finishing them by hand.
 - **Optional:** render the top and bottom with `kicad-cli pcb render` so the user can look at the result.
 
 ## 6. Tell the user
 - **How it went:** say how many nets were routed and how many are left, plus the DRC result compared with the baseline and the rule checks from step 5.
 - **Reload:** the board file changed, so the user must use **File → Revert** in KiCad to see it (unsaved edits are lost; that's why step 3 asks them to save).
-- **Finish:** suggest teardrops (Edit → Edit Teardrops, §3.3) once routing is final.
+- **Finish:** suggest teardrops (Edit → Edit Teardrops, §3.4) once routing is final.
 - **Review:** remind them that autorouted power-electronics boards need a human review against the §3.7 checklist before ordering. That includes loop areas, return paths, track widths on high-current nets, and via counts on power paths.
