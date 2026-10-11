@@ -26,6 +26,61 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+diff --git a/README.md b/README.md
+index 831a2f3..49ff333 100644
+--- a/README.md
++++ b/README.md
+@@ -23,8 +23,8 @@ The [Model Context Protocol](https://modelcontextprotocol.io/) is an open standa
+ 
+ **Key Capabilities:**
+ 
+-- 233 tools registered, 173 of them indexed for keyword discovery
+-- 173 tools across 16 categories with JSON Schema validation
++- 234 tools registered, 174 of them indexed for keyword discovery
++- 174 tools across 16 categories with JSON Schema validation
+ - Keyword tool discovery via `search_tools` / `get_category_tools`
+ - 23 dynamic resources exposing project state
+ - Complete schematic workflow with 65 tools (authoring, batch edits, hierarchy, layout) and dynamic symbol loading (~10,000 symbols)
+@@ -474,7 +474,7 @@ keyword instead of guessing:
+ 
+ - **32 essential tools** that `search_tools` surfaces first, covering the
+   operations nearly every session needs
+-- **173 tools indexed across 16 categories** (board, component, export, drc,
++- **174 tools indexed across 16 categories** (board, component, export, drc,
+   schematic, library, symbol_library, symbol_pins, schematic_hierarchy,
+   schematic_layout, schematic_batch, routing, autoroute, validation,
+   parts-registry, digikey)
+@@ -553,10 +553,10 @@ Access project state without executing tools:
+ 
+ ## Available Tools
+ 
+-The server exposes every tool directly, so your assistant can call any of them without a discovery step -- just ask for what you want to accomplish. **173 tools** are additionally indexed into 16 functional categories, so `search_tools` and `get_category_tools` can find one by keyword.
++The server exposes every tool directly, so your assistant can call any of them without a discovery step -- just ask for what you want to accomplish. **174 tools** are additionally indexed into 16 functional categories, so `search_tools` and `get_category_tools` can find one by keyword.
+ 
+ The lists below are a curated tour of the most useful tools, not the full set.
+-For the complete, generated reference of all 233 tools -- including how each one
++For the complete, generated reference of all 234 tools -- including how each one
+ is discovered -- see [Tool Inventory](docs/TOOL_INVENTORY.md).
+ 
+ ### Project Management (12 tools)
+@@ -1514,7 +1514,7 @@ How many Basic parts are available?
+ - **JSON-RPC 2.0 Transport:** Bi-directional communication via STDIO
+ - **Protocol Version:** MCP 2025-06-18
+ - **Capabilities:** Tools (233), Resources (23)
+-- **Tool discovery:** keyword search catalogue indexing 173 tools in 16 categories
++- **Tool discovery:** keyword search catalogue indexing 174 tools in 16 categories
+ - **Error Handling:** Standard JSON-RPC error codes
+ 
+ ### TypeScript Server (`src/`)
+@@ -1664,7 +1664,7 @@ npm run format
+ 
+ See [STATUS_SUMMARY.md](docs/STATUS_SUMMARY.md) for the complete status matrix and [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
+ 
+-**Working Features (233 tools):**
++**Working Features (234 tools):**
+ 
+ - Project management with snapshot checkpointing
+ - Complete board design (outline, layers, zones, mounting holes, text, SVG logos)
 diff --git a/python/commands/board/view.py b/python/commands/board/view.py
 index 16a4915..cef014b 100644
 --- a/python/commands/board/view.py
@@ -108,17 +163,18 @@ index 16a4915..cef014b 100644
                          f.write(image_bytes)
                      return {
 diff --git a/python/commands/freerouting.py b/python/commands/freerouting.py
-index 0c12af2..14a6161 100644
+index 0c12af2..fcc644b 100644
 --- a/python/commands/freerouting.py
 +++ b/python/commands/freerouting.py
-@@ -19,7 +19,17 @@ import time
+@@ -19,9 +19,43 @@ import time
  from pathlib import Path
  from typing import Any, Dict, Iterable, List, Optional, Tuple
  
 +from commands.pour_nets import PLACEHOLDER_NET, leave_to_pours
 +from utils.board_items import delete_board_item
  from utils.project_netclasses import apply_net_classes_to_board, load_project_net_classes
-+
+ from utils.project_settings_guard import preserve_project_settings
+ 
 +
 +def _duplicate(item: Any) -> Any:
 +    """A detached copy of a track/via for board.Add() (KiCad 10 needs the argument)."""
@@ -126,19 +182,47 @@ index 0c12af2..14a6161 100644
 +        return item.Duplicate(False)
 +    except TypeError:
 +        return item.Duplicate()
- from utils.project_settings_guard import preserve_project_settings
- 
++
++
++def _repair_via_drills(board: Any) -> Dict[str, int]:
++    """Give session vias the board's minimum annular ring back (PowerLab patch).
++
++    The SES import can pair a via's diameter with a larger drill from the net class.
++    """
++    import pcbnew
++
++    ds = board.GetDesignSettings()
++    ring, min_drill = ds.m_ViasMinAnnularWidth, ds.m_MinThroughDrill
++    fixed = unfixable = 0
++    for v in board.GetTracks():
++        if v.Type() != pcbnew.PCB_VIA_T or v.IsLocked():
++            continue
++        width = v.GetWidth(pcbnew.F_Cu)
++        if width - v.GetDrillValue() >= 2 * ring - 10:
++            continue
++        if width - 2 * ring >= min_drill:
++            v.SetDrill(width - 2 * ring)
++            fixed += 1
++        else:
++            unfixable += 1
++    return {"fixed": fixed, "too_small": unfixable}
++
  logger = logging.getLogger("kicad_interface")
-@@ -590,6 +600,16 @@ class FreeroutingCommands:
+ 
+ # Default Freerouting JAR location
+@@ -590,6 +624,19 @@ class FreeroutingCommands:
          dsn_size = os.path.getsize(dsn_path)
          logger.info(f"DSN exported: {dsn_size} bytes")
  
-+        # Nets left to copper pours aren't routed as tracks (PowerLab patch)
++        # Nets left to copper pours aren't routed as tracks, and keepout pour nets'
++        # pours are kept clear (PowerLab patch)
++        keepout_nets = [str(n) for n in (params.get("keepoutPourNets") or [])]
 +        pour_nets = [str(n) for n in (params.get("pourNets") or [])]
++        pour_nets += [n for n in keepout_nets if n not in pour_nets]
 +        if pour_nets:
 +            with open(dsn_path, "r", encoding="utf-8") as fh:
 +                dsn_text = fh.read()
-+            dsn_text, dropped = leave_to_pours(dsn_text, pour_nets)
++            dsn_text, dropped = leave_to_pours(dsn_text, pour_nets, keepout_nets)
 +            with open(dsn_path, "w", encoding="utf-8") as fh:
 +                fh.write(dsn_text)
 +            logger.info(f"Left {dropped} net(s) to pours: {pour_nets}")
@@ -146,7 +230,7 @@ index 0c12af2..14a6161 100644
          # Step 2: Run Freerouting (single or multiple attempts)
          mode_label = "docker" if use_docker else "direct"
          total_start = time.time()
-@@ -752,8 +772,16 @@ class FreeroutingCommands:
+@@ -752,8 +799,17 @@ class FreeroutingCommands:
  
          # Step 3: Import the winning SES
          logger.info(f"Importing SES from {ses_path}")
@@ -160,10 +244,11 @@ index 0c12af2..14a6161 100644
 +                    delete_board_item(self.board, t)  # Remove() corrupts SWIG on KiCad 10 (#247)
 +                for t in pour_tracks:
 +                    self.board.Add(t)
++            via_drills = _repair_via_drills(self.board)
              if result is not True and result != 0:
                  return {
                      "success": False,
-@@ -810,6 +838,10 @@ class FreeroutingCommands:
+@@ -810,6 +866,13 @@ class FreeroutingCommands:
              "netClasses": netclass_report,
              "freerouting_stdout": best_proc_stdout[:1000],
          }
@@ -171,21 +256,27 @@ index 0c12af2..14a6161 100644
 +            response["pourNets"] = pour_nets
 +            response["pour_tracks_kept"] = len(pour_tracks)
 +            response["next_steps"] = "Run refill_zones, then add vias for pour-net pads the pour can't reach."
++        if keepout_nets:
++            response["keepoutPourNets"] = keepout_nets
++        response["via_drills"] = via_drills
          if attempts > 1:
              response["attempts"] = attempt_results
              response["best_attempt"] = best_attempt_idx + 1
 diff --git a/python/commands/pour_nets.py b/python/commands/pour_nets.py
 new file mode 100644
-index 0000000..9fcaf09
+index 0000000..052abc5
 --- /dev/null
 +++ b/python/commands/pour_nets.py
-@@ -0,0 +1,87 @@
+@@ -0,0 +1,96 @@
 +"""Leave nets to copper pours: Freerouting routes everything else (PowerLab patch).
 +
 +The DSN keeps the pour nets' existing wires and vias as obstacles under a pin-less
 +placeholder net, drops the pour nets from the netlist so they aren't routed as tracks,
 +and drops their planes so other nets can use those layers (refilled pours flow around
 +the new tracks afterwards).
++
++Keepout pour nets are left out the same way, but their pours become keepouts: other
++nets route around them instead of cutting through a power pour.
 +"""
 +
 +import re
@@ -218,9 +309,11 @@ index 0000000..9fcaf09
 +    return f'"{name}"' if re.search(r'[\s()"]', name) or not name else name
 +
 +
-+def leave_to_pours(dsn, nets):
-+    """Return (new_dsn, dropped_net_count) with `nets` left out of routing."""
-+    nets = set(nets)
++def leave_to_pours(dsn, nets, keepout_nets=()):
++    """Return (new_dsn, dropped_net_count) with `nets` and `keepout_nets` left out of
++    routing; the planes of `keepout_nets` become keepouts on their layers."""
++    keepout_nets = set(keepout_nets)
++    nets = set(nets) | keepout_nets
 +    out, i = [], 0
 +    in_network = None
 +    network_start = dsn.index("(network")
@@ -239,6 +332,9 @@ index 0000000..9fcaf09
 +            if name in nets:
 +                end = _end(dsn, m.start())
 +                out.append(dsn[i:m.start()])
++                if name in keepout_nets:
++                    block = dsn[m.start():end]
++                    out.append('(keepout "" ' + block[block.index("(polygon"):])
 +                i = end
 +        elif kind == "net" and inside_network:
 +            name, _ = _name_at(dsn, m.end() - 1)
@@ -267,6 +363,444 @@ index 0000000..9fcaf09
 +        close = _end(text, start) - 1
 +        text = text[:close] + f"(net {PLACEHOLDER_NET})\n    " + text[close:]
 +    return text, dropped
++
+diff --git a/python/commands/route_cleanup.py b/python/commands/route_cleanup.py
+new file mode 100644
+index 0000000..076167b
+--- /dev/null
++++ b/python/commands/route_cleanup.py
+@@ -0,0 +1,431 @@
++"""Clean up tracks after autorouting (PowerLab patch).
++
++Freerouting leaves zero-length and tiny stubs, dead-end segments, tracks narrower than
++their net class (it writes every net at the default width) and some 90 degree corners.
++This removes the leftovers, widens tracks to their net-class width and chamfers 90
++degree corners to 45 degrees. Every change that adds copper is checked with kicad-cli
++DRC on a copy of the board, with zones refilled and every error of each track reported,
++and taken back if it adds an error.
++Locked tracks are never touched.
++
++Ported from the post-route scripts of odtu/PCBDesignWClaude (hardware/tools/pcb).
++"""
++
++import json
++import math
++import os
++import shutil
++import subprocess
++import tempfile
++from collections import defaultdict
++
++import pcbnew
++
++STEPS = ("stubs", "dangling", "widths", "miter")
++MM = pcbnew.FromMM
++STUB = MM(0.1)  # a segment shorter than this between two others is a router leftover
++
++
++def _delete(board, item):
++    """Board.Delete keeps ownership in C++; Remove() corrupts SWIG on KiCad 10 (#247)."""
++    if callable(getattr(board, "Delete", None)):
++        board.Delete(item)
++    else:
++        board.Remove(item)
++        item.thisown = False
++
++
++def _tracks(board):
++    return [t for t in board.GetTracks() if t.Type() == pcbnew.PCB_TRACE_T]
++
++
++def _vias(board):
++    return [t for t in board.GetTracks() if t.Type() == pcbnew.PCB_VIA_T]
++
++
++def _pads(board):
++    return [p for fp in board.GetFootprints() for p in fp.Pads()]
++
++
++def _xy(p):
++    return (p.x, p.y)
++
++
++def _mm(p):
++    return {"x": round(pcbnew.ToMM(p[0]), 3), "y": round(pcbnew.ToMM(p[1]), 3)}
++
++
++class Drc:
++    """kicad-cli DRC on a copy of the board next to copies of its project and rules."""
++
++    def __init__(self, board_path, kicad_cli):
++        self.cli = kicad_cli
++        self.dir = tempfile.mkdtemp(prefix="pla_cleanup_")
++        stem = os.path.splitext(os.path.basename(board_path))[0]
++        for ext in (".kicad_pro", ".kicad_dru"):
++            src = os.path.splitext(board_path)[0] + ext
++            if os.path.isfile(src):
++                shutil.copy(src, os.path.join(self.dir, stem + ext))
++        self.path = os.path.join(self.dir, stem + ".kicad_pcb")
++        self.runs = 0
++
++    def errors(self, board):
++        """{(violation type, item uuids)}: one entry per error-severity violation."""
++        board.Save(self.path)
++        out = self.path + ".json"
++        if os.path.exists(out):
++            os.remove(out)
++        subprocess.run(
++            # all track errors: by default a track already in one error hides its others
++            [self.cli, "pcb", "drc", "--all-track-errors", "--refill-zones", "--severity-error",
++             "--format", "json", "-o", out, self.path],
++            capture_output=True, timeout=900,
++        )
++        self.runs += 1
++        if not os.path.isfile(out):
++            raise RuntimeError("kicad-cli DRC wrote no report")
++        with open(out, encoding="utf-8") as fh:
++            report = json.load(fh)
++        return {
++            (v.get("type"), frozenset(it.get("uuid") for it in v.get("items", [])))
++            for v in report.get("violations", [])
++        }
++
++    def new_items(self, board, baseline):
++        """uuids of the items in violations that aren't in `baseline`."""
++        return {u for kind, uuids in self.errors(board) - baseline for u in uuids}
++
++    def close(self):
++        shutil.rmtree(self.dir, ignore_errors=True)
++
++
++def remove_stubs(board):
++    """Zero-length tracks go; a stub < 0.1 mm is folded into its neighbours.
++
++    Returns (counts, undo): folding moves a neighbour's end, so each fold can be undone.
++    """
++    tracks = [t for t in _tracks(board) if not t.IsLocked()]
++    zero = [t for t in tracks if t.GetLength() < MM(0.001)]
++    for t in zero:
++        _delete(board, t)
++    tracks = [t for t in _tracks(board)]
++    alive = {id(t): t for t in tracks}
++    vias = {_xy(v.GetPosition()) for v in _vias(board)}
++    pads = _pads(board)
++
++    def ends():
++        m = defaultdict(list)
++        for t in alive.values():
++            m[(t.GetLayer(),) + _xy(t.GetStart())].append((t, "S"))
++            m[(t.GetLayer(),) + _xy(t.GetEnd())].append((t, "E"))
++        return m
++
++    into_pad = joined = 0
++    undo = []
++
++    def fold(t, moves):
++        """Move the neighbours' ends, delete stub `t`, and remember how to undo it."""
++        undo.append({
++            "moves": [(o, e, o.GetStart() if e == "S" else o.GetEnd()) for o, e, _ in moves],
++            "stub": (t.GetStart(), t.GetEnd(), t.GetWidth(), t.GetLayer(), t.GetNet()),
++        })
++        for o, e, pt in moves:
++            (o.SetStart if e == "S" else o.SetEnd)(pt)
++        del alive[id(t)]
++        _delete(board, t)
++
++    for t in sorted(tracks, key=lambda k: k.GetLength()):
++        if id(t) not in alive or t.IsLocked() or not (0 < t.GetLength() < STUB):
++            continue
++        m = ends()
++        layer, net = t.GetLayer(), t.GetNetCode()
++        ka, kb = (layer,) + _xy(t.GetStart()), (layer,) + _xy(t.GetEnd())
++        sa = [(o, e) for o, e in m[ka] if o is not t]
++        sb = [(o, e) for o, e in m[kb] if o is not t]
++        # the stub's far end is inside its own pad: extend the neighbour into the pad
++        done = False
++        for near, far_k, far_pt in ((sa, kb, t.GetEnd()), (sb, ka, t.GetStart())):
++            if len(near) != 1 or len(m[far_k]) != 1 or near[0][0].IsLocked():
++                continue
++            o, e = near[0]
++            if o.GetNetCode() != net or o.GetLength() <= MM(0.2):
++                continue
++            if any(p.GetNetCode() == net and p.IsOnLayer(layer) and p.HitTest(far_pt) for p in pads):
++                fold(t, [(o, e, far_pt)])
++                into_pad += 1
++                done = True
++                break
++        if done:
++            continue
++        # between two segments: join them where their lines cross
++        if len(sa) != 1 or len(sb) != 1 or ka[1:] in vias or kb[1:] in vias:
++            continue
++        (a, ea), (c, ec) = sa[0], sb[0]
++        if a.IsLocked() or c.IsLocked() or a.GetNetCode() != net or c.GetNetCode() != net:
++            continue
++        pa, qa = (a.GetStart(), a.GetEnd()) if ea == "E" else (a.GetEnd(), a.GetStart())
++        pc, qc = (c.GetStart(), c.GetEnd()) if ec == "E" else (c.GetEnd(), c.GetStart())
++        d1, d2 = (qa.x - pa.x, qa.y - pa.y), (qc.x - pc.x, qc.y - pc.y)
++        den = d1[0] * d2[1] - d1[1] * d2[0]
++        if abs(den) < 1e-6:
++            continue
++        u = ((pc.x - pa.x) * d2[1] - (pc.y - pa.y) * d2[0]) / den
++        ix, iy = pa.x + u * d1[0], pa.y + u * d1[1]
++        mx, my = (t.GetStart().x + t.GetEnd().x) / 2, (t.GetStart().y + t.GetEnd().y) / 2
++        if math.hypot(ix - mx, iy - my) > MM(0.3):
++            continue
++        ip = pcbnew.VECTOR2I(int(round(ix)), int(round(iy)))
++        fold(t, [(a, "E" if ea == "E" else "S", ip), (c, "E" if ec == "E" else "S", ip)])
++        joined += 1
++    return {"zero_length": len(zero), "merged_into_pad": into_pad, "joined": joined}, undo
++
++
++def check_stubs(board, drc, baseline, undo):
++    """Put back the folds whose moved neighbours are in a new DRC error."""
++    if not undo:
++        return 0
++    bad = drc.new_items(board, baseline)
++    back = 0
++    for u in undo:
++        if any(o.m_Uuid.AsString() in bad for o, e, pt in u["moves"]):
++            for o, e, pt in u["moves"]:
++                (o.SetStart if e == "S" else o.SetEnd)(pt)
++            start, end, width, layer, net = u["stub"]
++            stub = pcbnew.PCB_TRACK(board)
++            stub.SetStart(start)
++            stub.SetEnd(end)
++            stub.SetWidth(width)
++            stub.SetLayer(layer)
++            stub.SetNet(net)
++            board.Add(stub)
++            back += 1
++    return back
++
++
++def remove_dangling(board):
++    """Delete unlocked tracks with a free end, repeating until none is left.
++
++    An end is connected when it touches same-net copper on its layer within half the
++    track width: a pad, a via, another track or a zone fill.
++    """
++    pcbnew.ZONE_FILLER(board).Fill(board.Zones())
++    by_net = defaultdict(lambda: {"tracks": [], "other": [], "zones": []})
++    for t in _tracks(board):
++        by_net[t.GetNetCode()]["tracks"].append(t)
++    for v in _vias(board):
++        by_net[v.GetNetCode()]["other"].append(v)
++    for p in _pads(board):
++        by_net[p.GetNetCode()]["other"].append(p)
++    for z in board.Zones():
++        if not z.GetIsRuleArea():
++            by_net[z.GetNetCode()]["zones"].append(z)
++
++    removed = 0
++    for net, g in by_net.items():
++        if net <= 0 or not g["tracks"]:
++            continue
++        alive = list(g["tracks"])
++        while True:
++            exact = defaultdict(int)
++            for t in alive:
++                exact[(t.GetLayer(),) + _xy(t.GetStart())] += 1
++                exact[(t.GetLayer(),) + _xy(t.GetEnd())] += 1
++            gone = []
++            for t in alive:
++                if t.IsLocked():
++                    continue
++                layer, r = t.GetLayer(), t.GetWidth() // 2
++                for pt in (t.GetStart(), t.GetEnd()):
++                    if exact[(layer,) + _xy(pt)] > 1:
++                        continue
++                    if any(o.IsOnLayer(layer) and o.HitTest(pt, r) for o in g["other"]):
++                        continue
++                    if any(o is not t and o.GetLayer() == layer and o.HitTest(pt, r) for o in alive):
++                        continue
++                    if any(z.IsOnLayer(layer) and z.HitTestFilledArea(layer, pt, r) for z in g["zones"]):
++                        continue
++                    gone.append(t)
++                    break
++            if not gone:
++                break
++            for t in gone:
++                alive.remove(t)
++                _delete(board, t)
++                removed += 1
++    return {"removed": removed}
++
++
++def widen_tracks(board, drc, baseline):
++    """Widen unlocked tracks to their net-class width; keep what DRC accepts.
++
++    Tracks the full width doesn't fit get halfway, then their old width back, so a
++    track only stays narrow right where something forces it.
++    """
++    ns = board.GetDesignSettings().m_NetSettings
++    want = {}
++    for t in _tracks(board):
++        if t.IsLocked() or t.GetNetCode() <= 0:
++            continue
++        target = ns.GetEffectiveNetClass(t.GetNetname()).GetTrackWidth()
++        if t.GetWidth() < target - 1000:
++            want[t.m_Uuid.AsString()] = (t, t.GetWidth(), target)
++    counts = {"candidates": len(want), "full_width": 0, "partly": 0, "kept": 0}
++    pending = set(want)
++    # A kept change has no new error while every other candidate is still widened,
++    # so it stays clean when the rejected ones go back.
++    for label, width in (("full_width", lambda old, target: target),
++                         ("partly", lambda old, target: (old + target) // 2)):
++        if not pending:
++            break
++        for u in pending:
++            t, old, target = want[u]
++            t.SetWidth(width(old, target))
++        bad = drc.new_items(board, baseline)
++        for u in list(pending):
++            if u in bad:
++                want[u][0].SetWidth(want[u][1])
++            else:
++                counts[label] += 1
++                pending.discard(u)
++    counts["kept"] = len(pending)
++    return counts
++
++
++def _corners(board, max_chamfer, only=None, scale=1.0):
++    """Chamfer joints of two same-width tracks meeting at 80-100 degrees."""
++    ends = defaultdict(list)
++    for t in _tracks(board):
++        ends[(t.GetLayer(),) + _xy(t.GetStart())].append((t, "S"))
++        ends[(t.GetLayer(),) + _xy(t.GetEnd())].append((t, "E"))
++    vias = {_xy(v.GetPosition()) for v in _vias(board)}
++    made, skipped_widths = [], 0
++    for key, lst in ends.items():
++        if len(lst) != 2 or key[1:] in vias or (only is not None and key not in only):
++            continue
++        (t1, e1), (t2, e2) = lst
++        if t1.IsLocked() or t2.IsLocked() or t1.GetNetCode() != t2.GetNetCode():
++            continue
++        x, y = key[1:]
++        q1 = t1.GetEnd() if e1 == "S" else t1.GetStart()
++        q2 = t2.GetEnd() if e2 == "S" else t2.GetStart()
++        v1, v2 = (q1.x - x, q1.y - y), (q2.x - x, q2.y - y)
++        l1, l2 = math.hypot(*v1), math.hypot(*v2)
++        if not l1 or not l2:
++            continue
++        ang = math.degrees(math.acos(max(-1, min(1, (v1[0] * v2[0] + v1[1] * v2[1]) / (l1 * l2)))))
++        if not 80 <= ang <= 100:
++            continue
++        if t1.GetWidth() != t2.GetWidth():  # a narrower diagonal would neck the wider track
++            skipped_widths += 1
++            continue
++        c = min(max_chamfer, 0.45 * min(l1, l2)) * scale
++        if c < MM(0.03):
++            continue
++        p = pcbnew.VECTOR2I(x, y)
++        a = pcbnew.VECTOR2I(int(x + v1[0] / l1 * c), int(y + v1[1] / l1 * c))
++        b = pcbnew.VECTOR2I(int(x + v2[0] / l2 * c), int(y + v2[1] / l2 * c))
++        (t1.SetStart if e1 == "S" else t1.SetEnd)(a)
++        (t2.SetStart if e2 == "S" else t2.SetEnd)(b)
++        d = pcbnew.PCB_TRACK(board)
++        d.SetStart(a)
++        d.SetEnd(b)
++        d.SetWidth(t1.GetWidth())
++        d.SetLayer(key[0])
++        d.SetNet(t1.GetNet())
++        board.Add(d)
++        made.append({"key": key, "point": p, "t1": (t1, e1), "t2": (t2, e2), "diag": d,
++                     "uuid": d.m_Uuid.AsString()})
++    return made, skipped_widths
++
++
++def miter_corners(board, drc, baseline, max_chamfer=MM(0.6), rounds=4):
++    """Chamfer 90 degree corners; a chamfer DRC rejects is retried at half size, then undone."""
++    total, only, scale, skipped = 0, None, 1.0, 0
++    for rnd in range(rounds):
++        made, skipped_widths = _corners(board, max_chamfer, only, scale)
++        if rnd == 0:
++            skipped = skipped_widths
++        if not made:
++            break
++        bad = drc.new_items(board, baseline)
++        back = set()
++        for m in made:
++            if m["uuid"] in bad:
++                for t, e in (m["t1"], m["t2"]):
++                    (t.SetStart if e == "S" else t.SetEnd)(m["point"])
++                _delete(board, m["diag"])
++                back.add(m["key"])
++        total += len(made) - len(back)
++        if not back:
++            break
++        only, scale = back, scale * 0.5
++    return {"mitered": total, "rounds": rnd + 1, "skipped_width_change": skipped}
++
++
++def sharp_corners(board, limit=30):
++    """Joints sharper than a 45 degree bend that aren't buried in a pad or via."""
++    ends = defaultdict(list)
++    for t in _tracks(board):
++        for p, q in ((t.GetStart(), t.GetEnd()), (t.GetEnd(), t.GetStart())):
++            ends[(t.GetLayer(),) + _xy(p)].append((t, q))
++    buried = defaultdict(list)
++    for item in _pads(board) + _vias(board):
++        buried[item.GetNetCode()].append(item)
++    found = []
++    for key, lst in ends.items():
++        if len(lst) != 2:
++            continue
++        (t1, q1), (t2, q2) = lst
++        p = pcbnew.VECTOR2I(key[1], key[2])
++        if any(i.IsOnLayer(key[0]) and i.HitTest(p) for i in buried[t1.GetNetCode()]):
++            continue
++        a1 = math.atan2(q1.y - p.y, q1.x - p.x)
++        a2 = math.atan2(q2.y - p.y, q2.x - p.x)
++        ang = abs(math.degrees(a1 - a2)) % 360
++        ang = min(ang, 360 - ang)  # 180 = straight, 135 = a 45 degree bend
++        if ang < 134:
++            found.append({"net": t1.GetNetname(), "layer": board.GetLayerName(key[0]),
++                          "angle": round(180 - ang), **_mm(key[1:])})
++    found.sort(key=lambda c: -c["angle"])
++    return {"count": len(found), "corners": found[:limit]}
++
++
++def thin_tracks(board, limit=30):
++    """Tracks still below the board's minimum track width."""
++    floor = board.GetDesignSettings().m_TrackMinWidth
++    thin = [t for t in _tracks(board) if t.GetWidth() < floor - 10]
++    return {
++        "count": len(thin),
++        "min_track_mm": round(pcbnew.ToMM(floor), 3),
++        "tracks": [{"net": t.GetNetname(), "layer": t.GetLayerName(),
++                    "width_mm": round(pcbnew.ToMM(t.GetWidth()), 3), **_mm(_xy(t.GetStart()))}
++                   for t in thin[:limit]],
++    }
++
++
++def clean_up(board, board_path, kicad_cli, steps=STEPS, max_chamfer_mm=0.6):
++    """Run the selected steps on `board` (not saved here). Returns the report."""
++    unknown = [s for s in steps if s not in STEPS]
++    if unknown:
++        raise ValueError(f"Unknown steps {unknown}; use {list(STEPS)}")
++    report = {"steps": [s for s in STEPS if s in steps]}
++    drc = Drc(board_path, kicad_cli)
++    try:
++        baseline = drc.errors(board)
++        report["drc_errors_before"] = len(baseline)
++        if "stubs" in steps:
++            report["stubs"], undo = remove_stubs(board)
++            report["stubs"]["put_back"] = check_stubs(board, drc, baseline, undo)
++        if "dangling" in steps:
++            report["dangling"] = remove_dangling(board)
++        if "widths" in steps:
++            report["widths"] = widen_tracks(board, drc, baseline)
++        if "miter" in steps:
++            report["miter"] = miter_corners(board, drc, baseline, MM(max_chamfer_mm))
++        report["drc_runs"] = drc.runs
++    finally:
++        drc.close()
++    pcbnew.ZONE_FILLER(board).Fill(board.Zones())
++    report["sharp_corners_left"] = sharp_corners(board)
++    report["thin_tracks_left"] = thin_tracks(board)
++    return report
 diff --git a/python/kicad_api/ipc_backend.py b/python/kicad_api/ipc_backend.py
 index 6f9a813..827e3fa 100644
 --- a/python/kicad_api/ipc_backend.py
@@ -317,7 +851,7 @@ index 6f9a813..827e3fa 100644
              # Apply changes
              commit = board.begin_commit()
 diff --git a/python/kicad_interface.py b/python/kicad_interface.py
-index c6ac305..58605c3 100644
+index c6ac305..d6eab39 100644
 --- a/python/kicad_interface.py
 +++ b/python/kicad_interface.py
 @@ -558,6 +558,7 @@ class KiCADInterface(SchematicHandlersMixin):
@@ -328,7 +862,15 @@ index c6ac305..58605c3 100644
              "route_differential_pair": self.routing_commands.route_differential_pair,
              "refill_zones": self._handle_refill_zones,
              # Design rule commands
-@@ -756,12 +757,14 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -736,6 +737,7 @@ class KiCADInterface(SchematicHandlersMixin):
+             "export_dsn": self.freerouting_commands.export_dsn,
+             "import_ses": self.freerouting_commands.import_ses,
+             "check_freerouting": self.freerouting_commands.check_freerouting,
++            "clean_up_routing": self._handle_clean_up_routing,  # PowerLab patch
+             # Eagle import commands
+             "import_eagle_project": self.eagle_commands.import_eagle_project,
+             # Schematic migration
+@@ -756,12 +758,14 @@ class KiCADInterface(SchematicHandlersMixin):
          "route_trace": "_ipc_route_trace",
          "route_arc_trace": "_ipc_route_arc_trace",
          "add_via": "_ipc_add_via",
@@ -343,7 +885,7 @@ index c6ac305..58605c3 100644
          "refill_zones": "_ipc_refill_zones",
          # Board commands
          "add_text": "_ipc_add_text",
-@@ -779,6 +782,7 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -779,6 +783,7 @@ class KiCADInterface(SchematicHandlersMixin):
          "get_component_list": "_ipc_get_component_list",
          "get_component_properties": "_ipc_get_component_properties",
          "set_footprint_type": "_ipc_set_footprint_type",
@@ -351,7 +893,7 @@ index c6ac305..58605c3 100644
          "add_component_3d_model": "_ipc_add_component_3d_model",
          # Save command
          "save_project": "_ipc_save_project",
-@@ -1236,6 +1240,7 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -1236,6 +1241,7 @@ class KiCADInterface(SchematicHandlersMixin):
          "add_board_text",
          "move_footprint_text",
          "add_copper_pour",
@@ -359,10 +901,63 @@ index c6ac305..58605c3 100644
          "refill_zones",
          "import_svg_logo",
          "sync_schematic_to_board",
-@@ -1848,6 +1853,17 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -1848,6 +1854,70 @@ class KiCADInterface(SchematicHandlersMixin):
          state = self._dirty_state(board_path)
          return {"success": True, "boardPath": board_path, **state}
  
++    def _handle_clean_up_routing(self, params: Dict[str, Any]) -> Dict[str, Any]:
++        """Clean up tracks after autorouting, on the saved board file (PowerLab patch).
++
++        Like autoroute it reads and writes the .kicad_pcb file: with the board open in
++        KiCad, save there first and use File > Revert afterwards.
++        """
++        from commands.route_cleanup import STEPS, clean_up
++
++        board_path = params.get("boardPath") or self._authoritative_board_path()
++        if not board_path or not os.path.isfile(str(board_path)):
++            return {
++                "success": False,
++                "message": "No saved board",
++                "errorDetails": "Open the board with open_board, or pass boardPath",
++            }
++        board_path = str(board_path)
++        kicad_cli = self._find_kicad_cli_static()
++        if not kicad_cli:
++            return {"success": False, "message": kicad_cli_not_found_message()}
++        board = self._safe_load_board(board_path)
++        if board is None:
++            return {"success": False, "message": f"Could not load board: {board_path}"}
++        try:
++            report = clean_up(
++                board,
++                board_path,
++                kicad_cli,
++                steps=params.get("steps") or STEPS,
++                max_chamfer_mm=float(params.get("maxChamfer") or 0.6),
++            )
++        except ValueError as e:
++            return {"success": False, "message": str(e)}
++        with preserve_project_settings(board_path):
++            board.Save(board_path)
++        self.board = board
++        self._update_command_handlers()
++        self._record_board_signature()
++        left = report["sharp_corners_left"]["count"], report["thin_tracks_left"]["count"]
++        return {
++            "success": True,
++            "message": (
++                f"Cleaned up the routing in {os.path.basename(board_path)}: "
++                f"{left[0]} sharp corners and {left[1]} too-thin tracks left"
++            ),
++            "boardPath": board_path,
++            **report,
++            "next_steps": (
++                "If the board is open in KiCad, use File > Revert to load the result. "
++                "Then run DRC and fix what is listed under sharp_corners_left and "
++                "thin_tracks_left by hand."
++            ),
++        }
++
 +    def _handle_add_zone(self, params: Dict[str, Any]) -> Dict[str, Any]:
 +        """add_zone = add_copper_pour with explicit points in any unit (PowerLab patch)."""
 +        to_mm = {"mm": 1.0, "mil": 0.0254, "inch": 25.4}.get(params.get("unit") or "mm", 1.0)
@@ -377,7 +972,7 @@ index c6ac305..58605c3 100644
      def _handle_batch_move_components(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """Batch move wrapper that preserves the external-edit save guard."""
          if getattr(self, "session_backend", None) == "ipc" and not self._ipc_session_alive():
-@@ -5079,6 +5095,65 @@ print("ok")
+@@ -5079,6 +5149,65 @@ print("ok")
              logger.error(f"IPC route_arc_trace error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -443,7 +1038,7 @@ index c6ac305..58605c3 100644
      def _ipc_add_via(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for add_via - adds via with real-time UI update"""
          try:
-@@ -5131,21 +5206,37 @@ print("ok")
+@@ -5131,21 +5260,37 @@ print("ok")
              net = params.get("net")
              clearance = params.get("clearance", 0.5)
              min_width = params.get("minWidth", 0.25)
@@ -488,7 +1083,7 @@ index c6ac305..58605c3 100644
  
              success = self.ipc_board_api.add_zone(
                  points=formatted_points,
-@@ -5833,6 +5924,100 @@ print("ok")
+@@ -5833,6 +5978,100 @@ print("ok")
              logger.error(f"IPC set_footprint_type error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -589,6 +1184,18 @@ index c6ac305..58605c3 100644
      # =========================================================================
      # Legacy IPC command handlers (explicit ipc_* commands)
  
+diff --git a/src/command-timeout.ts b/src/command-timeout.ts
+index dfd876c..d257d5f 100644
+--- a/src/command-timeout.ts
++++ b/src/command-timeout.ts
+@@ -35,6 +35,7 @@ export const LONG_RUNNING_COMMANDS = [
+   "list_schematic_labels",
+   "get_schematic_view",
+   "digikey_check_library_availability",
++  "clean_up_routing", // PowerLab patch: several kicad-cli DRC runs
+ ] as const;
+ 
+ /**
 diff --git a/src/tools/board.ts b/src/tools/board.ts
 index 2738ebc..7f0b245 100644
 --- a/src/tools/board.ts
@@ -625,10 +1232,10 @@ index 2738ebc..7f0b245 100644
  
        if (result.success) {
 diff --git a/src/tools/freerouting.ts b/src/tools/freerouting.ts
-index d9942f7..585a1ec 100644
+index d9942f7..c89867e 100644
 --- a/src/tools/freerouting.ts
 +++ b/src/tools/freerouting.ts
-@@ -55,6 +55,12 @@ export function registerFreeroutingTools(server: McpServer, callKicadScript: Fun
+@@ -55,6 +55,18 @@ export function registerFreeroutingTools(server: McpServer, callKicadScript: Fun
          .describe(
            "Per-attempt `--max-passes` values to cycle through (default: [50, 60, 65, 70, 75, 80, 85, 90, 55, 95]). The list wraps if `attempts` exceeds its length.",
          ),
@@ -638,6 +1245,60 @@ index d9942f7..585a1ec 100644
 +        .describe(
 +          "Nets that connect through copper pours (e.g. ['GND']). Freerouting leaves them unrouted instead of drawing them as tracks; their pours are hidden during routing so other nets can use those layers, and their existing tracks are kept. Create the pours first, then run refill_zones and add GND vias/stitching after routing.",
 +        ),
++      keepoutPourNets: z
++        .array(z.string())
++        .optional()
++        .describe(
++          "Nets whose pours other nets must not cross, e.g. outer-layer power, phase and switch-node pours. Like pourNets they aren't routed and their tracks are kept, but each pour's outline becomes a keepout on its layer, so Freerouting routes around it instead of reading it as a solid plane. Draw these pours to their real shape: pads of other nets inside a pour outline can't be reached. Pads of these nets outside their pour stay unconnected; route them by hand.",
++        ),
        keepArtifacts: z
          .boolean()
          .optional()
+@@ -75,6 +87,34 @@ export function registerFreeroutingTools(server: McpServer, callKicadScript: Fun
+     },
+   );
+ 
++  // Post-route clean-up (PowerLab patch), ported from odtu/PCBDesignWClaude
++  server.tool(
++    "clean_up_routing",
++    "Clean up tracks after autorouting, on the saved .kicad_pcb file. Removes zero-length and tiny router stubs and tracks with a free end, widens tracks to their net-class width (halfway, or not at all, where that breaks DRC), and chamfers 90-degree corners to 45 degrees. Every change that adds copper is checked with kicad-cli DRC with zones refilled and taken back if it adds an error. Locked tracks are never changed. Reports the sharp corners and too-thin tracks that are left. With the board open in KiCad, save there first and use File > Revert afterwards. Takes a few DRC runs (about 30 s on a dense 4-layer board).",
++    {
++      boardPath: z.string().optional().describe("Path to .kicad_pcb file (default: current board)"),
++      steps: z
++        .array(z.enum(["stubs", "dangling", "widths", "miter"]))
++        .optional()
++        .describe("Steps to run, in this order (default: all four)"),
++      maxChamfer: z
++        .number()
++        .optional()
++        .describe("Largest corner chamfer in mm (default 0.6); never more than 45% of the shorter segment"),
++    },
++    async (args: any) => {
++      const result = await callKicadScript("clean_up_routing", args);
++      return {
++        content: [
++          {
++            type: "text",
++            text: JSON.stringify(result, null, 2),
++          },
++        ],
++      };
++    },
++  );
++
+   // Export DSN only
+   server.tool(
+     "export_dsn",
+diff --git a/src/tools/registry.ts b/src/tools/registry.ts
+index 902f7b1..5819afe 100644
+--- a/src/tools/registry.ts
++++ b/src/tools/registry.ts
+@@ -235,7 +235,7 @@ export const toolCategories: ToolCategory[] = [
+   {
+     name: "autoroute",
+     description: "Freerouting autorouter: automatic PCB routing via Specctra DSN/SES",
+-    tools: ["autoroute", "export_dsn", "import_ses", "check_freerouting"],
++    tools: ["autoroute", "export_dsn", "import_ses", "check_freerouting", "clean_up_routing"],
+   },
+   {
+     name: "validation",

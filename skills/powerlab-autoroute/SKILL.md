@@ -12,7 +12,8 @@ Freerouting is good at the many small signal connections and bad at power electr
 ## 0. Is Freerouting the right tool for this board?
 Check with `get_board_info` / `query_zones` / `get_ratsnest` before promising anything.
 - **Good fit:** a board where most signal nets are still unrouted and copper pours are few, or are only GND on inner plane layers. A 2-layer board with 62 footprints and 29 nets routed completely in about 5 s.
-- **Poor fit, so say so before running:** a dense board that is already mostly routed and has many copper pours on the outer layers (e.g. VBUS, phase and switch-node pours on F.Cu). Freerouting reads each zone's whole outline as a solid plane, so it starts out with hundreds of false clearance violations. On a 4-layer ESC board with 11 pour nets on F.Cu, rerouting just 4 small nets did not finish in 5 minutes. For a board like that, recommend KiCad's interactive router (`X`, with walkaround/shove) for the remaining nets instead, and only run Freerouting if the user still wants to try with a long timeout.
+- **Harder, so say so before running:** a dense board with many copper pours on the outer layers (e.g. VBUS, phase and switch-node pours on F.Cu). By default Freerouting reads each zone's whole outline as a solid plane of that net, so it starts out with hundreds of false clearance violations: on a 4-layer ESC board with 11 pour nets on F.Cu, rerouting just 4 small nets did not finish in 5 minutes. Pass those power pours in `keepoutPourNets` (step 3). That makes them keepouts the router goes around, and the same board's 150 open connections then routed in under 7 minutes.
+- **Poor fit:** a board that is already mostly routed by hand, with lots of locked copper among the remaining connections. Freerouting 2.4.1 routes over locked tracks and vias as if they weren't there (step 3, "Check for shorts"). For a board like that, recommend KiCad's interactive router (`X`, with walkaround/shove) for the remaining nets instead, and only run Freerouting if the user still wants to try.
 
 ## 1. Check the setup first
 Call the `check_freerouting` tool.
@@ -74,9 +75,13 @@ Before routing, confirm with the user, or check with the kicad tools:
   - **Check for existing pours first** with `query_zones`. Never add a second pour for the same net on a layer that already has one: overlapping same-net zones give DRC "zones intersect" errors. To change an existing pour, ask the user.
   - If the board has no GND pour, create one before routing with `add_copper_pour` (layer, net and clearance; leave out `outline` to cover the whole board outline), on the bottom layer and also on the top. On 4 layers, use the inner GND plane layer. Do the same for any power net the user wants as a pour (above ~3 A).
   - Then route with `pourNets` set to those nets, e.g. `pourNets: ["GND"]`. Freerouting leaves them out, routes on all layers, and keeps their existing tracks. The pours are refilled around the new tracks afterwards.
-  - **Check the decoupling-cap vias survived:** Freerouting 2.4.1 can drop the fixed vias of a plane net and route other nets straight over them.
-    - After the run, any `shorting_items` or `clearance` error between a signal and a GND via or stub means this happened.
-    - Undo (File → Revert) and tell the user. Those nets need keepouts over the cap vias, or routing by hand around them.
+  - **Power pours on the outer layers** (VBUS, phase, switch node, shunt nodes) go in `keepoutPourNets` instead, e.g. `keepoutPourNets: ["+VBUS", "PHASE_A"]`. GND pours stay in `pourNets`.
+    - They aren't routed and their tracks are kept, like `pourNets`. In addition, each pour's outline becomes a keepout on its layer, so signals go around the pour instead of cutting it into pieces.
+    - The pours must be drawn to their real shape. Pads of other nets inside a pour outline can't be reached.
+    - Pads of these nets outside their pour stay unconnected. Connect them by hand first (step 1 of the routing order).
+  - **Check for shorts into locked copper:** Freerouting 2.4.1 can route over locked tracks and vias of any net, including the decoupling-cap vias and the hand-routed power and gate-drive copper. Switching the DSN's `fix` to `protect` doesn't help.
+    - After the run, any `shorting_items`, `tracks_crossing` or `clearance` error between a new track or via and locked copper means this happened.
+    - Undo (File → Revert) and tell the user. Those nets need rule areas that keep tracks out over the locked copper, or routing by hand around it.
   - **A 4-layer board's GND plane layer stays a plane.** If tracks land on the plane layer (e.g. In1.Cu), the plane was routed over: undo and say so.
 - **3D models:** check that the footprints still have their 3D models (`get_component_properties` or the 3D viewer). If they are missing, tell the user to run **Tools → Update Footprints from Library** with **Reset 3D models** ticked. It restores them without moving the parts.
 
@@ -86,29 +91,34 @@ Before routing, confirm with the user, or check with the kicad tools:
 - **Estimate the run time:** check the ratsnest (`get_ratsnest`) and tell the user how many connections are open. Freerouting 2.4.1 needs seconds for a small 2-layer board, about 2 minutes for a 2-layer ESP32 board with ~85 nets, and several minutes per attempt for a dense 4-layer one.
 - **Timeout:** set `timeout` from that estimate. Allow 600 s per attempt for dense boards and 900 s for very dense ones; the 300 s default is often too short.
 - **Best-of-N:** for a first run, use `attempts: 1` with the default `maxPasses` (20). Only use `attempts: 3` (or 5 for dense boards) when the user wants the most complete result and accepts the extra time; each attempt varies the max passes and the most complete result is kept.
-- **Pour nets:** always pass `pourNets` for the nets that have pours (step 3).
+- **Pour nets:** always pass `pourNets` for GND and `keepoutPourNets` for the outer-layer power pours (step 3).
 - **Priority nets:** put signal nets that must be completed (e.g. MCU control, communication) in `targetNets`.
 - **If it times out:** say so plainly. Nothing is imported and the board is unchanged. Offer a longer timeout, routing more nets by hand first, or adding the missing pours.
 
 ## 5. Check the result against the rules (§3.3–3.7)
+- **Clean up first:** run `clean_up_routing` right after `autoroute`. Like `autoroute` it works on the saved file. It:
+  - removes the router's zero-length and tiny stubs, and tracks with a free end;
+  - widens tracks to their net-class width (Freerouting writes every net at the default width, step 2), halfway where the full width breaks DRC, not at all where that breaks it too;
+  - chamfers 90° corners to 45° (§3.4), smaller where a full chamfer breaks DRC.
+
+  Every change that adds copper is checked with kicad-cli DRC, zones refilled, and taken back if it adds an error. Locked tracks are never changed. It takes a few DRC runs: about 30 s on a dense 4-layer board. Its `sharp_corners_left` and `thin_tracks_left` lists are the starting point for the corner and width checks below.
 - **Refill zones:** run `refill_zones`.
 - **Look at it** (`powerlab-visual-review`): save, then render top copper, bottom copper and both layers together. Review them for detours, 90° corners, long or looping power and gate-drive paths, and pours chopped into islands. Fix what you see and render again before reporting.
 - **Pour-net pads:** in the DRC's unconnected items, find pads of the pour nets that the pour can't reach, e.g. a GND pad boxed in by tracks. Add a via next to each one (`add_via`, 0.4/0.8 mm), connected with a short track, so it reaches the bottom pour. Then refill again.
 - **DRC:** run `run_drc` and compare it with the baseline. The goal is **0 new errors**. Track-width or clearance errors mean the net classes don't match the board constraints; fix the rules and re-route rather than hiding the errors.
-- **Corners:** Freerouting routes at 45° but still leaves some 90° corners. On a test board it left 26. The rules forbid them (§3.4). Find them with `query_traces`: two segments of the same net and layer meeting at 90° or less, including where two widths meet. List them for the user, who can fix them with the interactive router or by dragging the corner with `D`.
+- **Corners:** Freerouting routes at 45° but still leaves some 90° corners (26 on a test board), and the rules forbid them (§3.4). `clean_up_routing` chamfers the ones that have room. It skips corners where two widths meet, so a narrow chamfer doesn't neck the wider track. List its `sharp_corners_left` for the user, who can fix them with the interactive router or by dragging the corner with `D`.
 - **Paths and pad connections (§3.4, issue #21):**
   - Look for tracks that detour or staircase.
   - Look for tracks that touch a pad's edge or clip its corner instead of entering straight and ending at the pad centre.
   - Look for pour slivers or islands between a track and a pad's clearance ring (refill first).
   - Report these and fix them with the interactive router (`X` with walkaround), or by dragging the last segment straight into the pad centre.
-  - Remove dangling stubs (DRC `track_dangling`).
+  - Dangling stubs (DRC `track_dangling`) should be gone after `clean_up_routing`; remove any that are left.
 - **GND tracks:** list the GND tracks (`query_traces`). Every one must be a short pad-to-via stub. A GND track from pad to pad means a pad was routed instead of reaching the pour: remove it, and if the pad is then unconnected, give it a via.
 - **Widths and vias on power nets:**
-  - check every power and GND track against its class width (`query_traces`). Freerouting routes them at the default width (step 2).
-    - Widen every segment that has room.
+  - check every power and GND track against its class width (`query_traces`). Freerouting routes them at the default width (step 2); `clean_up_routing` widens every segment that has room.
     - A narrower section is only allowed right at a pin that forces it.
     - List the rest for the user.
-  - no track below the board minimum: Freerouting necks down to 0.10–0.12 mm at fine-pitch pins (DRC `track_width`)
+  - no track below the board minimum: Freerouting necks down to 0.10–0.12 mm at fine-pitch pins (DRC `track_width`). `clean_up_routing` lists the ones it couldn't widen in `thin_tracks_left`.
   - at least 2 vias at each power layer change, 0.4 mm drill (§3.5)
   - no vias in SMD pads except thermal pads
 - **Pours and stitching:** after the pours are filled, save the board (Ctrl+S, or `save_board`), then add GND stitching vias every ~5 mm with `add_gnd_stitching_vias` (`strategies: ["grid", "in_zones"]`, `viaSize: 0.8`, `viaDrill: 0.4`; §3.5). With KiCad open, it plans on the saved file and places the vias live, keeping the board's largest net-class clearance. Remove copper islands or stitch them to GND (§3.3).
