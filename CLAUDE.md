@@ -87,12 +87,11 @@ Report real bugs upstream too.
 - **Writing one:** the description decides when Claude uses it, so name the user phrasings. Keep the body to the lab's procedure and judgement; the kicad MCP tools do the work.
 - **External tools:** a skill that needs one gets it from `install.ps1`. Pin the version and its SHA-256, install it under `%LOCALAPPDATA%\PowerLabKiCadAssistant`, record its path in `config.json`, and expose it to the panel's sessions in `common.clean_env()`. That's how Java 25 and Freerouting 2.4.1 are set up. Never change system-wide PATH or Java.
 - **The `Skill` tool** is in the panel's `ALLOWED_TOOLS`.
-- **`powerlab-pcb-design-rules`** is a copy of the lab's [PCB_DESIGN_RULES.md](https://github.com/odtu/Powerlab/blob/master/KiCAD/PCB_DESIGN_RULES.md). It differs in three ways:
-  - it is renamed;
-  - the drawing-sheet template rule (§1.1) is removed, because the panel is public;
-  - §3.3 has a marked panel addition, "Pour nets, power rails and pad connections" (issue #21), with matching lines in §3.2, §3.5 and §3.7. The same text is proposed for the lab's file in odtu/Powerlab#147. Once that PR is merged, drop the marker and copy the file as usual.
+- **`powerlab-pcb-design-rules`** is a copy of the lab's [PCB_DESIGN_RULES.md](https://github.com/odtu/Powerlab/blob/master/KiCAD/PCB_DESIGN_RULES.md). It differs in two ways:
+  - it is renamed, with a `Source:` line under the title;
+  - the drawing-sheet template rule (§1.1, and its §1.9 checklist item) is removed, because the panel is public.
 
-  When the source changes, copy it again with the same three edits. Other skills (e.g. autoroute) refer to its section numbers, so check those still match. `PANEL_NOTE` tells Claude to load it for any design work.
+  When the source changes, copy it again with the same edits. Change rules in the lab's file too (a PR to odtu/Powerlab), so the two stay the same. §3.3 pours, §3.4 routing, §3.5 vias: other skills (autoroute, visual review) refer to these numbers, so check they still match. `PANEL_NOTE` tells Claude to load it for any design work.
 
 ## Working on the code
 
