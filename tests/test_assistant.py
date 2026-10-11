@@ -184,8 +184,15 @@ class SkillToolsEnvTests(unittest.TestCase):
         with open(os.path.join(skills, "powerlab-autoroute", "SKILL.md"), encoding="utf-8") as f:
             route = f.read()
         self.assertIn("Freerouting 2.4.1 ignores the net-class width", route)
-        self.assertIn("Fan out the pour nets first", route)
-        self.assertIn("Don't give every GND pad its own via", rules)
+        # No GND fan-out vias up front: pads reach the pour, vias only after routing
+        self.assertIn("No GND fan-out before routing", route)
+        self.assertIn("Never fan out GND pads with vias up front", rules)
+        # Copper before routing, magnetics, switching layers, fast-signal vias
+        self.assertIn("### 3.3 Copper pours and high-current copper", rules)
+        self.assertIn("Power pads get their copper first", rules)
+        self.assertIn("No tracks under inductors, transformers", rules)
+        self.assertIn("Switching signals don't share a layer with high-current copper", rules)
+        self.assertIn("Avoid vias on high-speed signals if you can", rules)
 
 
 class AttachmentTests(unittest.TestCase):
@@ -329,6 +336,22 @@ class ChatHistoryTests(unittest.TestCase):
         # Another project has its own chat.
         second.open_chat(self.project + "-other")
         self.assertEqual((second.session_id, second.events, second.emitted), (None, [], []))
+
+    def test_requirements_skill_questions_become_buttons(self):
+        # The intake rounds of powerlab-board-requirements must parse as answer buttons:
+        # 2-4 options per question, the lab default first and recommended.
+        from powerlab_assistant.panel import split_choices
+        with open(os.path.join(ROOT, "skills", "powerlab-board-requirements", "SKILL.md"),
+                  encoding="utf-8") as f:
+            skill = f.read()
+        import re
+        blocks = re.findall(r"```\n(<choices>\n.*?</choices>)\n```", skill, re.S)
+        self.assertGreaterEqual(len(blocks), 3)
+        questions = [q for block in blocks for q in split_choices(block)[1]]
+        self.assertGreaterEqual(len(questions), 6)
+        for q in questions:
+            self.assertTrue(2 <= len(q["options"]) <= 4, q)
+            self.assertTrue(q["options"][0].endswith("(Recommended)"), q)
 
     def test_echoed_kicad_state_is_not_shown(self):
         panel = self.fake_panel()
@@ -669,6 +692,64 @@ class McpPatchTests(unittest.TestCase):
         self.assertIn(f"(net {module.PLACEHOLDER_NET})", out)  # GND wire kept as an obstacle
         self.assertEqual(out.count("("), out.count(")"))
 
+        # keepout pour nets: not routed, and their pours become keepouts
+        out, dropped = module.leave_to_pours(dsn, ["GND"], ["VBUS"])
+        self.assertNotIn("(plane VBUS", out)
+        self.assertIn('(keepout "" (polygon F.Cu 0 0 0 10 0 10 10 0 10))', out)
+        self.assertEqual(out.count("("), out.count(")"))
+
+    def test_session_vias_keep_their_annular_ring(self):
+        self.assertIn("via_drills = _repair_via_drills(self.board)", self.patch())
+
+    def test_clean_up_routing(self):
+        """Post-route clean-up: stubs, dead ends, net-class widths and 90 degree corners."""
+        try:
+            import pcbnew
+        except ImportError:
+            self.skipTest("needs KiCad's Python")
+        cli = os.path.join(os.path.dirname(sys.executable), "kicad-cli.exe")
+        if not os.path.isfile(cli):
+            self.skipTest("needs kicad-cli")
+        module = types.ModuleType("route_cleanup")
+        exec(self.new_file("python/commands/route_cleanup.py"), module.__dict__)
+        self.assertIn('"clean_up_routing": self._handle_clean_up_routing,', self.patch())
+
+        mm, P = pcbnew.FromMM, lambda x, y: pcbnew.VECTOR2I(pcbnew.FromMM(x), pcbnew.FromMM(y))
+        board = pcbnew.BOARD()
+        net = pcbnew.NETINFO_ITEM(board, "SIG")
+        board.Add(net)
+        for a, b in (((0, 0), (40, 0)), ((40, 0), (40, 40)), ((40, 40), (0, 40)), ((0, 40), (0, 0))):
+            edge = pcbnew.PCB_SHAPE(board, pcbnew.SHAPE_T_SEGMENT)
+            edge.SetStart(P(*a)); edge.SetEnd(P(*b)); edge.SetLayer(pcbnew.Edge_Cuts); edge.SetWidth(mm(0.1))
+            board.Add(edge)
+        for x, y in ((10, 10), (25, 20)):
+            via = pcbnew.PCB_VIA(board)
+            via.SetPosition(P(x, y)); via.SetWidth(mm(0.6)); via.SetDrill(mm(0.3)); via.SetNet(net)
+            board.Add(via)
+        path = [(10, 10), (20, 10), (20, 15), (20.05, 15.05), (25, 20)]  # 90 degree corner, 0.07 mm stub
+        segments = list(zip(path, path[1:])) + [((25, 20), (30, 25)), ((20, 30), (20, 30))]  # dead end, zero length
+        for a, b in segments:
+            track = pcbnew.PCB_TRACK(board)
+            track.SetStart(P(*a)); track.SetEnd(P(*b)); track.SetWidth(mm(0.15))
+            track.SetLayer(pcbnew.F_Cu); track.SetNet(net)
+            board.Add(track)
+        folder = tempfile.mkdtemp()
+        path = os.path.join(folder, "cleanup.kicad_pcb")
+        board.Save(path)
+        board = pcbnew.LoadBoard(path)
+        class_width = board.GetDesignSettings().m_NetSettings.GetEffectiveNetClass("SIG").GetTrackWidth()
+
+        report = module.clean_up(board, path, cli)
+        self.assertEqual(report["stubs"], {"zero_length": 1, "merged_into_pad": 0, "joined": 1, "put_back": 0})
+        self.assertEqual(report["dangling"]["removed"], 1)
+        self.assertEqual(report["widths"]["full_width"], 3)
+        self.assertEqual(report["miter"]["mitered"], 1)
+        self.assertEqual(report["sharp_corners_left"]["count"], 0)
+        self.assertEqual(report["thin_tracks_left"]["count"], 0)
+        tracks = [t for t in board.GetTracks() if t.Type() == pcbnew.PCB_TRACE_T]
+        self.assertEqual(len(tracks), 4)  # two legs, the chamfer and the diagonal
+        self.assertTrue(all(t.GetWidth() == class_width for t in tracks))
+
 
 class PanelDefaultsTests(unittest.TestCase):
     """panel.py needs wx.html2, so read its constants without importing it."""
@@ -696,6 +777,8 @@ class PanelDefaultsTests(unittest.TestCase):
         self.assertIn("Never ask the user to close", c["PANEL_NOTE"])  # issue #10
         self.assertIn("the chat is kept", c["PANEL_NOTE"])
         self.assertIn("powerlab-visual-review", c["PANEL_NOTE"])  # look at the board while working
+        self.assertIn("powerlab-board-requirements", c["PANEL_NOTE"])  # ask before a new board
+        self.assertIn("design-requirements.md", c["PANEL_NOTE"])
         self.assertIn("<choices>", c["PANEL_NOTE"])  # questions come back as answer buttons
         # Issue #27: file-only tools (get_design_rules) say "No board is loaded" with KiCad open
         self.assertIn('says "No board is loaded"', c["PANEL_NOTE"])

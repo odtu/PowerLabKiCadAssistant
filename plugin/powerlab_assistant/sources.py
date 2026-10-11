@@ -122,6 +122,8 @@ class KiCadSource:
     and save/revert go through its menu."""
 
     suggestions = [
+        ("Start a new board from scratch", "I want to design a new board from scratch. "
+         "Ask me the requirements first."),
         ("Create a symbol + footprint library for…", "Create a symbol and footprint library for "),
         ("Run ERC and summarize violations", "Run ERC on this schematic and summarize the violations"),
         ("Run DRC and summarize violations", "Run DRC on this board and summarize the violations"),
