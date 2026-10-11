@@ -1,9 +1,9 @@
-"""The PowerLab Assistant panel, one window for both the PCB and the schematic editor.
+"""The PowerLab Assistant panels: one window per KiCad, for both its PCB and schematic editor.
 
 Started by the toolbar button in either editor (see launch.py), running on KiCad's own
 Python so it has wx and WebView. Only one copy runs: a second launch just toggles the panel
-through a local socket, or, if the plugin code changed since this copy started, asks it to
-quit so a fresh one runs.
+of the KiCad it came from (opening one for a KiCad that has none) through a local socket,
+or, if the plugin code changed since this copy started, asks it to quit so a fresh one runs.
 """
 
 import ctypes
@@ -14,6 +14,7 @@ import time
 
 import wx
 
+from . import instances, kicad_window
 from .common import INSTALL_HELP, find_claude
 from .launch import PORT, code_stamp
 from .panel import ClaudePanel
@@ -50,7 +51,9 @@ def serve(srv, on_toggle, on_outdated):
                 else:
                     conn.sendall(b"ok")
                     editor = parts[2].decode() if len(parts) > 2 else ""
-                    wx.CallAfter(on_toggle, editor if editor in EDITOR_TITLES else "schematic")
+                    pid = parts[3].decode() if len(parts) > 3 else ""
+                    wx.CallAfter(on_toggle, editor if editor in EDITOR_TITLES else "schematic",
+                                 int(pid) if pid.isdigit() else 0)
 
     threading.Thread(target=loop, daemon=True).start()
 
@@ -65,40 +68,71 @@ def main():
     if not claude:
         wx.MessageBox(INSTALL_HELP, "PowerLab Assistant", wx.OK | wx.ICON_WARNING)
         return
+    instances.ensure_placeholder()
+    panels = {}  # KiCad process id -> its panel
+
+    def open_panel(editor, pid):
+        try:
+            panel = ClaudePanel(claude, KiCadSource(editor, pid))
+        except Exception as exc:
+            wx.MessageBox(f"Could not start the panel:\n{exc}", "PowerLab Assistant", wx.OK | wx.ICON_WARNING)
+            return False
+        panels[pid] = panel
+        panel.present()
+        return True
+
+    def close_panel(pid):
+        panel = panels.pop(pid)
+        panel.save_chat()
+        if panel.proc:
+            panel.proc.terminate()
+        panel.Destroy()
+        if not panels:
+            quit_panel()
+
+    def quit_panel():
+        for panel in panels.values():
+            panel.save_chat()
+            if panel.proc:
+                panel.proc.terminate()
+        srv.close()
+        app.ExitMainLoop()
+
+    def toggle(editor, pid):
+        panel = panels.get(pid)
+        if not panel:
+            open_panel(editor, pid)
+        elif panel.IsShown():
+            panel.Hide()
+        else:
+            panel.source.editor = editor  # the button's editor, until the user clicks into the other one
+            panel.present()
+
     try:
-        editor = os.environ.get("POWERLAB_ASSISTANT_EDITOR", "")
-        source = KiCadSource(editor if editor in EDITOR_TITLES else "schematic")
         srv = listen()
     except Exception as exc:
         wx.MessageBox(f"Could not start the panel:\n{exc}", "PowerLab Assistant", wx.OK | wx.ICON_WARNING)
         return
-
-    panel = ClaudePanel(claude, source)
-
-    def quit_panel():
-        panel.save_chat()
-        if panel.proc:
-            panel.proc.terminate()
+    editor = os.environ.get("POWERLAB_ASSISTANT_EDITOR", "")
+    pid = os.environ.get("POWERLAB_ASSISTANT_KICAD", "")
+    if not open_panel(editor if editor in EDITOR_TITLES else "schematic", int(pid) if pid.isdigit() else 0):
         srv.close()
-        app.ExitMainLoop()
+        return
 
-    def toggle(editor):
-        if panel.IsShown():
-            panel.Hide()
-        else:
-            source.editor = editor  # the button's editor, until the user clicks into the other one
-            panel.present()
-
-    # Closing the window hides it; the process lives until KiCad goes away.
+    # Closing a window hides it; a panel lives until its KiCad goes away, the process
+    # until the last one does.
     serve(srv, toggle, quit_panel)
-    panel.present()
 
-    misses = [0]
+    misses = {}
 
     def watchdog():
-        misses[0] = 0 if source.alive() else misses[0] + 1
-        if misses[0] >= 3:
-            quit_panel()
+        for pid, panel in list(panels.items()):
+            # A known KiCad is gone when its process is; otherwise when it stops answering.
+            alive = kicad_window.process_running(pid) if pid else panel.source.alive()
+            misses[pid] = 0 if alive else misses.get(pid, 0) + 1
+            if misses[pid] >= (1 if pid else 3):
+                del misses[pid]
+                close_panel(pid)
 
     keepalive = wx.Timer()
     keepalive.Bind(wx.EVT_TIMER, lambda evt: watchdog())

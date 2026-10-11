@@ -113,6 +113,7 @@ The panel shows each step Claude takes, plus any images it renders.
 - **Attachments:** attach screenshots, datasheets (PDF) or other files with the 📎 button, or paste or drop them into the input box. Pasted and dropped files are kept for a week in `%TEMP%\PowerLabAssistant\attachments`.
 - **Usage:** the corner under the input box shows how much of your Claude plan's limit is used (e.g. *5h 49%*) and how full this chat's context is. Hover for the reset time. Start a new chat (**+**) when the context gets full.
 - **One panel for both editors:** the button in the PCB Editor and the one in the Schematic Editor show or hide the same panel, with one chat per project. Ask about either side from wherever you are: Claude sees the board and the schematic, which editor you're working in, and what is selected in each.
+- **One panel per KiCad:** with two KiCad windows open (two projects), each one's button opens a panel of its own, titled with its project, and Claude works only on that KiCad. KiCad 10 on Windows gives an API connection only to the first KiCad, so the panel leaves an empty `%TEMP%\kicad\api.sock` file that makes every KiCad started afterwards open its own. If a panel says to restart its KiCad, that KiCad was started before the file existed: save, close it and start it again.
 - **Chats are kept:** closing the panel, the editor or KiCad doesn't lose the chat. Reopen the panel on the same project and it continues where you left off. **+** starts a new chat.
 
 **Board:**

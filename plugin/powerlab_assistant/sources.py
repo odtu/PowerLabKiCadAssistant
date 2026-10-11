@@ -12,6 +12,7 @@ import re
 import time
 from dataclasses import dataclass, field
 
+from . import instances
 from .library import library_context
 
 if os.name == "nt":
@@ -29,11 +30,20 @@ class Snapshot:
     watch: list = field(default_factory=list)  # files whose on-disk changes need a reload
 
 
-def unreachable_hint(processes):
+RESTART_HINT = ("This KiCad was started while another KiCad was open, so KiCad gave it no "
+                "connection of its own (a KiCad bug on Windows). Save your work, close this KiCad "
+                "and start it again; the other one can stay open. KiCads started from now on get "
+                "their own connection.")
+
+
+def unreachable_hint(processes, shared_by=0):
     """Why KiCad's API may not answer, from [(pid, has_visible_window)] of kicad.exe (issue #7).
 
     A KiCad that got stuck while closing keeps running without a window and holds KiCad's
-    API connection, so the KiCad the user is working in can't open its own."""
+    API connection, so the KiCad the user is working in can't open its own. shared_by: another
+    KiCad holding the connection this one should have had (see instances.py)."""
+    if shared_by and any(pid == shared_by and visible for pid, visible in processes):
+        return RESTART_HINT
     stale = [pid for pid, visible in processes if not visible]
     if len(processes) > 1 and stale:
         return (f"KiCad isn't answering because another KiCad is still running in the background "
@@ -46,8 +56,10 @@ def unreachable_hint(processes):
             "KiCad and reopen the panel.")
 
 
-def unreachable_chip(processes):
+def unreachable_chip(processes, shared_by=0):
     """The same diagnosis as unreachable_hint, short enough for the status chip."""
+    if shared_by and any(pid == shared_by and visible for pid, visible in processes):
+        return "Not connected: restart this KiCad (it started while another KiCad was open)"
     stale = [pid for pid, visible in processes if not visible]
     if len(processes) > 1 and stale:
         return f"Not connected: a stuck background KiCad (process {stale[0]}) is blocking it"
@@ -102,7 +114,7 @@ def schematic_files(project_dir):
 
 
 class KiCadSource:
-    """Both editors, for the one panel: the toolbar button in either shows or hides it.
+    """Both editors of one KiCad, for its panel: the toolbar button in either shows or hides it.
 
     The board and its selected footprints come from KiCad's API. KiCad 10's schematic API only
     reports which schematic is open (no selection, save or revert): the schematic selection is
@@ -118,8 +130,10 @@ class KiCadSource:
         ("Export Gerbers for PCBWay", "Export Gerbers and drill files for PCBWay"),
     ]
 
-    def __init__(self, editor="schematic"):
+    def __init__(self, editor="schematic", pid=0):
         self.editor = editor  # the editor the user worked in last ("pcb" or "schematic")
+        self.pid = pid  # the KiCad process this panel belongs to; 0: whichever KiCad answers
+        self.socket = None  # its API's ipc:// address, None while it has none
         self.token = None  # first connect: the token KiCad put in the launch environment
         self.down_until = 0.0
         self.connect()
@@ -129,9 +143,26 @@ class KiCadSource:
     def connect(self):
         from kipy import KiCad
 
+        name = f"powerlab-assistant-{os.getpid()}-{self.pid}"
+        if self.pid:  # this KiCad's own API, never another KiCad's
+            self.socket = instances.find_socket(self.pid, kicad_window.pipe_names(), kicad_window.pipe_server)
+            # The launch token is the starting KiCad's; any KiCad accepts none.
+            self.kicad = KiCad(socket_path=self.socket, client_name=name, kicad_token="",
+                               timeout_ms=600) if self.socket else None
+            return
         # Short timeout: these calls run on the panel's GUI thread.
-        self.kicad = KiCad(client_name=f"powerlab-assistant-{os.getpid()}", kicad_token=self.token, timeout_ms=600)
+        self.kicad = KiCad(client_name=name, kicad_token=self.token, timeout_ms=600)
 
+    def api_env(self):
+        """Environment for Claude, so the kicad MCP server edits this KiCad and no other."""
+        if not self.pid:
+            return {}
+        # Without a connection, a socket nothing listens on: the tools then work on the files.
+        return {"KICAD_API_SOCKET": self.socket or "ipc://" + instances.own_socket(self.pid),
+                "KICAD_API_TOKEN": ""}
+
+    def editor_window(self):
+        return kicad_window.find_editor(pid=self.pid)
 
     def call(self, fn):
         """Run fn(kicad). After a KiCad restart the connection and its launch token are
@@ -143,19 +174,24 @@ class KiCadSource:
         if time.time() < self.down_until:
             raise ConnectionError("KiCad is not reachable")
         try:
-            return fn(self.kicad)
+            return fn(self.connected())
         except ApiError:
             raise
         except Exception:
             self.token = ""
             self.connect()
             try:
-                return fn(self.kicad)
+                return fn(self.connected())
             except ApiError:
                 raise
             except Exception:
                 self.down_until = time.time() + 5
                 raise
+
+    def connected(self):
+        if self.kicad is None:
+            raise ConnectionError("this KiCad has no API connection")
+        return self.kicad
 
     def open_document(self, doc_type):
         """(file name, project folder or "") of the open document of that type, or None.
@@ -184,7 +220,7 @@ class KiCadSource:
 
     def track_editor(self):
         """The editor the user is in: the KiCad editor window that last had the focus."""
-        title = kicad_window.foreground_title()
+        title = kicad_window.foreground_title(self.pid)
         for editor, kind in EDITOR_TITLES.items():
             if title.endswith(kind):
                 self.editor = editor
@@ -217,7 +253,7 @@ class KiCadSource:
         the user's clipboard back. `owner` is a window of this process; calls done()."""
         import wx
 
-        hwnd = kicad_window.find_editor()
+        hwnd = self.editor_window()
         if not hwnd:
             done()
             return
@@ -262,7 +298,7 @@ class KiCadSource:
         sheet = ""
         if sch:
             self.poll_clipboard()
-            hwnd = kicad_window.find_editor()
+            hwnd = self.editor_window()
             sheet = kicad_window.current_sheet(hwnd) if hwnd else ""
 
         if self.editor == "pcb" and board or not sch:
@@ -313,21 +349,21 @@ class KiCadSource:
     # ---- driving the schematic editor window (no API for these in KiCad 10) ----
 
     def schematic_open(self):
-        return bool(kicad_window.find_editor())
+        return bool(self.editor_window())
 
     def unsaved(self):
-        hwnd = kicad_window.find_editor()
+        hwnd = self.editor_window()
         return bool(hwnd and kicad_window.is_dirty(hwnd))
 
     def save(self):
-        hwnd = kicad_window.find_editor()
+        hwnd = self.editor_window()
         return bool(hwnd and kicad_window.menu_command(hwnd, "File", "Save"))
 
     def reload(self, done):
         """File > Revert in the editor, then confirm KiCad's dialog. Calls done(ok)."""
         import wx
 
-        hwnd = kicad_window.find_editor()
+        hwnd = self.editor_window()
         if not hwnd or not kicad_window.menu_command(hwnd, "File", "Revert"):
             done(False)
             return
@@ -350,11 +386,16 @@ class KiCadSource:
         except Exception:
             return ""
 
+    def shared_by(self):
+        if not self.pid:
+            return 0
+        return instances.shared_holder(self.pid, kicad_window.pipe_names(), kicad_window.pipe_server)
+
     def unreachable_reason(self):
-        return unreachable_hint(kicad_window.kicad_processes())
+        return unreachable_hint(kicad_window.kicad_processes(), self.shared_by())
 
     def unreachable_status(self):
-        return unreachable_chip(kicad_window.kicad_processes())
+        return unreachable_chip(kicad_window.kicad_processes(), self.shared_by())
 
     def process_summary(self):
         """For problem reports: how many kicad.exe run, and how many have no window."""
