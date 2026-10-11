@@ -34,4 +34,4 @@ class AssistantButton(pcbnew.ActionPlugin):
             return
         from .launch import toggle
 
-        toggle(python, "pcb")
+        toggle(python, "pcb", os.getpid())  # the button runs inside KiCad

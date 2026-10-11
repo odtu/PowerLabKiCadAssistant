@@ -70,18 +70,20 @@ def clean_env():
     return env
 
 
-def open_console(args, cwd=None):
+def open_console(args, cwd=None, extra_env=None):
     """Run a command in a new console window the user can see and type into."""
-    subprocess.Popen(args, cwd=cwd or os.path.expanduser("~"), env=clean_env(),
+    env = clean_env()
+    env.update(extra_env or {})
+    subprocess.Popen(args, cwd=cwd or os.path.expanduser("~"), env=env,
                      creationflags=CREATE_NEW_CONSOLE)
 
 
-def open_terminal(claude, cwd, context, session_id=None):
+def open_terminal(claude, cwd, context, session_id=None, extra_env=None):
     """Open a full interactive Claude Code session in a new console window."""
     args = [claude, "--append-system-prompt", context]
     if session_id:
         args += ["--resume", session_id]
-    open_console(args, cwd)
+    open_console(args, cwd, extra_env)
 
 
 def run_quiet(args, cwd=None, timeout=60, extra_env=None):
