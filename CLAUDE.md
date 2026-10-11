@@ -89,7 +89,7 @@ Report real bugs upstream too.
 - **The `Skill` tool** is in the panel's `ALLOWED_TOOLS`.
 - **`powerlab-pcb-design-rules`** is a copy of the lab's [PCB_DESIGN_RULES.md](https://github.com/odtu/Powerlab/blob/master/KiCAD/PCB_DESIGN_RULES.md). It differs in two ways:
   - it is renamed, with a `Source:` line under the title;
-  - the drawing-sheet template rule (§1.1, and its §1.9 checklist item) is removed, because the panel is public.
+  - nothing lab-branded goes on other people's boards: the drawing-sheet template rule (§1.1, and its §1.9 checklist item) is removed, and §3.6 has no lab logo, website or QR code. Instead, every board gets the silkscreen text `Designed with PowerLab KiCad Assistant and Claude` (and its §3.7 checklist item).
 
   When the source changes, copy it again with the same edits. Change rules in the lab's file too (a PR to odtu/Powerlab), so the two stay the same. §3.3 pours, §3.4 routing, §3.5 vias: other skills (autoroute, visual review) refer to these numbers, so check they still match. `PANEL_NOTE` tells Claude to load it for any design work.
 

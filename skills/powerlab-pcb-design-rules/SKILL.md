@@ -5,7 +5,7 @@ description: METU PowerLab PCB design rules for KiCad work — PCBWay standard-p
 
 # PCB Design Rules — METU PowerLab
 
-Source: https://github.com/odtu/Powerlab/blob/master/KiCAD/PCB_DESIGN_RULES.md, minus the lab's drawing-sheet template rule (this panel is public).
+Source: https://github.com/odtu/Powerlab/blob/master/KiCAD/PCB_DESIGN_RULES.md, minus the lab's drawing sheet, logo, website and QR code: other people's boards don't carry the lab's branding.
 
 Target fab: **PCBWay Standard PCB, at standard (no-surcharge) spec**, IPC Class 2.
 Sources: https://www.pcbway.com/capabilities.html and the quote form at https://www.pcbway.com/orderonline.aspx (both checked 2026-09-25).
@@ -422,10 +422,9 @@ Copper comes first (§3.3): power pads, power rails and pour nets (no GND fan-ou
 - **Put the board information on every board:**
   - project name, version, date
   - design team members' names
-  - organization logos (METU PowerLab)
-  - website: `power.eee.odtu.edu.tr` / `github.com/odtu`, or a QR code
+  - the text `Designed with PowerLab KiCad Assistant and Claude`, at least 1.0 mm high, next to the board info
   - Use text variables in the PCB text (`${PROJECT_NAME}`, `${REVISION}`, `${ISSUE_DATE}`) so the board info stays in sync with the schematic title block.
-  - Make the logo and QR code into footprints with KiCad's Image Converter. The lab QR code image is `PowerLabQrCode.png` at https://github.com/odtu/Powerlab/tree/master/KiCAD. Make the QR code at least ~12 mm wide and check that it scans in the 3D viewer render.
+  - An organization logo, website or QR code only if the user asks for their own. Make it into a footprint with KiCad's Image Converter, and check that a QR code scans in the 3D viewer render.
 
 ### 3.7 Final checks and outputs
 
@@ -439,7 +438,7 @@ Copper comes first (§3.3): power pads, power rails and pour nets (no GND fan-ou
 - [ ] GND pads reach the pours (vias only at decoupling caps, plus pads still unconnected after routing); power rails as pours, or tracks at class width; every track enters its pad straight at the centre; no slivers or islands next to pads (§3.3, §3.4)
 - [ ] Only through-hole vias, all tented (except thermal pads)
 - [ ] Polarized parts aligned; assembly spacing and fiducials per §3.2
-- [ ] Silkscreen clean; board info, logo and website/QR present
+- [ ] Silkscreen clean; board info and the "Designed with PowerLab KiCad Assistant and Claude" text present
 - [ ] 3D viewer: no part collisions, connectors facing out, polarities right
 - [ ] Print the layout 1:1 on paper and check footprints against the real parts
 - [ ] Gerbers checked in the Gerber viewer before ordering
