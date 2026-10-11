@@ -66,19 +66,17 @@ Before routing, confirm with the user, or check with the kicad tools:
     - Where a pour doesn't fit, use tracks at the Power class width (≥ 0.5 mm).
     - Lock them before running Freerouting.
   - KiCad's session import clears the locked flag. Lock the hand-routed copper again after every `autoroute` run.
-- **Fan out the pour nets first (design rules §3.3, issue #21):** the pours connect the GND pads. Don't give every GND pad a via; that only clutters the board and blocks routing.
-  - **Decoupling caps:** a via to the GND plane right at each cap's GND pad.
-  - **Fine-pitch IC GND pins:** a pin next to a GND exposed pad joins the exposed pad straight across the gap. Other fine-pitch GND pins neck down to a via just outside the pin row.
-  - Keep about 1.5 mm in front of every fine-pitch pin free of these vias, so the signal pins can still escape.
-  - Lock the fan-out.
-  - **After routing and the zone fill:** a GND pad the pour can't reach shows up as unconnected in DRC. Give only that pad a via. GND never needs a track between pads.
+- **No GND fan-out before routing (design rules §3.3, issue #21):** the pours connect the GND pads. Never give every GND pad a via up front; that only clutters the board and blocks routing.
+  - **Decoupling caps** are the only exception: a via to the GND plane right at each cap's GND pad. Lock these.
+  - A fine-pitch IC GND pin next to a GND exposed pad joins the exposed pad straight across the gap, without a via.
+  - **After routing and the zone fill:** a GND pad the pour can't reach (boxed in by tracks, or a fine-pitch GND pin) shows up as unconnected in DRC. Give only that pad a via (step 5). GND never needs a track between pads.
 - **Pours first (§3.3):** never let Freerouting draw GND as tracks.
   - **Check for existing pours first** with `query_zones`. Never add a second pour for the same net on a layer that already has one: overlapping same-net zones give DRC "zones intersect" errors. To change an existing pour, ask the user.
   - If the board has no GND pour, create one before routing with `add_copper_pour` (layer, net and clearance; leave out `outline` to cover the whole board outline), on the bottom layer and also on the top. On 4 layers, use the inner GND plane layer. Do the same for any power net the user wants as a pour (above ~3 A).
   - Then route with `pourNets` set to those nets, e.g. `pourNets: ["GND"]`. Freerouting leaves them out, routes on all layers, and keeps their existing tracks. The pours are refilled around the new tracks afterwards.
-  - **Check the fan-out survived:** Freerouting 2.4.1 can drop the fixed vias of a plane net and route other nets straight over them.
+  - **Check the decoupling-cap vias survived:** Freerouting 2.4.1 can drop the fixed vias of a plane net and route other nets straight over them.
     - After the run, any `shorting_items` or `clearance` error between a signal and a GND via or stub means this happened.
-    - Undo (File → Revert) and tell the user. Those nets need keepouts over the fan-out copper, or routing by hand around the fan-out.
+    - Undo (File → Revert) and tell the user. Those nets need keepouts over the cap vias, or routing by hand around them.
   - **A 4-layer board's GND plane layer stays a plane.** If tracks land on the plane layer (e.g. In1.Cu), the plane was routed over: undo and say so.
 - **3D models:** check that the footprints still have their 3D models (`get_component_properties` or the 3D viewer). If they are missing, tell the user to run **Tools → Update Footprints from Library** with **Reset 3D models** ticked. It restores them without moving the parts.
 
@@ -104,7 +102,7 @@ Before routing, confirm with the user, or check with the kicad tools:
   - Look for pour slivers or islands between a track and a pad's clearance ring (refill first).
   - Report these and fix them with the interactive router (`X` with walkaround), or by dragging the last segment straight into the pad centre.
   - Remove dangling stubs (DRC `track_dangling`).
-- **GND tracks:** list the GND tracks (`query_traces`). Every one must be a short pad-to-via stub. A GND track from pad to pad means a pad was routed instead of being fanned out to the plane: replace it with a via at the pad.
+- **GND tracks:** list the GND tracks (`query_traces`). Every one must be a short pad-to-via stub. A GND track from pad to pad means a pad was routed instead of reaching the pour: remove it, and if the pad is then unconnected, give it a via.
 - **Widths and vias on power nets:**
   - check every power and GND track against its class width (`query_traces`). Freerouting routes them at the default width (step 2).
     - Widen every segment that has room.

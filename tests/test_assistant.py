@@ -184,8 +184,15 @@ class SkillToolsEnvTests(unittest.TestCase):
         with open(os.path.join(skills, "powerlab-autoroute", "SKILL.md"), encoding="utf-8") as f:
             route = f.read()
         self.assertIn("Freerouting 2.4.1 ignores the net-class width", route)
-        self.assertIn("Fan out the pour nets first", route)
-        self.assertIn("Don't give every GND pad its own via", rules)
+        # No GND fan-out vias up front: pads reach the pour, vias only after routing
+        self.assertIn("No GND fan-out before routing", route)
+        self.assertIn("Never fan out GND pads with vias up front", rules)
+        # Copper before routing, magnetics, switching layers, fast-signal vias
+        self.assertIn("### 3.3 Copper pours and high-current copper", rules)
+        self.assertIn("Power pads get their copper first", rules)
+        self.assertIn("No tracks under inductors, transformers", rules)
+        self.assertIn("Switching signals don't share a layer with high-current copper", rules)
+        self.assertIn("Avoid vias on high-speed signals if you can", rules)
 
 
 class AttachmentTests(unittest.TestCase):
