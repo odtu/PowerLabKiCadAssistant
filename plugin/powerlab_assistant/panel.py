@@ -92,7 +92,9 @@ PANEL_NOTE = (
     "and the folder whose files go in). It is the only other shell command the panel allows; "
     "Compress-Archive is blocked.\n"
     "Read, list and search files only with the Read, Grep and Glob tools, never with shell "
-    "commands such as cd, grep, cat, ls, dir or Select-String: the panel blocks them.\n"
+    "commands such as cd, grep, cat, ls, dir or Select-String: the panel blocks them. "
+    "Grep uses ripgrep's regex syntax: no look-ahead, look-behind or backreferences "
+    "(e.g. (?!...)), which it rejects; search more broadly and pick lines from the results.\n"
     "Each message ends with a <kicad_state> block giving the live KiCad selection at the "
     "moment it was sent. Words like 'this', 'that', 'it' or 'selected' refer to that selection. "
     "It is for you only: never repeat it in your reply. "
@@ -315,6 +317,9 @@ class ClaudePanel(wx.Frame):
         if self.events:
             self.load_page()
         self.chat_cwd = cwd
+        # With two KiCads open, each has a panel: the title says whose this is.
+        project = os.path.basename(cwd.rstrip(os.sep)) if cwd != os.path.expanduser("~") else ""
+        self.SetTitle("PowerLab Assistant" + (f" — {project}" if project else ""))
         self.session_id, self.events = history.load(cwd)
         for event in self.events:
             if event["kind"] == "image":
@@ -432,7 +437,7 @@ class ClaudePanel(wx.Frame):
     def msg_terminal(self, msg):
         snap = self.snapshot()
         cwd = snap.cwd if snap else os.path.expanduser("~")
-        open_terminal(self.claude, cwd, snap.context if snap else "", self.session_id)
+        open_terminal(self.claude, cwd, snap.context if snap else "", self.session_id, self.api_env())
 
     def on_navigating(self, evt):
         url = evt.GetURL()
@@ -675,6 +680,11 @@ class ClaudePanel(wx.Frame):
         effort = self.settings.get("effort", DEFAULT_EFFORT)
         return effort if effort in EFFORTS else DEFAULT_EFFORT
 
+    def api_env(self):
+        """Point Claude's kicad tools at this panel's KiCad (another may be open)."""
+        api_env = getattr(self.source, "api_env", None)
+        return api_env() if api_env else {}
+
     def has_unsaved(self):
         check = getattr(self.source, "unsaved", None)
         return bool(check and check())
@@ -786,6 +796,7 @@ class ClaudePanel(wx.Frame):
         self.thinking_tokens = 0
         self.thought = ""
         env = clean_env()
+        env.update(self.api_env())
         self.summaries_on = (self.summaries and self.model in SUMMARY_MODELS
                              and "CLAUDE_CODE_EXTRA_BODY" not in env)
         if self.summaries_on:

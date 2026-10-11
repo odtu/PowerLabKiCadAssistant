@@ -270,6 +270,7 @@ class ChatHistoryTests(unittest.TestCase):
         panel.emitted = []
         panel.emit = lambda kind, **data: panel.emitted.append(dict(data, kind=kind))
         panel.load_page = lambda: panel.emitted.clear()
+        panel.SetTitle = lambda title: setattr(panel, "title", title)
         return panel
 
     def write_old(self, editor, session_id, events):
@@ -308,6 +309,8 @@ class ChatHistoryTests(unittest.TestCase):
     def test_reopened_panel_continues_the_last_chat(self):
         first = self.fake_panel()
         first.open_chat(self.project)
+        # With two KiCads open there are two panels: the title says whose this is.
+        self.assertEqual(first.title, "PowerLab Assistant — " + os.path.basename(self.project))
         self.assertEqual(first.emitted, [])  # nothing saved yet
         first.say("user", text="Place the connectors", files=[])
         first.handle({"type": "system", "subtype": "init", "session_id": "s-1"})
@@ -471,11 +474,12 @@ class OnePanelTests(unittest.TestCase):
             get_board=lambda: types.SimpleNamespace(get_selection=selection))
         self.source = sources.KiCadSource.__new__(sources.KiCadSource)
         self.source.editor, self.source.kicad, self.source.down_until = "schematic", kicad, 0.0
+        self.source.pid = 0
         self.source.selected, self.source.clip_seq = ["R1 (10k)"], 0
         self.source.poll_clipboard = lambda: None
         window = types.SimpleNamespace(
-            foreground_title=lambda: self.foreground,
-            find_editor=lambda kind="Schematic Editor": 1 if "schematic" in self.open else None,
+            foreground_title=lambda pid=0: self.foreground,
+            find_editor=lambda kind="Schematic Editor", pid=0: 1 if "schematic" in self.open else None,
             current_sheet=lambda hwnd: "esp/Power")
         old, sources.kicad_window = sources.kicad_window, window
         self.addCleanup(setattr, sources, "kicad_window", old)
@@ -511,6 +515,80 @@ class OnePanelTests(unittest.TestCase):
         self.assertIn("Root schematic:", snap.context)
         self.open = set()
         self.assertEqual(self.source.snapshot().chips, ["No schematic or board open"])
+
+
+class TwoKiCadsTests(unittest.TestCase):
+    """A second KiCad gets a panel of its own, connected to that KiCad and no other."""
+
+    def setUp(self):
+        self.shared = sources.instances.SHARED.lower()
+        self.own = sources.instances.own_socket(2344).lower()
+
+    def test_each_kicad_finds_its_own_socket(self):
+        find = sources.instances.find_socket
+        # The first KiCad has api.sock; one started later has api-<pid>.sock.
+        self.assertEqual(find(11632, {self.shared, self.own}, lambda path: 11632),
+                         "ipc://" + sources.instances.SHARED)
+        self.assertEqual(find(2344, {self.shared, self.own}, lambda path: 11632),
+                         "ipc://" + sources.instances.own_socket(2344))
+        # A KiCad started before the placeholder, while another held api.sock, has none:
+        # it must never be handed the other KiCad's.
+        self.assertIsNone(find(2344, {self.shared}, lambda path: 11632))
+        self.assertEqual(sources.instances.shared_holder(2344, {self.shared}, lambda path: 11632), 11632)
+        self.assertEqual(sources.instances.shared_holder(11632, {self.shared}, lambda path: 11632), 0)
+
+    def test_placeholder_makes_later_kicads_use_their_own_socket(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old = sources.instances.SOCKET_DIR, sources.instances.SHARED
+            self.addCleanup(lambda: setattr(sources.instances, "SHARED", old[1]))
+            self.addCleanup(lambda: setattr(sources.instances, "SOCKET_DIR", old[0]))
+            sources.instances.SOCKET_DIR = os.path.join(tmp, "kicad")
+            sources.instances.SHARED = os.path.join(tmp, "kicad", "api.sock")
+            sources.instances.ensure_placeholder()
+            self.assertTrue(os.path.isfile(sources.instances.SHARED))
+            sources.instances.ensure_placeholder()  # already there: left alone
+
+    def test_kicad_without_its_own_socket_is_not_connected_to_another(self):
+        try:
+            import kipy  # noqa: F401
+        except ImportError as exc:
+            self.skipTest(f"needs kicad-python: {exc}")
+        window = types.SimpleNamespace(pipe_names=lambda: {self.shared},
+                                       pipe_server=lambda path: 11632,
+                                       kicad_processes=lambda: [(11632, True), (2344, True)])
+        old, sources.kicad_window = sources.kicad_window, window
+        self.addCleanup(setattr, sources, "kicad_window", old)
+        source = sources.KiCadSource("pcb", pid=2344)
+        self.assertIsNone(source.kicad)
+        with self.assertRaises(ConnectionError):
+            source.call(lambda k: k.get_open_documents(0))
+        # Claude's kicad tools get a socket nothing listens on, so they work on the files.
+        self.assertEqual(source.api_env(), {"KICAD_API_SOCKET": "ipc://" + sources.instances.own_socket(2344),
+                                            "KICAD_API_TOKEN": ""})
+        self.assertEqual(source.unreachable_reason(), sources.RESTART_HINT)
+        self.assertIn("restart this KiCad", source.unreachable_status())
+
+    def test_kicad_with_its_own_socket_connects_there(self):
+        try:
+            import kipy  # noqa: F401
+        except ImportError as exc:
+            self.skipTest(f"needs kicad-python: {exc}")
+        window = types.SimpleNamespace(pipe_names=lambda: {self.shared, self.own},
+                                       pipe_server=lambda path: 11632)
+        old, sources.kicad_window = sources.kicad_window, window
+        self.addCleanup(setattr, sources, "kicad_window", old)
+        source = sources.KiCadSource("pcb", pid=2344)
+        self.assertEqual(source.socket, "ipc://" + sources.instances.own_socket(2344))
+        self.assertEqual(source.api_env()["KICAD_API_SOCKET"], source.socket)
+
+    @unittest.skipUnless(os.name == "nt", "Windows process helpers")
+    def test_process_helpers(self):
+        from powerlab_assistant import kicad_window
+
+        self.assertTrue(kicad_window.process_running(os.getpid()))
+        self.assertEqual(kicad_window.processes()[os.getpid()][1].lower(),
+                         os.path.basename(sys.executable).lower())
+        self.assertEqual(kicad_window.kicad_ancestor(os.getpid()), 0)  # not started by KiCad
 
 
 class McpPatchTests(unittest.TestCase):
@@ -552,6 +630,13 @@ class McpPatchTests(unittest.TestCase):
         self.assertIn('+        "add_gnd_stitching_vias": "_ipc_add_gnd_stitching_vias",', patch)
         self.assertIn("def _ipc_add_gnd_stitching_vias", patch)
         self.assertIn('plan_params["clearance"] = max(', patch)  # net-class clearance, not a fixed 0.2
+
+    def test_footprint_text_moves_in_live_mode(self):
+        """Issue #36: move_footprint_text edited the offline copy, and saves dropped the move."""
+        patch = self.patch()
+        self.assertIn('+        "move_footprint_text": "_ipc_move_footprint_text",', patch)
+        self.assertIn("def _ipc_move_footprint_text", patch)
+        self.assertIn("+            board.update_items([target_fp])\n+            board.push_commit(commit, f\"Moved {reference} {field} text\")", patch)
 
     def test_pour_nets_are_left_out_of_routing(self):
         module = types.ModuleType("pour_nets")
@@ -660,6 +745,12 @@ class PanelDefaultsTests(unittest.TestCase):
         self.assertIn("Never run a script (python -c", c["PANEL_NOTE"])
         self.assertIn("Read tool in parts (offset and limit)", c["PANEL_NOTE"])
         self.assertFalse(any(t.startswith(("Bash(python", "PowerShell(python")) for t in c["ALLOWED_TOOLS"]))
+
+    def test_grep_patterns_are_ripgrep_syntax(self):
+        # Issue #34: Claude gave Grep a look-ahead `(?!...)`, which ripgrep rejects.
+        c = self.constants()
+        self.assertIn("Grep uses ripgrep", c["PANEL_NOTE"])
+        self.assertIn("no look-ahead, look-behind", c["PANEL_NOTE"])
 
 
 class LibraryCommitTests(unittest.TestCase):

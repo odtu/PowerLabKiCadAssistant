@@ -8,6 +8,7 @@ with a menu item's id behaves exactly like the user clicking it.
 
 import ctypes
 import ctypes.wintypes as wt
+import os
 
 user32 = ctypes.windll.user32
 user32.GetWindowTextLengthW.argtypes = [wt.HWND]
@@ -71,17 +72,107 @@ def kicad_processes():
     return [(pid, pid in with_window) for pid in pids]
 
 
-def find_editor(kind="Schematic Editor"):
-    """The visible '<project> — Schematic Editor' window ('*' prefix when unsaved)."""
+def find_editor(kind="Schematic Editor", pid=0):
+    """The visible '<project> — Schematic Editor' window ('*' prefix when unsaved) of the
+    KiCad with that process id (any KiCad if 0)."""
     for hwnd in top_windows():
-        if window_text(hwnd).endswith(kind):
+        if window_text(hwnd).endswith(kind) and (not pid or window_pid(hwnd) == pid):
             return hwnd
     return None
 
 
-def foreground_title():
-    """Title of the window the user is working in."""
-    return window_text(user32.GetForegroundWindow())
+def foreground_title(pid=0):
+    """Title of the window the user is working in; "" if it isn't one of that KiCad's."""
+    hwnd = user32.GetForegroundWindow()
+    return window_text(hwnd) if not pid or window_pid(hwnd) == pid else ""
+
+
+# ---- which KiCad a button was pressed in, and its API pipe ----
+
+KICAD_EXES = {"kicad.exe", "eeschema.exe", "pcbnew.exe"}
+
+
+class PROCESSENTRY32W(ctypes.Structure):
+    _fields_ = [("dwSize", wt.DWORD), ("cntUsage", wt.DWORD), ("th32ProcessID", wt.DWORD),
+                ("th32DefaultHeapID", ctypes.c_size_t), ("th32ModuleID", wt.DWORD),
+                ("cntThreads", wt.DWORD), ("th32ParentProcessID", wt.DWORD),
+                ("pcPriClassBase", ctypes.c_long), ("dwFlags", wt.DWORD),
+                ("szExeFile", ctypes.c_wchar * 260)]
+
+
+def processes():
+    """{pid: (parent pid, exe name)} of every running process."""
+    k32 = ctypes.windll.kernel32
+    k32.CreateToolhelp32Snapshot.restype = wt.HANDLE
+    snap = k32.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
+    found = {}
+    if not snap or snap == wt.HANDLE(-1).value:
+        return found
+    try:
+        entry = PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(entry)
+        ok = k32.Process32FirstW(wt.HANDLE(snap), ctypes.byref(entry))
+        while ok:
+            found[entry.th32ProcessID] = (entry.th32ParentProcessID, entry.szExeFile)
+            ok = k32.Process32NextW(wt.HANDLE(snap), ctypes.byref(entry))
+    finally:
+        k32.CloseHandle(wt.HANDLE(snap))
+    return found
+
+
+def kicad_ancestor(pid):
+    """The KiCad process that started pid (pid itself if it is one), or 0. The schematic
+    button runs in a Python that KiCad started, sometimes through a venv launcher."""
+    procs, seen = processes(), set()
+    while pid and pid in procs and pid not in seen:
+        seen.add(pid)
+        parent, exe = procs[pid]
+        if exe.lower() in KICAD_EXES:
+            return pid
+        pid = parent
+    return 0
+
+
+def process_running(pid):
+    k32 = ctypes.windll.kernel32
+    k32.OpenProcess.restype = wt.HANDLE
+    handle = k32.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+    if not handle:
+        return k32.GetLastError() == 5  # access denied: it exists
+    try:
+        return k32.WaitForSingleObject(wt.HANDLE(handle), 0) == 0x102  # WAIT_TIMEOUT
+    finally:
+        k32.CloseHandle(wt.HANDLE(handle))
+
+
+def pipe_names():
+    """Names of the named pipes; KiCad's API pipes are named after their socket path."""
+    try:
+        return {name.lower() for name in os.listdir("\\\\.\\pipe\\")}
+    except OSError:
+        return set()
+
+
+def pipe_server(name):
+    """Process id serving the named pipe, or 0."""
+    k32 = ctypes.windll.kernel32
+    k32.CreateFileW.restype = wt.HANDLE
+    k32.CreateFileW.argtypes = [wt.LPCWSTR, wt.DWORD, wt.DWORD, ctypes.c_void_p, wt.DWORD,
+                                wt.DWORD, wt.HANDLE]
+    path = "\\\\.\\pipe\\" + name
+    for _ in range(3):
+        handle = k32.CreateFileW(path, 0xC0000000, 0, None, 3, 0, None)  # read/write, existing
+        if handle and handle != wt.HANDLE(-1).value:
+            pid = wt.ULONG()
+            try:
+                ok = k32.GetNamedPipeServerProcessId(wt.HANDLE(handle), ctypes.byref(pid))
+            finally:
+                k32.CloseHandle(wt.HANDLE(handle))
+            return pid.value if ok else 0
+        if k32.GetLastError() != 231:  # ERROR_PIPE_BUSY: wait for a free instance
+            return 0
+        k32.WaitNamedPipeW(path, 300)
+    return 0
 
 
 def is_dirty(hwnd):
