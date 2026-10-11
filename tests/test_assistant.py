@@ -330,6 +330,22 @@ class ChatHistoryTests(unittest.TestCase):
         second.open_chat(self.project + "-other")
         self.assertEqual((second.session_id, second.events, second.emitted), (None, [], []))
 
+    def test_requirements_skill_questions_become_buttons(self):
+        # The intake rounds of powerlab-board-requirements must parse as answer buttons:
+        # 2-4 options per question, the lab default first and recommended.
+        from powerlab_assistant.panel import split_choices
+        with open(os.path.join(ROOT, "skills", "powerlab-board-requirements", "SKILL.md"),
+                  encoding="utf-8") as f:
+            skill = f.read()
+        import re
+        blocks = re.findall(r"```\n(<choices>\n.*?</choices>)\n```", skill, re.S)
+        self.assertGreaterEqual(len(blocks), 3)
+        questions = [q for block in blocks for q in split_choices(block)[1]]
+        self.assertGreaterEqual(len(questions), 6)
+        for q in questions:
+            self.assertTrue(2 <= len(q["options"]) <= 4, q)
+            self.assertTrue(q["options"][0].endswith("(Recommended)"), q)
+
     def test_echoed_kicad_state_is_not_shown(self):
         panel = self.fake_panel()
         state = "<kicad_state>\nOpen board: C:/p/b.kicad_pcb\nSelected footprints: U1\n</kicad_state>"
@@ -696,6 +712,8 @@ class PanelDefaultsTests(unittest.TestCase):
         self.assertIn("Never ask the user to close", c["PANEL_NOTE"])  # issue #10
         self.assertIn("the chat is kept", c["PANEL_NOTE"])
         self.assertIn("powerlab-visual-review", c["PANEL_NOTE"])  # look at the board while working
+        self.assertIn("powerlab-board-requirements", c["PANEL_NOTE"])  # ask before a new board
+        self.assertIn("design-requirements.md", c["PANEL_NOTE"])
         self.assertIn("<choices>", c["PANEL_NOTE"])  # questions come back as answer buttons
         # Issue #27: file-only tools (get_design_rules) say "No board is loaded" with KiCad open
         self.assertIn('says "No board is loaded"', c["PANEL_NOTE"])
