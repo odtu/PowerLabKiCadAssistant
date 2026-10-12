@@ -352,6 +352,9 @@ class ChatHistoryTests(unittest.TestCase):
         for q in questions:
             self.assertTrue(2 <= len(q["options"]) <= 4, q)
             self.assertTrue(q["options"][0].endswith("(Recommended)"), q)
+            for option in q["options"]:  # the panel adds its own Other… with a text box
+                self.assertFalse(option.lower().startswith("other"), q)
+                self.assertNotIn("type it", option, q)
 
     def test_echoed_kicad_state_is_not_shown(self):
         panel = self.fake_panel()
@@ -780,6 +783,7 @@ class PanelDefaultsTests(unittest.TestCase):
         self.assertIn("powerlab-board-requirements", c["PANEL_NOTE"])  # ask before a new board
         self.assertIn("design-requirements.md", c["PANEL_NOTE"])
         self.assertIn("<choices>", c["PANEL_NOTE"])  # questions come back as answer buttons
+        self.assertIn("never add an 'Other'", c["PANEL_NOTE"])  # the card has its own Other…
         # Issue #27: file-only tools (get_design_rules) say "No board is loaded" with KiCad open
         self.assertIn('says "No board is loaded"', c["PANEL_NOTE"])
         self.assertIn("call open_board with the 'Board file' path", c["PANEL_NOTE"])
