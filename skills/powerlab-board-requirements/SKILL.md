@@ -12,7 +12,7 @@ A board designed without its requirements gets redesigned: the outline doesn't f
 - Read what the user already said or attached, and the schematic if one exists (parts, power nets, voltages in net names). Never ask again for something you were already told.
 
 ## 1. Ask in short rounds
-Go round by round and wait for each answer. Ask only the rounds that apply; a small logic board needs fewer questions than a 400 V inverter. Put the questions with clear answers in a `<choices>` block (2-4 options, the lab default first and marked "(Recommended)"). Ask the open questions in plain text, in a round of their own, so the answer buttons never hide them.
+Go round by round and wait for each answer. Ask only the rounds that apply; a small logic board needs fewer questions than a 400 V inverter. Put the questions with clear answers in a `<choices>` block (2-4 options, the lab default first and marked "(Recommended)"). The panel adds an **Other…** button with a text box to every question, so the user can always write their own answer or a value (a size, a price); never add "Other" or "I'll type it" options yourself. Ask the open questions in plain text, in a round of their own, so the answer buttons never hide them.
 
 Tell the user once, at the start, that they can:
 - **attach anything they have** with 📎 or by pasting: a hand sketch (a phone photo is fine), an enclosure drawing, a block diagram, a reference design, datasheets, a photo of the space the board goes into;
@@ -29,8 +29,8 @@ Tell the user once, at the start, that they can:
 <choices>
 Board size?
 - As small as practical (Recommended)
-- Must fit an enclosure (I'll attach or type it)
-- Fixed size (I'll type it)
+- Must fit an enclosure
+- Fixed size
 Layers?
 - 2 layers (Recommended)
 - 4 layers
@@ -39,15 +39,14 @@ Working temperature (ambient around the board)?
 - Lab / indoor, 0 to 40 °C (Recommended)
 - Industrial, -40 to 85 °C
 - Hot or extended, up to 105-125 °C
-- Other (I'll type it)
 Cost and quantity?
 - Prototype, a few boards at standard price (Recommended)
 - Small batch, 10-100, keep the cost down
-- I have a target price (I'll type it)
+- I have a target price
 </choices>
 ```
 
-**Round 3: mechanics and layout (choices, then a typed follow-up for any "I'll type it" answer).**
+**Round 3: mechanics and layout (choices; if an answer needs details, like the enclosure drawing, the size or the price, and the user didn't write them in Other…, ask for them next).**
 - Mounting: 4× M3 at the corners (Recommended) / match the enclosure / none. Plated + GND or NPTH (§3.1 asks).
 - Parts on: top only (Recommended) / both sides.
 - Height limits, keep-outs, heatsink or fan, board thickness (1.6 mm is standard).
@@ -59,7 +58,7 @@ Cost and quantity?
 <choices>
 Any special environment or standard?
 - No, normal indoor use (Recommended)
-- Yes (I'll describe it)
+- Yes, there is one
 </choices>
 ```
 If yes, ask only what applies, in plain text or choices:
