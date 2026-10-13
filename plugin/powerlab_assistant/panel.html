@@ -170,6 +170,12 @@ header {
 .choices .foot { display: flex; align-items: center; gap: 8px; margin-top: 9px; font-size: 11px; color: var(--muted); }
 .choices .foot .btn { margin-left: auto; padding: 2px 10px; font-size: 12px; }
 .choices.done .foot { display: none; }
+.choices .other-in {
+  display: none; width: 100%; margin-top: 6px; padding: 5px 9px; font: inherit; font-size: 12.5px;
+  border: 1px solid var(--accent); border-radius: 8px; background: var(--bg); color: var(--text); outline: none;
+}
+.choices .other-in.open { display: block; }
+.choices.done .other-in { border-color: var(--border); opacity: .7; }
 /* notes */
 .note { font-size: 12px; padding: 8px 10px; border-radius: 8px; margin: 0 0 12px; display: flex; gap: 8px; align-items: flex-start; }
 .note.error { background: color-mix(in srgb, var(--err) 12%, transparent); color: var(--err); }
@@ -586,21 +592,27 @@ const app = {
   }
 };
 
-// Claude's <choices>: one click answers a single question; several questions are
-// answered together with "Send answers". Typing a message instead answers too.
+// Claude's <choices>: every question gets Claude's options plus "Other…", which opens a
+// text box in the card for the user's own answer. One click on an option answers a single
+// question; several questions, or a written answer, go together with "Send answers".
+// Typing a message in the chat box instead answers too.
 const RECOMMENDED = /\s*\(recommended\)\s*$/i;
+const OTHER = /^other\b/i;  // the card has its own Other…, so Claude's is dropped
 function closeChoices() {
   document.querySelectorAll('.choices:not(.done)').forEach(c => {
     c.classList.add('done');
-    c.querySelectorAll('button').forEach(b => { b.disabled = true; });
+    c.querySelectorAll('button, input').forEach(b => { b.disabled = true; });
   });
 }
 function choicesCard(questions) {
-  const card = div('choices'), picked = new Array(questions.length).fill(null);
+  const card = div('choices'), answers = questions.map(() => () => null);
   const single = questions.length === 1;
-  const sendBtn = single ? null : button('Send answers', 'primary', () => answer());
+  const sendBtn = button(single ? 'Send' : 'Send answers', 'primary', () => answer());
+  const ready = () => answers.every(a => a());
+  const refresh = () => { sendBtn.disabled = !ready(); };
   function answer() {
-    if (busy || picked.includes(null)) return;
+    if (busy || !ready()) return;
+    const picked = answers.map(a => a());
     const text = single ? picked[0]
       : questions.map((q, i) => `${q.question} → ${picked[i]}`).join('\n');
     post({ type: 'send', text });
@@ -609,7 +621,10 @@ function choicesCard(questions) {
   questions.forEach((q, qi) => {
     card.appendChild(div('q')).textContent = q.question;
     const opts = card.appendChild(div('opts'));
-    q.options.forEach(o => {
+    const other = document.createElement('input');
+    other.className = 'other-in'; other.placeholder = 'Your answer…';
+    const select = b => opts.querySelectorAll('.opt').forEach(x => x.classList.toggle('sel', x === b));
+    q.options.filter(o => !OTHER.test(o)).forEach(o => {
       const label = o.replace(RECOMMENDED, ''), rec = RECOMMENDED.test(o);
       const b = document.createElement('button');
       b.className = 'opt' + (rec ? ' rec' : '');
@@ -617,16 +632,31 @@ function choicesCard(questions) {
       if (rec) b.appendChild(div('tag')).textContent = ' · Recommended';
       b.onclick = () => {
         if (busy) return;
-        opts.querySelectorAll('.opt').forEach(x => x.classList.toggle('sel', x === b));
-        picked[qi] = label;
-        if (single) answer(); else sendBtn.disabled = picked.includes(null);
+        select(b); other.classList.remove('open');
+        answers[qi] = () => label;
+        if (single) answer(); else refresh();
       };
       opts.appendChild(b);
     });
+    const ob = document.createElement('button');
+    ob.className = 'opt other'; ob.textContent = 'Other…';
+    ob.onclick = () => {
+      if (busy) return;
+      select(ob); other.classList.add('open'); other.focus();
+      answers[qi] = () => other.value.trim() || null;
+      if (single) sendBtn.hidden = false;
+      refresh();
+    };
+    opts.appendChild(ob);
+    other.oninput = refresh;
+    other.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); answer(); } };
+    card.appendChild(other);
   });
   const foot = card.appendChild(div('foot'));
-  foot.appendChild(document.createElement('span')).textContent = 'Or type your own answer below.';
-  if (sendBtn) { sendBtn.disabled = true; foot.appendChild(sendBtn); }
+  foot.appendChild(document.createElement('span')).textContent = 'Other… lets you write your own answer.';
+  sendBtn.disabled = true;
+  sendBtn.hidden = single;  // a single question sends on click, or here after Other…
+  foot.appendChild(sendBtn);
   return card;
 }
 function submit() {
