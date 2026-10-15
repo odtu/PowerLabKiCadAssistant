@@ -1027,6 +1027,9 @@ class PanelDefaultsTests(unittest.TestCase):
         # Issue #27: file-only tools (get_design_rules) say "No board is loaded" with KiCad open
         self.assertIn('says "No board is loaded"', c["PANEL_NOTE"])
         self.assertIn("call open_board with the 'Board file' path", c["PANEL_NOTE"])
+        # Issue #53: the error still showed first; load the file before the first such call
+        self.assertIn("Before the first get_design_rules call in a chat, call open_board",
+                      c["PANEL_NOTE"])
 
     def test_board_views_get_the_board_path(self):
         # Issue #52: get_board_2d_view failed with "pcbPath required" when KiCad had the board
