@@ -1,6 +1,6 @@
 # PowerLab router: design plan
 
-Status: plan, nothing built yet. Phase 1 (pad-centre entry and shortcuts in `clean_up_routing`) is on hold.
+Status: milestone 0 done (results in §12). The router isn't a tool yet: its code is in the MCP patch (`python/commands/powerlab_router/`), and `tools/router_bench.py` runs it. Phase 1 (pad-centre entry and shortcuts in `clean_up_routing`) is on hold.
 
 ## 1. Why
 
@@ -184,3 +184,47 @@ Each milestone ends with tests passing, a commit to `test` and rendered views of
   - whether version 1 is 2-layer only;
   - opt-in or default after the benchmark;
   - keep it in the patch or move it to its own folder (§8).
+
+## 12. Milestone 0 results (2026-10-15)
+
+**What was built:**
+- `grid.py`: rasterising, numpy + Pillow.
+- `search.py`: A* with 45° turns, `min_run` between bends, entry lanes as starts and goals, through vias. No pcbnew.
+- `model.py`: obstacles from net-class clearances, entry lanes, the grid path snapped exactly onto the pads' axes, an exact pcbnew check, the result as tracks and vias.
+- `tools/router_bench.py`: the benchmark. `tools/render_copper.py`: copper views without pours.
+
+**Test:** TestPCB (2 layers, 30 × 55 mm, ESP32 module, USB-C, QFN USB-UART). The 33 Default-class nets were stripped, 52 connections. Power, USB and GND copper stayed. Routed in order of net length, without rip-up. Freerouting + `clean_up_routing` routed the same stripped board.
+
+| | PowerLab router, 0.1 mm grid | PowerLab router, 0.05 mm grid | Freerouting + clean-up |
+|---|---|---|---|
+| Connections routed | 42 of 52 | 43 of 52 | 51 of 52 |
+| Time | 37 s (search 32 s, grids 4 s) | 172 s | 69 s (50 s + 18 s) |
+| New DRC errors | 1 (starved thermal) | 0 | 26: 17 clearance, 3 shorts, 3 hole clearance, 1 crossing, 2 starved thermal |
+| Pad entry | every track straight into the pad centre | same | header pads entered at 45°; unlocked power tracks reshaped |
+
+On the 27 nets both finished: 394.5 mm against 365.0 mm (+8%), 18 vias against 12, 240 segments against 166.
+
+**Decisions:**
+- **Grid:** 0.1 mm. The 0.05 mm grid is 5× slower for one more connection. Exact checks cover the rest:
+  - entry lanes are checked against the real shapes;
+  - after each connection, the copper is checked exactly. On a clearance error it is routed again with 0.05 mm extra margin, then 0.1 mm. That removed all 3 clearance errors the grid's rounding had caused.
+- **Speed:** plain Python is enough for 2-layer boards. The slowest connection took 5 s (430k nodes). Failed searches need a node limit, so they give up fast.
+- **Lanes under a part:** allowed, at an extra cost. The ESP32 module's edge pads can only be left under the module. Fine-pitch pins still leave straight out only.
+- **"Outward":** measured from the footprint's body centre, not the average of its pads. A USB-C receptacle's pins sit at its back.
+
+**What failed, and the fix:**
+- **6 connections:** pins boxed in by nets routed earlier. → Rip-up (milestone 2), and route the most constrained connections first.
+- **4 connections at the USB-C and the QFN:** their lanes are squeezed by the copper that stayed, and the grid errs by about a cell there. → Rip-up, and "most constrained first".
+- **Small zigzags** where a path joins a pad's lane (2-cell minimum run). → The shortcut pass (4.7).
+- **1 starved thermal:** a new track took a GND pad's thermal spokes. → A cost near pour-net pads' spokes (milestone 3).
+
+**Tried and dropped for now:**
+- **Longer straight runs and dearer turns** (`min_run` 5, turn 1.0 mm): slower, more vias, more pins boxed in.
+- **Reserving other pins' escape lanes** (cost 2 mm per cell): one more connection, but 3.7× slower, mostly in hopeless searches. Try again with node limits and rip-up.
+
+**Added to milestone 1:**
+- **Custom rules:** read the board's `.kicad_dru`. TestPCB relaxes pad clearance to 0.15 mm at U3 and J1, and KiCad's DRC engine isn't available from Python. Start with clearance rules by footprint, net class and item type; list the rules the router doesn't understand in the report.
+- **Node limit** per search.
+- **"Most constrained first"** inside a group.
+- **Incremental grid updates** instead of rebuilding the grids for each net.
+- **KiCad 10 Python:** use `board.Delete()`, not `board.Remove()` (crashes), and `PCB_VIA.GetWidth(layer)`.

@@ -1076,6 +1076,622 @@ index 0000000..052abc5
 +        text = text[:close] + f"(net {PLACEHOLDER_NET})\n    " + text[close:]
 +    return text, dropped
 +
+diff --git a/python/commands/powerlab_router/__init__.py b/python/commands/powerlab_router/__init__.py
+new file mode 100644
+index 0000000..acab7e9
+--- /dev/null
++++ b/python/commands/powerlab_router/__init__.py
+@@ -0,0 +1,2 @@
++"""PowerLab router (PowerLab patch): routes by the lab rules, see docs/powerlab-router-plan.md
++in odtu/PowerLabKiCadAssistant. Milestone 0: grid, search and pad entry lanes."""
+diff --git a/python/commands/powerlab_router/grid.py b/python/commands/powerlab_router/grid.py
+new file mode 100644
+index 0000000..766ed64
+--- /dev/null
++++ b/python/commands/powerlab_router/grid.py
+@@ -0,0 +1,48 @@
++"""The router's grid: copper shapes rasterised per layer (numpy and Pillow, no pcbnew).
++
++A cell is blocked when a track centre line there would be too close to something. Shapes
++come in already grown by the clearance and half the track width, so the search only moves
++a point. Pillow also fills the cells under a polygon's outline, which errs on the safe side.
++"""
++
++import numpy as np
++from PIL import Image, ImageDraw
++
++
++class Grid:
++    def __init__(self, x0, y0, x1, y1, pitch):
++        self.x0, self.y0, self.pitch = x0, y0, pitch
++        self.nx = int((x1 - x0) / pitch) + 2
++        self.ny = int((y1 - y0) / pitch) + 2
++
++    def px(self, x, y):
++        return ((x - self.x0) / self.pitch, (y - self.y0) / self.pitch)
++
++    def cell(self, x, y):
++        return (int(round((x - self.x0) / self.pitch)), int(round((y - self.y0) / self.pitch)))
++
++    def at(self, i, j):
++        return (self.x0 + i * self.pitch, self.y0 + j * self.pitch)
++
++    def raster(self, polygons):
++        """polygons: [(outline, holes)] in mm -> bool array [ny, nx], True inside."""
++        im = Image.new("1", (self.nx, self.ny), 0)
++        draw = ImageDraw.Draw(im)
++        holed = []
++        for outline, holes in polygons:
++            if len(outline) < 3:
++                continue
++            if holes:
++                holed.append((outline, holes))
++                continue
++            draw.polygon([self.px(*p) for p in outline], fill=1, outline=1)
++        out = np.array(im, dtype=bool)
++        for outline, holes in holed:  # each on its own image, so a hole can't clear a neighbour
++            one = Image.new("1", (self.nx, self.ny), 0)
++            d = ImageDraw.Draw(one)
++            d.polygon([self.px(*p) for p in outline], fill=1, outline=1)
++            for hole in holes:
++                if len(hole) >= 3:
++                    d.polygon([self.px(*p) for p in hole], fill=0, outline=1)
++            out |= np.array(one, dtype=bool)
++        return out
+diff --git a/python/commands/powerlab_router/model.py b/python/commands/powerlab_router/model.py
+new file mode 100644
+index 0000000..8f042de
+--- /dev/null
++++ b/python/commands/powerlab_router/model.py
+@@ -0,0 +1,415 @@
++"""Board side of the PowerLab router (pcbnew): obstacles, pad entry lanes, results as tracks.
++
++Clearances come from the net classes: between two nets, the larger of their clearances
++and the board minimum, like KiCad. Pour nets aren't obstacles (the pour refills around
++new copper). Copper of the net being routed isn't an obstacle either.
++"""
++
++import math
++import time
++
++import numpy as np
++import pcbnew
++
++from commands.powerlab_router import search
++from commands.powerlab_router.grid import Grid
++
++MM, T = pcbnew.FromMM, pcbnew.ToMM
++EDGE = 0.5  # copper to board edge (design rules §2.6)
++HOLE = 0.25  # copper to hole (§2.6)
++VIA_TO_PAD = 0.25  # via ring to a pad edge (§3.5)
++FINE_PITCH = 0.8  # pads closer than this are fine pitch: leave straight out (§3.4)
++UNDER_BODY = 1.5  # extra cost (mm) for a lane that leaves a pad under its part
++ERR = MM(0.005)
++
++
++def _polys(sps):
++    out = []
++    for i in range(sps.OutlineCount()):
++        o = sps.Outline(i)
++        outline = [(T(o.CPoint(k).x), T(o.CPoint(k).y)) for k in range(o.PointCount())]
++        holes = []
++        for h in range(sps.HoleCount(i)):
++            hc = sps.Hole(i, h)
++            holes.append([(T(hc.CPoint(k).x), T(hc.CPoint(k).y)) for k in range(hc.PointCount())])
++        out.append((outline, holes))
++    return out
++
++
++def _grown(item, layer, by_mm):
++    sp = pcbnew.SHAPE_POLY_SET()
++    item.TransformShapeToPolygon(sp, layer, MM(by_mm), ERR, pcbnew.ERROR_OUTSIDE)
++    return sp
++
++
++class Lane:
++    """A straight way into a pad: from its centre along `direction` to the exit point."""
++
++    def __init__(self, pad, layer, direction, centre, exit_mm, cell, cost):
++        self.pad, self.layer, self.direction = pad, layer, direction
++        self.centre, self.exit, self.cell, self.cost = centre, exit_mm, cell, cost
++
++
++class RouterBoard:
++    def __init__(self, board, pitch=0.1, pour_nets=("GND",), pad_clearance=None):
++        self.board = board
++        # {footprint reference: clearance} for its pads, from custom rules (.kicad_dru)
++        self.pad_clearance = dict(pad_clearance or {})
++        self.pour_nets = set(pour_nets)
++        self.layers = list(board.GetEnabledLayers().CuStack())
++        ds = board.GetDesignSettings()
++        self.ns = ds.m_NetSettings
++        self.min_clearance = T(ds.m_MinClearance)
++        self.outline = pcbnew.SHAPE_POLY_SET()
++        board.GetBoardPolygonOutlines(self.outline, False)
++        bb = board.GetBoardEdgesBoundingBox()
++        self.grid = Grid(T(bb.GetLeft()), T(bb.GetTop()), T(bb.GetRight()), T(bb.GetBottom()), pitch)
++        self.pads = [p for fp in board.GetFootprints() for p in fp.Pads()]
++        self._others = {}
++
++    # --- rules -------------------------------------------------------------------------
++    def netclass(self, net):
++        return self.ns.GetEffectiveNetClass(net)
++
++    def clearance(self, a, b):
++        ca = T(self.netclass(a).GetClearance()) if a else self.min_clearance
++        cb = T(self.netclass(b).GetClearance()) if b else self.min_clearance
++        return max(ca, cb, self.min_clearance)
++
++    def item_clearance(self, item, net):
++        """Clearance between `item` (another net's copper) and `net`, with pad overrides."""
++        c = self.clearance(item.GetNetname(), net)
++        if item.Type() == pcbnew.PCB_PAD_T:
++            ref = item.GetParentFootprint().GetReference()
++            if ref in self.pad_clearance:
++                c = self.pad_clearance[ref]
++        return c
++
++    def widths(self, net):
++        nc = self.netclass(net)
++        return T(nc.GetTrackWidth()), T(nc.GetViaDiameter()), T(nc.GetViaDrill())
++
++    # --- obstacles ---------------------------------------------------------------------
++    def obstacles(self, net, extra=0.0):
++        """Per layer: flat bytes, 1 where this net's track centre can't go; and where a via can't.
++        `extra` (mm) keeps everything that much further away, for a retry after the exact check."""
++        w, vd, _drill = self.widths(net)
++        w, vd = w + 2 * extra, vd + 2 * extra
++        g = self.grid
++        track = {L: [] for L in self.layers}
++        vias = {L: [] for L in self.layers}
++        for p in self.pads:
++            pn = p.GetNetname()
++            npth = p.GetAttribute() == pcbnew.PAD_ATTRIB_NPTH
++            if npth or p.HasHole():
++                hole = pcbnew.SHAPE_POLY_SET()
++                if pn != net or npth:
++                    p.TransformHoleToPolygon(hole, MM(HOLE + w / 2), ERR, pcbnew.ERROR_OUTSIDE)
++                    for L in self.layers:
++                        track[L] += _polys(hole)
++            for L in self.layers:
++                if not p.IsOnLayer(L) or npth:
++                    continue
++                if pn == net:
++                    vias[L] += _polys(_grown(p, L, VIA_TO_PAD + vd / 2))
++                    continue
++                c = self.item_clearance(p, net)
++                track[L] += _polys(_grown(p, L, c + w / 2))
++                vias[L] += _polys(_grown(p, L, max(c, VIA_TO_PAD) + vd / 2))
++        for t in self.board.GetTracks():
++            tn = t.GetNetname()
++            if tn == net:
++                continue
++            c = self.clearance(tn, net)
++            for L in self.layers:
++                if t.IsOnLayer(L):
++                    track[L] += _polys(_grown(t, L, c + w / 2))
++                    vias[L] += _polys(_grown(t, L, c + vd / 2))
++        for z in self.board.Zones():
++            zn = z.GetNetname()
++            if z.GetIsRuleArea():
++                if not z.GetDoNotAllowTracks():
++                    continue
++                for L in self.layers:
++                    if z.IsOnLayer(L):
++                        sp = z.Outline().CloneDropTriangulation()
++                        sp.Inflate(MM(w / 2), pcbnew.CORNER_STRATEGY_ROUND_ALL_CORNERS, ERR)
++                        track[L] += _polys(sp)
++                        vias[L] += _polys(sp)
++                continue
++            if zn == net or zn in self.pour_nets:
++                continue
++            c = self.clearance(zn, net)
++            for L in self.layers:
++                if z.IsOnLayer(L):
++                    for by, dst in ((c + w / 2, track), (c + vd / 2, vias)):
++                        sp = z.GetFilledPolysList(L).CloneDropTriangulation()
++                        sp.Inflate(MM(by), pcbnew.CORNER_STRATEGY_ROUND_ALL_CORNERS, ERR)
++                        dst[L] += _polys(sp)
++        inside = {}
++        for by in (EDGE + w / 2, EDGE + vd / 2):
++            sp = self.outline.CloneDropTriangulation()
++            sp.Inflate(MM(-by), pcbnew.CORNER_STRATEGY_ROUND_ALL_CORNERS, ERR)
++            inside[by] = g.raster(_polys(sp))
++        blocked = []
++        via_block = ~inside[EDGE + vd / 2]
++        for L in self.layers:
++            blocked.append(g.raster(track[L]) | ~inside[EDGE + w / 2])
++            via_block |= g.raster(vias[L])
++        return [b.astype(np.uint8).tobytes() for b in blocked], (~via_block).astype(np.uint8).tobytes()
++
++    # --- pad entry lanes ---------------------------------------------------------------
++    def lanes(self, pad, blocked, net):
++        """Straight ways out of a pad along its axes, on each of its copper layers.
++        Not into the part's body; at fine pitch only straight out of the pin row."""
++        w = self.widths(net)[0]
++        g = self.grid
++        fp = pad.GetParentFootprint()
++        others = [p for p in fp.Pads() if p.m_Uuid.AsString() != pad.m_Uuid.AsString()]
++        cx, cy = T(pad.GetPosition().x), T(pad.GetPosition().y)
++        fine = any(1e-3 < math.hypot(T(p.GetPosition().x) - cx, T(p.GetPosition().y) - cy) < FINE_PITCH
++                   for p in others)
++        # the body's centre, not the pads' average: a USB-C receptacle's pins sit at its back
++        bbox = fp.GetBoundingBox(False)
++        body = (T(bbox.GetCenter().x), T(bbox.GetCenter().y))
++        out = (cx - body[0], cy - body[1])
++        out_len = math.hypot(*out)
++        theta = pad.GetOrientation().AsDegrees()
++        result = []
++        for L_idx, L in enumerate(self.layers):
++            if not pad.IsOnLayer(L):
++                continue
++            shape = _polys(_grown(pad, L, 0.0))
++            pts = [pt for outline, _h in shape for pt in outline]
++            for k in range(4):
++                a = theta + 90 * k
++                d8 = a / 45.0
++                if abs(d8 - round(d8)) > 1e-3:
++                    continue  # pad not at a multiple of 45 degrees
++                d = int(round(d8)) % 8
++                ux, uy = math.cos(math.radians(a)), math.sin(math.radians(a))
++                penalty = 0.0
++                if out_len > 0.05:
++                    dot = (ux * out[0] + uy * out[1]) / out_len
++                    if fine and dot < 0.7:
++                        continue
++                    if dot < -0.3:
++                        penalty = UNDER_BODY  # under the part: fine for a module's edge pads
++                extent = max((px - cx) * ux + (py - cy) * uy for px, py in pts)
++                length = extent + max(w, 0.5 if fine else 0.3)
++                ex, ey = cx + ux * length, cy + uy * length
++                cell = g.cell(ex, ey)
++                if not (0 <= cell[0] < g.nx and 0 <= cell[1] < g.ny):
++                    continue
++                # the lane is checked exactly (the grid is too coarse between fine-pitch pads);
++                # only its exit cell, where the search starts, must be free on the grid
++                if blocked[L_idx][cell[1] * g.nx + cell[0]]:
++                    continue
++                if self.clear(net, L, (cx, cy), (ex, ey), w):
++                    result.append(Lane(pad, L_idx, d, (cx, cy), (ex, ey), cell, length + penalty))
++        return result
++
++    # --- one connection ----------------------------------------------------------------
++    def reserve(self, pads, net):
++        """Escape lanes of other nets' unrouted pads, per layer (flat bytes): routing across
++        them costs extra, so pins aren't boxed in before their turn (§3.4 escape room)."""
++        w = self.widths(net)[0]
++        g = self.grid
++        lines = {L: [] for L in self.layers}
++        for pad in pads:
++            fp = pad.GetParentFootprint()
++            cx, cy = T(pad.GetPosition().x), T(pad.GetPosition().y)
++            bbox = fp.GetBoundingBox(False)
++            out = (cx - T(bbox.GetCenter().x), cy - T(bbox.GetCenter().y))
++            out_len = math.hypot(*out)
++            theta = pad.GetOrientation().AsDegrees()
++            c = self.item_clearance(pad, net)
++            for L in self.layers:
++                if not pad.IsOnLayer(L):
++                    continue
++                pts = [pt for o, _h in _polys(_grown(pad, L, 0.0)) for pt in o]
++                for k in range(4):
++                    a = math.radians(theta + 90 * k)
++                    ux, uy = math.cos(a), math.sin(a)
++                    if out_len > 0.05 and (ux * out[0] + uy * out[1]) / out_len < -0.3:
++                        continue
++                    ext = max((px - cx) * ux + (py - cy) * uy for px, py in pts)
++                    half = w / 2 + c
++                    e = ext + 1.0
++                    nx_, ny_ = -uy * half, ux * half
++                    lines[L].append(([(cx + nx_, cy + ny_), (cx + ux * e + nx_, cy + uy * e + ny_),
++                                      (cx + ux * e - nx_, cy + uy * e - ny_), (cx - nx_, cy - ny_)], []))
++        return [g.raster(lines[L]).astype(np.uint8).tobytes() for L in self.layers]
++
++    def route(self, net, pad_a, pad_b, blocked, via_ok, costs, margins=(3.0, 10.0, None), reserved=None):
++        g = self.grid
++        la, lb = self.lanes(pad_a, blocked, net), self.lanes(pad_b, blocked, net)
++        info = {"lanes": (len(la), len(lb)), "nodes": 0, "seconds": 0.0}
++        if not la or not lb:
++            info["fail"] = "no free entry lane"
++            return None, info
++        starts = [(l.cell[0], l.cell[1], l.layer, l.direction, l.cost) for l in la]
++        goals = {(l.cell[0], l.cell[1], l.layer): ((l.direction + 4) % 8, l.cost) for l in lb}
++        cells = [l.cell for l in la + lb]
++        t0 = time.time()
++        for margin in margins:
++            if margin is None:
++                window = (0, 0, g.nx - 1, g.ny - 1)
++            else:
++                m = int(margin / g.pitch)
++                window = (max(0, min(c[0] for c in cells) - m), max(0, min(c[1] for c in cells) - m),
++                          min(g.nx - 1, max(c[0] for c in cells) + m), min(g.ny - 1, max(c[1] for c in cells) + m))
++            path, stats = search.search(blocked, via_ok, g.nx, g.ny, g.pitch, starts, goals, window, costs,
++                                        reserved=reserved)
++            info["nodes"] += stats["nodes"]
++            if path:
++                info["window_mm"] = margin
++                info["cost_mm"] = stats["cost_mm"]
++                break
++        info["seconds"] = round(time.time() - t0, 3)
++        if not path:
++            info["fail"] = "no path"
++            return None, info
++        first = path[0]
++        start = next(l for l in la if (l.cell, l.layer, l.direction) == ((first[0], first[1]), first[2], first[3]))
++        last = path[-1]
++        goal = next(l for l in lb if (l.cell, l.layer) == ((last[0], last[1]), last[2]))
++        return self._geometry(path, start, goal), info
++
++    def _geometry(self, path, start, goal):
++        """Grid path -> [(layer index, [points mm])], [via points], ending at both pad centres.
++        The first and last straight runs are moved onto the pads' axes, so the entry is exact
++        even when the pad centre isn't on the grid."""
++        g = self.grid
++        pieces, vias = [], []
++        cur_layer, pts = path[0][2], [g.at(path[0][0], path[0][1])]
++        for a, b in zip(path, path[1:]):
++            if b[2] != a[2]:
++                pieces.append((cur_layer, pts))
++                vias.append(g.at(a[0], a[1]))
++                cur_layer, pts = b[2], [g.at(b[0], b[1])]
++            else:
++                pts.append(g.at(b[0], b[1]))
++        pieces.append((cur_layer, pts))
++        pieces = [(L, _corners(p)) for L, p in pieces]
++        # start
++        L0, p0 = pieces[0]
++        if len(p0) == 1 and vias:
++            vias[0] = start.exit
++            p0 = [start.centre, start.exit]
++        else:
++            p0 = [start.centre] + _snap_end(p0, start.exit)
++        pieces[0] = (L0, p0)
++        # goal
++        Ln, pn = pieces[-1]
++        if len(pn) == 1 and vias:
++            vias[-1] = goal.exit
++            pn = [goal.exit, goal.centre]
++        else:
++            pn = _snap_end(pn[::-1], goal.exit)[::-1] + [goal.centre]
++        pieces[-1] = (Ln, pn)
++        return pieces, vias
++
++    def add(self, net, pieces, vias):
++        """Put the copper on the board; returns the new items."""
++        w, vd, drill = self.widths(net)
++        n = self.board.FindNet(net)
++        items = []
++        for L_idx, pts in pieces:
++            for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
++                if math.hypot(x1 - x0, y1 - y0) < 1e-4:
++                    continue
++                t = pcbnew.PCB_TRACK(self.board)
++                t.SetStart(pcbnew.VECTOR2I(MM(x0), MM(y0)))
++                t.SetEnd(pcbnew.VECTOR2I(MM(x1), MM(y1)))
++                t.SetWidth(MM(w))
++                t.SetLayer(self.layers[L_idx])
++                t.SetNet(n)
++                self.board.Add(t)
++                items.append(t)
++        for x, y in vias:
++            v = pcbnew.PCB_VIA(self.board)
++            v.SetPosition(pcbnew.VECTOR2I(MM(x), MM(y)))
++            v.SetWidth(MM(vd))
++            v.SetDrill(MM(drill))
++            v.SetNet(n)
++            self.board.Add(v)
++            items.append(v)
++        self._others = {}
++        return items
++
++    # --- exact checks ------------------------------------------------------------------
++    def _other_items(self, net):
++        """Other nets' copper with its bounding box grown by the clearance, cached until add()."""
++        if net not in self._others:
++            items = [p for p in self.pads if p.GetNetname() != net]
++            items += [t for t in self.board.GetTracks() if t.GetNetname() != net]
++            out = []
++            for o in items:
++                c = self.item_clearance(o, net)
++                bb = o.GetBoundingBox()
++                bb.Inflate(MM(c))
++                out.append((o, c, bb))
++            self._others[net] = out
++        return self._others[net]
++
++    def _hits(self, net, item, layer):
++        mine = _grown(item, layer, 0.0)
++        box = mine.BBox()
++        hits = []
++        for o, c, bb in self._other_items(net):
++            if o.IsOnLayer(layer) and box.Intersects(bb) and mine.Collide(_grown(o, layer, c - 0.001)):
++                hits.append(o)
++        return hits
++
++    def clear(self, net, layer, a, b, width):
++        """Whether a track from a to b keeps its clearance to every other net (exact)."""
++        t = pcbnew.PCB_TRACK(self.board)
++        t.SetStart(pcbnew.VECTOR2I(MM(a[0]), MM(a[1])))
++        t.SetEnd(pcbnew.VECTOR2I(MM(b[0]), MM(b[1])))
++        t.SetWidth(MM(width))
++        t.SetLayer(layer)
++        return not self._hits(net, t, layer)
++
++    def violations(self, net, items):
++        """Exact check of new copper against other nets' copper: [(item, other)] too close."""
++        bad = []
++        for it in items:
++            for L in self.layers:
++                if it.IsOnLayer(L):
++                    bad += [(it, o) for o in self._hits(net, it, L)]
++        return bad
++
++    def remove(self, items):
++        for it in items:
++            self.board.Delete(it)
++        self._others = {}
++
++
++def _corners(pts):
++    if len(pts) < 3:
++        return pts
++    out = [pts[0]]
++    for a, b, c in zip(pts, pts[1:], pts[2:]):
++        d1 = (round(b[0] - a[0], 6), round(b[1] - a[1], 6))
++        d2 = (round(c[0] - b[0], 6), round(c[1] - b[1], 6))
++        if d1[0] * d2[1] - d1[1] * d2[0] != 0 or d1[0] * d2[0] + d1[1] * d2[1] < 0:
++            out.append(b)
++    out.append(pts[-1])
++    return out
++
++
++def _snap_end(pts, exact):
++    """Replace pts[0] (a grid cell) by `exact` and move the first corner so the first run
++    keeps its direction and the second run still reaches its far end."""
++    if len(pts) < 3:
++        return [exact] + pts[1:]
++    (x0, y0), (x1, y1), (x2, y2) = pts[0], pts[1], pts[2]
++    v0, v1 = (x1 - x0, y1 - y0), (x2 - x1, y2 - y1)
++    det = v0[0] * (-v1[1]) - v0[1] * (-v1[0])
++    if abs(det) < 1e-12:
++        return [exact] + pts[1:]
++    rx, ry = x1 - exact[0], y1 - exact[1]
++    t = (rx * (-v1[1]) - ry * (-v1[0])) / det
++    corner = (exact[0] + t * v0[0], exact[1] + t * v0[1])
++    return [exact, corner] + pts[2:]
+diff --git a/python/commands/powerlab_router/search.py b/python/commands/powerlab_router/search.py
+new file mode 100644
+index 0000000..ed9f42f
+--- /dev/null
++++ b/python/commands/powerlab_router/search.py
+@@ -0,0 +1,127 @@
++"""Octilinear A* for the PowerLab router. No pcbnew, so it can be tested and timed anywhere.
++
++A state is (i, j, layer, direction, run): the cell, the direction it was entered in (0-7,
++45 degrees apart; 8 = free, right after a via) and how many cells it has gone straight.
++- A step turns by 45 degrees at most, so a 90 degree corner can't be made (design rules §3.4).
++- A turn needs `min_run` straight cells before it, so two 45 degree bends never sit close
++  enough to read as one sharp corner.
++- Starts and goals are pad entry lanes: the track leaves a pad straight along its axis and
++  arrives at the other pad's lane heading straight into it (§3.4, "enter a pad straight").
++"""
++
++import heapq
++import math
++
++DIRS = ((1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1))
++FREE = 8
++SQ2 = math.sqrt(2.0)
++
++
++class Costs:
++    """Costs in mm of track."""
++
++    def __init__(self, turn=0.4, via=2.0, layer_factor=None, min_run=2, reserved=2.0):
++        self.turn = turn
++        self.reserved = reserved  # per cell, on another pin's escape lane (§3.4 escape room)
++        self.via = via
++        self.layer_factor = layer_factor or {}
++        self.min_run = min_run
++
++
++def search(blocked, via_ok, nx, ny, pitch, starts, goals, window, costs, max_nodes=3_000_000, reserved=None):
++    """Cheapest path from any start lane to any goal lane.
++
++    blocked: per layer, a flat sequence of nx*ny (truthy = no track centre here).
++    via_ok: flat sequence of nx*ny (truthy = a through via fits here).
++    starts: [(i, j, layer, direction, cost)] lane exits;
++    goals: {(i, j, layer): (direction to arrive in, cost of that lane)}.
++    window: (i0, j0, i1, j1), inclusive.
++    reserved: per layer, flat nx*ny (truthy = another unrouted pin's escape lane), or None.
++    Returns (states from start to goal, stats); states is None when there's no path.
++    """
++    i0, j0, i1, j1 = window
++    layers = len(blocked)
++    factor = [costs.layer_factor.get(L, 1.0) for L in range(layers)]
++    step = [pitch, pitch * SQ2] * 4
++    goal_cells = [(i, j) for (i, j, _L) in goals]
++
++    def h(i, j):
++        best = 1e18
++        for gi, gj in goal_cells:
++            dx, dy = abs(i - gi), abs(j - gj)
++            v = (max(dx, dy) + (SQ2 - 1.0) * min(dx, dy)) * pitch
++            if v < best:
++                best = v
++        return best
++
++    openq = []
++    best = {}
++    parent = {}
++    for i, j, L, d, c in starts:
++        s = (i, j, L, d, costs.min_run)
++        if c < best.get(s, 1e18):
++            best[s] = c
++            parent[s] = None
++            heapq.heappush(openq, (c + h(i, j), c, s))
++    done = set()
++    nodes = 0
++    found = None
++    min_run, turn, via, rcost = costs.min_run, costs.turn, costs.via, costs.reserved
++    while openq:
++        _f, c, s = heapq.heappop(openq)
++        if s in done:
++            continue
++        done.add(s)
++        nodes += 1
++        if nodes > max_nodes:
++            break
++        i, j, L, d, r = s
++        goal = goals.get((i, j, L))
++        if goal is not None and goal[0] == d:
++            found = s
++            break
++        if d == FREE:
++            options = [(k, 1) for k in range(8)]
++        elif r >= min_run:
++            options = [(d, min(r + 1, min_run)), ((d + 1) % 8, 1), ((d - 1) % 8, 1)]
++        else:
++            options = [(d, r + 1)]
++        row = blocked[L]
++        res = reserved[L] if reserved is not None else None
++        for k, nr in options:
++            dx, dy = DIRS[k]
++            ni, nj = i + dx, j + dy
++            if ni < i0 or ni > i1 or nj < j0 or nj > j1 or row[nj * nx + ni]:
++                continue
++            nc = c + step[k] * factor[L] + (turn if (d != FREE and k != d) else 0.0)
++            if res is not None and res[nj * nx + ni]:
++                nc += rcost
++            goal = goals.get((ni, nj, L))
++            if goal is not None and goal[0] == k:
++                nc += goal[1]  # the goal lane's own cost
++            ns = (ni, nj, L, k, nr)
++            if nc < best.get(ns, 1e18):
++                best[ns] = nc
++                parent[ns] = s
++                heapq.heappush(openq, (nc + h(ni, nj), nc, ns))
++        if layers > 1 and via_ok[j * nx + i] and d != FREE:
++            for L2 in range(layers):
++                if L2 == L or blocked[L2][j * nx + i]:
++                    continue
++                ns = (i, j, L2, FREE, 0)
++                nc = c + via
++                if nc < best.get(ns, 1e18):
++                    best[ns] = nc
++                    parent[ns] = s
++                    heapq.heappush(openq, (nc + h(i, j), nc, ns))
++    stats = {"nodes": nodes}
++    if found is None:
++        return None, stats
++    path = []
++    s = found
++    while s is not None:
++        path.append(s)
++        s = parent[s]
++    path.reverse()
++    stats["cost_mm"] = round(best[found], 3)
++    return path, stats
 diff --git a/python/commands/route_cleanup.py b/python/commands/route_cleanup.py
 new file mode 100644
 index 0000000..076167b

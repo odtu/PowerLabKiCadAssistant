@@ -1018,6 +1018,57 @@ class McpPatchTests(unittest.TestCase):
     def test_session_vias_keep_their_annular_ring(self):
         self.assertIn("via_drills = _repair_via_drills(self.board)", self.patch())
 
+    def test_powerlab_router_search(self):
+        """docs/powerlab-router-plan.md milestone 0: 45 degree turns only, spaced apart,
+        arrival straight along the goal pad's lane, and a via when one layer is walled off."""
+        module = types.ModuleType("search")
+        exec(self.new_file("python/commands/powerlab_router/search.py"), module.__dict__)
+        nx = ny = 40
+
+        def grid(wall=None):
+            cells = bytearray(nx * ny)
+            for i, j in wall or ():
+                cells[j * nx + i] = 1
+            return cells
+
+        def check_turns(path, min_run):
+            run = min_run
+            for a, b in zip(path, path[1:]):
+                if a[2] != b[2] or a[3] == module.FREE or b[3] == module.FREE:
+                    run = min_run
+                    continue
+                turn = (b[3] - a[3]) % 8
+                self.assertIn(turn, (0, 1, 7))  # never more than 45 degrees in one step
+                if turn:
+                    self.assertGreaterEqual(run, min_run)  # two bends never sit together
+                    run = 1
+                else:
+                    run += 1
+
+        costs = module.Costs(turn=0.4, via=2.0, min_run=2)
+        # start heading east at (2, 2); the goal pad is entered heading south at (30, 30)
+        wall = [(10, j) for j in range(0, 30)]  # a wall forces the path around
+        path, stats = module.search([grid(wall)], grid(), nx, ny, 0.1, [(2, 2, 0, 0, 0.0)],
+                                    {(30, 30, 0): (2, 0.0)}, (0, 0, nx - 1, ny - 1), costs)
+        self.assertIsNotNone(path)
+        self.assertEqual(path[-1][:4], (30, 30, 0, 2))
+        check_turns(path, 2)
+        self.assertTrue(all(i != 10 or j >= 30 for i, j, *_ in path))
+
+        # layer 0 walled off completely: the path takes a via to layer 1 and arrives there
+        wall = [(20, j) for j in range(ny)]
+        vias_ok = bytes([1]) * (nx * ny)
+        path, _ = module.search([grid(wall), grid()], vias_ok, nx, ny, 0.1, [(2, 20, 0, 0, 0.0)],
+                                {(35, 20, 1): (0, 0.0)}, (0, 0, nx - 1, ny - 1), costs)
+        self.assertIsNotNone(path)
+        self.assertEqual({s[2] for s in path}, {0, 1})
+        check_turns(path, 2)
+
+        # no via allowed: no path
+        path, _ = module.search([grid(wall), grid()], bytes(nx * ny), nx, ny, 0.1, [(2, 20, 0, 0, 0.0)],
+                                {(35, 20, 1): (0, 0.0)}, (0, 0, nx - 1, ny - 1), costs)
+        self.assertIsNone(path)
+
     def test_autoroute_can_be_undone(self):
         """File > Revert loads the routed file, so autoroute keeps the board from before it."""
         patch = self.patch()
