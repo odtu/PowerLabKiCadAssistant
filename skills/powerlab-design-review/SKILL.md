@@ -52,7 +52,7 @@ Never write the final review while DRC shows errors you could fix. Never stop a 
 
 ## The final review
 1. **Final views** in `design-review\images\` in the project folder (the panel puts the review there; it isn't a temp folder). Same views as a round, after the last fixes and a zone refill:
-   - 2D: `get_board_2d_view` with `responseMode: "file"`, `outputPath: <project>\design-review\images\NN-name.png`.
+   - 2D: `get_board_2d_view` with `pcbPath: <board>.kicad_pcb` (the panel's "Board file" path), `responseMode: "file"`, `outputPath: <project>\design-review\images\NN-name.png`.
    - 3D: `kicad-cli pcb render --side top --output design-review\images\NN-3d-top.png <board>.kicad_pcb`.
    - Names: `01-placement.png`, `02-top.png`, `03-bottom.png` (inner layers next), then the 3D views.
 2. **Write `design-review\design-review.md`** in the project folder with the Write tool, in the format below. Replace an older one.

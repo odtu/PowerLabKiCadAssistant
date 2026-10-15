@@ -21,7 +21,7 @@ A rendered view shows all of these at a glance. On the lab's ESC3Phase board, re
 ## How
 1. **Save first.** The views are rendered from the saved `.kicad_pcb`, not KiCad's live copy. After live edits call `save_board` (or ask for Ctrl+S).
 2. **Render** into the views folder named in the panel instructions. Use numbered names so the series stays in order (`01-placement.png`, `02-route-top.png`, …).
-   - **2D:** `get_board_2d_view` with `responseMode: "file"`, `outputPath: <views>/NN-name.png` and a `layers` list. The default is layer colours on a dark background; keep it.
+   - **2D:** `get_board_2d_view` with `pcbPath: <board>.kicad_pcb` (the panel's "Board file" path), `responseMode: "file"`, `outputPath: <views>/NN-name.png` and a `layers` list. The default is layer colours on a dark background; keep it.
      - Placement: `["F.Cu", "F.SilkS", "F.Fab", "F.CrtYd", "Edge.Cuts"]` (and the `B.` layers if parts are on the bottom).
      - Top routing: `["F.Cu", "Edge.Cuts"]`.
      - Bottom routing: `["B.Cu", "Edge.Cuts"]`. Copper pours hide tracks in combined views, so check layers one at a time.
