@@ -130,6 +130,10 @@ header {
 }
 .assistant pre code { background: none; padding: 0; }
 .assistant a { color: var(--accent); }
+/* a place on the board: click to select it and zoom to it in KiCad */
+a.loc { color: var(--accent); cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
+a.loc::after { content: ' \2316'; font-size: .9em; text-decoration: none; display: inline-block; margin-left: 1px; }
+a.loc:hover { text-decoration-style: solid; }
 .assistant table { border-collapse: collapse; margin: 0 0 8px; font-size: 12px; display: block; overflow-x: auto; }
 .assistant th, .assistant td { border: 1px solid var(--border); padding: 3px 7px; text-align: left; }
 .assistant th { background: var(--surface-2); }
@@ -192,6 +196,29 @@ header {
 }
 .shot img { display: block; width: 100%; max-height: 320px; object-fit: contain; cursor: zoom-in; background: var(--surface-2); }
 .shot .cap { font-size: 11px; color: var(--muted); padding: 4px 9px; }
+/* the final design review (powerlab-design-review), with its PDF */
+.review {
+  margin: 0 0 12px; border: 1px solid var(--accent); border-radius: 10px; background: var(--surface);
+  animation: rise .18s ease-out; overflow: hidden;
+}
+.review .head { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+.review .head .t { font-weight: 600; font-size: 13px; }
+.review .head .v { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.review .head .btn { margin-left: auto; flex: none; padding: 2px 10px; font-size: 12px; }
+.review .err { font-size: 11.5px; color: var(--warn); padding: 6px 10px 0; }
+.review details { padding: 4px 10px 8px; }
+.review summary { cursor: pointer; font-size: 12px; color: var(--muted); user-select: none; padding: 2px 0; }
+.review .body { margin-top: 6px; }
+.review .body h1 { display: none; }  /* the title is in the head */
+.review .body h3.sev { display: inline-block; padding: 1px 8px; border-radius: 8px; color: #fff; font-size: 12px; }
+.review .body .sev-critical { background: #b42318; } .review .body .sev-high { background: #c4570c; }
+.review .body .sev-medium { background: #a37b00; } .review .body .sev-low { background: #3e6a9c; }
+.review .body .sev-cosmetic { background: #6b7480; }
+.review .body td:nth-child(-n+2) { white-space: nowrap; }  /* # and rule ID */
+.review .body figure { margin: 6px 0 10px; }
+.review .body img { display: block; width: 100%; max-height: 320px; object-fit: contain; cursor: zoom-in; border-radius: 6px; background: var(--surface-2); }
+.review .body figcaption { font-size: 11px; color: var(--muted); padding-top: 3px; }
+.review .body .missing { color: var(--err); font-size: 12px; }
 .typing { padding: 4px 2px 12px; }
 .typing .row { display: flex; align-items: center; gap: 4px; }
 .typing span { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--muted); animation: blink 1.2s infinite; }
@@ -363,6 +390,7 @@ function inline(s) {
     .replace(/`([^`]+)`/g, '<code>$1</code>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/(^|[^*])\*([^*\s][^*]*)\*/g, '$1<em>$2</em>')
+    .replace(/\[([^\]]+)\]\(kicad:([^)\s]+)\)/g, '<a class="loc" data-loc="$2" title="Show in KiCad">$1</a>')
     .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2">$1</a>');
 }
 
@@ -545,6 +573,35 @@ const app = {
         fig.append(img, cap);
         add(fig); toolGroup = null; break;
       }
+      case 'review': {
+        // The panel builds the body from the review file and escapes all of its text.
+        const card = div('review');
+        const head = div('head');
+        const words = div('');
+        words.append(div('t', esc(e.title || 'Design review')));
+        if (e.verdict) words.append(div('v', esc(e.verdict)));
+        head.append(words);
+        const file = e.pdf || e.html;
+        if (file) {
+          const b = document.createElement('button');
+          b.className = 'btn primary'; b.textContent = e.pdf ? 'Open PDF' : 'Open in browser';
+          b.title = file; b.onclick = () => post({ type: 'open', path: file });
+          head.append(b);
+        }
+        card.append(head);
+        if (e.error) card.append(div('err', esc(e.error)));
+        const d = document.createElement('details');
+        d.open = true;
+        const s = document.createElement('summary'); s.textContent = 'Full review';
+        const body = div('body assistant', e.body || '');
+        body.querySelectorAll('img[data-path]').forEach(img => {
+          img.onclick = () => post({ type: 'open', path: img.dataset.path });
+        });
+        d.append(s, body); card.append(d);
+        add(card); toolGroup = null;
+        log.scrollTop = card.offsetTop - log.offsetTop - 8;  // a long review is read from its top
+        break;
+      }
       case 'busy':
         setBusy(e.value);
         if (!e.value) {
@@ -672,6 +729,11 @@ function autosize() { input.style.height = 'auto'; input.style.height = Math.min
 input.addEventListener('input', () => { autosize(); updateSend(); });
 input.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); } });
 send.addEventListener('click', submit);
+// A place on the board, in a review or a reply: select it and zoom to it in KiCad.
+log.addEventListener('click', e => {
+  const loc = e.target.closest && e.target.closest('a.loc');
+  if (loc) { e.preventDefault(); post({ type: 'locate', target: loc.dataset.loc }); }
+});
 $('attach').addEventListener('click', () => post({ type: 'attach' }));
 input.addEventListener('paste', e => {
   const files = [...((e.clipboardData && e.clipboardData.files) || [])];

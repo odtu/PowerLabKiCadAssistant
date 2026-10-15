@@ -258,7 +258,8 @@ class ChatHistoryTests(unittest.TestCase):
             from powerlab_assistant.panel import ClaudePanel
         except ImportError as exc:
             self.skipTest(f"panel needs wx.html2: {exc}")
-        names = ("say", "save_chat", "open_chat", "handle", "finished", "show_image", "set_activity")
+        names = ("say", "save_chat", "open_chat", "handle", "finished", "show_image", "set_activity",
+                 "show_review")
 
         class Fake:
             pass
@@ -270,6 +271,7 @@ class ChatHistoryTests(unittest.TestCase):
         panel.session_id, panel.chat_cwd, panel.events = None, None, []
         panel.retry, panel.stale_session, panel.proc = None, False, None
         panel.got_result, panel.watched, panel.image_reads = False, {}, {}
+        panel.review_writes, panel.review_md = {}, None
         panel.last_text, panel.limits, panel.started, panel.effort = "", [], 0.0, "high"
         panel.activity, panel.activity_sent = ("waiting", ""), time.time()
         panel.thinking_tokens = 0
@@ -455,6 +457,237 @@ class ChatHistoryTests(unittest.TestCase):
         panel.finished(0)
         self.assertEqual(sent, [("Run DRC", [], None)])
         self.assertFalse(any(e["kind"] == "meta" or e.get("level") == "error" for e in panel.emitted))
+
+    def test_design_review_is_shown_with_its_pdf(self):
+        # The design-review skill writes design-review.md; when the run ends, the panel
+        # shows the review in the chat and saves it as a PDF next to it.
+        from powerlab_assistant import review
+        panel = self.fake_panel()
+        panel.in_background = lambda work, done: done(work())
+        panel.chat_cwd = self.project
+        md = os.path.join(self.project, "design-review", "design-review.md")
+        os.makedirs(os.path.dirname(md))
+        with open(md, "w", encoding="utf-8") as f:
+            f.write("# Design review: board\n\n- **Verdict:** Ready to order\n")
+        built = []
+        saved = review.build
+        review.build = lambda path: built.append(path) or dict(saved(path, edge=""), pdf=path[:-3] + ".pdf")
+        self.addCleanup(setattr, review, "build", saved)
+        panel.handle({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "w1", "name": "Write", "input": {"file_path": md, "content": "x"}},
+            {"type": "tool_use", "id": "w2", "name": "Write", "input": {"file_path": md + ".txt"}}]}})
+        panel.handle({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "w1"}, {"type": "tool_result", "tool_use_id": "w2"}]}})
+        self.assertEqual(built, [])  # shown once the run ends, after Claude's last reply
+        panel.finished(0)
+        self.assertEqual(built, [md])
+        card = panel.emitted[-1]
+        self.assertEqual((card["kind"], card["title"], card["verdict"]), ("review", "Design review: board", "Ready to order"))
+        self.assertTrue(card["pdf"].endswith("design-review.pdf"))
+        self.assertIn("<strong>Verdict:</strong>", card["body"])
+        self.assertNotIn("body", panel.events[-1])  # the chat keeps the path, not the HTML
+        # Reopened later, the card is built again from the file.
+        again = self.fake_panel()
+        again.open_chat(self.project)
+        shown = [e for e in again.emitted if e["kind"] == "review"]
+        self.assertEqual(len(shown), 1)
+        self.assertIn("<strong>Verdict:</strong>", shown[0]["body"])
+        self.assertTrue(shown[0]["pdf"].endswith(".pdf"))
+        # A failed write, or a run that wrote no review, shows nothing.
+        panel.emitted.clear()
+        panel.handle({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "w3", "name": "Edit", "input": {"file_path": md}}]}})
+        panel.handle({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "w3", "is_error": True, "content": "no"}]}})
+        panel.finished(0)
+        self.assertFalse(any(e["kind"] == "review" for e in panel.emitted))
+
+    def test_clicked_location_is_shown_in_kicad(self):
+        from powerlab_assistant.panel import ClaudePanel
+        panel = self.fake_panel()
+        calls = []
+        results =[(3, []), (1, ["U9"]), (0, ["net NOPE"]), ConnectionError("no board")]
+
+        def locate(target):
+            calls.append(target)
+            result = results.pop(0)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        panel.source = types.SimpleNamespace(locate=locate, show_pcb_editor=lambda: calls.append("front"))
+        panel.in_background = lambda work, done: done(_run(work))
+
+        def _run(work):
+            try:
+                return work()
+            except Exception as exc:
+                return exc
+
+        for target in ("refs=U6", "refs=U6,U9", "net=NOPE", "refs=U1"):
+            ClaudePanel.msg_locate(panel, {"type": "locate", "target": target})
+        self.assertEqual(calls, ["refs=U6", "front", "refs=U6,U9", "front", "net=NOPE", "refs=U1"])
+        notes = [(e["level"], e["text"]) for e in panel.emitted]
+        self.assertEqual(notes[0], ("info", "Not found on the board: U9"))
+        self.assertEqual(notes[1], ("warn", "Not found on the board: net NOPE"))
+        self.assertIn("Open the board in the PCB editor", notes[2][1])
+        self.assertEqual(len(notes), 3)
+
+
+class DesignReviewTests(unittest.TestCase):
+    """The review handbook, the design-review skill, and the review's HTML and PDF."""
+
+    def setUp(self):
+        from powerlab_assistant import review
+        self.review = review
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.folder = os.path.join(self.tmp.name, "design-review")
+        os.makedirs(os.path.join(self.folder, "images"))
+        png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==")
+        with open(os.path.join(self.folder, "images", "01-top.png"), "wb") as f:
+            f.write(png)
+        self.md = os.path.join(self.folder, "design-review.md")
+
+    def skill(self, name):
+        with open(os.path.join(ROOT, "skills", name, "SKILL.md"), encoding="utf-8") as f:
+            return f.read()
+
+    def test_handbook_ships_with_the_design_rules(self):
+        import re
+        folder = os.path.join(ROOT, "skills", "powerlab-pcb-design-rules", "handbook")
+        names = os.listdir(folder)
+        ids = []
+        for name in names:
+            with open(os.path.join(folder, name), encoding="utf-8") as f:
+                text = f.read()
+            if re.match(r"\d\d-", name) and name != "91-checklist.md":
+                ids += re.findall(r"^### \[([A-Z]+-\d{3})\]", text, re.M)
+            self.assertNotIn("_calisma/", text if name != "DECISIONS.md" else "")  # Turkish work notes stay out
+        self.assertEqual(len(ids), 233)
+        self.assertEqual(len(set(ids)), 233)
+        with open(os.path.join(folder, "91-checklist.md"), encoding="utf-8") as f:
+            checklist = f.read()
+        for rule in ids:
+            self.assertIn(f"**{rule}**", checklist)
+        rules = self.skill("powerlab-pcb-design-rules")
+        self.assertIn("## 4. Layout review handbook", rules)
+        self.assertIn("handbook/91-checklist.md", rules)
+        for name in re.findall(r"`(\d\d-[a-z0-9-]+\.md)`", rules):
+            self.assertIn(name, names)
+
+    def test_review_skill_loops_and_writes_the_report(self):
+        import ast
+        with open(os.path.join(ROOT, "plugin", "powerlab_assistant", "panel.py"), encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        note = next(ast.literal_eval(n.value) for n in tree.body
+                    if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "PANEL_NOTE")
+        self.assertIn("powerlab-design-review", note)
+        self.assertIn(r"design-review\design-review.md", note)
+        skill = self.skill("powerlab-design-review")
+        for part in ("## When to stop", "Five rounds", "Needs the user", "--all-track-errors",
+                     "handbook/91-checklist.md", r"design-review\design-review.md"):
+            self.assertIn(part, skill)
+        self.assertIn("powerlab-design-review", self.skill("powerlab-visual-review"))
+        # The report template in the skill turns into the card the panel shows.
+        import re
+        template = re.search(r"```markdown\n(.*?)\n```", skill, re.S).group(1)
+        with open(self.md, "w", encoding="utf-8") as f:
+            f.write(template.replace("images/02-top.png", "images/01-top.png"))
+        card = self.review.card(self.md)
+        self.assertTrue(card["title"].startswith("Design review: "))
+        self.assertTrue(card["verdict"].startswith("Ready to order after"))
+        for heading in ("Summary", "Needs you", "Open findings", "Fixed during the review",
+                        "Checked and fine", "Not checked", "Views"):
+            self.assertIn(f"<h2>{heading}</h2>", card["body"])
+        self.assertIn('<h3 class="sev sev-high">High</h3>', card["body"])
+        self.assertIn("<td>N1</td><td>RF-006</td>", card["body"])
+        self.assertIn('src="data:image/png;base64,', card["body"])
+        self.assertIn("data-path=", card["body"])  # click opens the image
+        self.assertIn("Image not found: images/01-placement.png", card["body"])
+
+    def test_review_text_is_escaped(self):
+        body = self.review.body_html(
+            "# T\n\n<script>alert(1)</script> **b** [x](javascript:alert(1)) [ok](https://e.com)\n"
+            "![a\" onerror=\"x](images/01-top.png)\n", self.folder)
+        self.assertNotIn("<script>", body)
+        self.assertNotIn('href="javascript', body)
+        self.assertIn('<a href="https://e.com">ok</a>', body)
+        self.assertNotIn('" onerror="', body)
+        self.assertIn("&lt;script&gt;", body)
+        self.assertFalse(self.review.is_review(os.path.join(self.folder, "notes.md")))
+        self.assertTrue(self.review.is_review(self.md.upper()))
+
+    def test_locations_are_parsed(self):
+        parse = self.review.parse_location
+        self.assertEqual(parse("refs=U6,Q2&net=GLC"), {"refs": ["U6", "Q2"], "nets": ["GLC"], "areas": []})
+        self.assertEqual(parse("U1")["refs"], ["U1"])
+        self.assertEqual(parse("net=Net-%28U1-Pad3%29&net=A%2CB")["nets"], ["Net-(U1-Pad3)", "A,B"])
+        self.assertEqual(parse("area=20,30,10,5")["areas"], [(10, 5, 20, 30)])
+        self.assertEqual(parse("at=100,50")["areas"], [(97.5, 47.5, 102.5, 52.5)])
+        self.assertEqual(parse("at=x,1&area=1,2&bogus=3"), {"refs": [], "nets": [], "areas": []})
+
+    def test_location_picks_board_items(self):
+        from types import SimpleNamespace as NS
+
+        def at(x, y):
+            return NS(x=int(x * 1e6), y=int(y * 1e6))
+
+        u6 = NS(reference_field=NS(text=NS(value="U6")), position=at(100, 50))
+        q2 = NS(reference_field=NS(text=NS(value="Q2")), position=at(104, 52))
+        track = NS(net=NS(name="GLC"), start=at(100, 50), end=at(160, 50))
+        via = NS(net=NS(name="GLC"), position=at(160, 50))
+        pad = NS(net=NS(name="GLC"), position=at(100, 50))
+        other = NS(net=NS(name="GND"), start=at(0, 0), end=at(1, 1))
+        board = ([u6, q2], [track, other], [via], [pad])
+        pick = lambda target: self.review.pick_items(self.review.parse_location(target), *board)
+        items, missing, small = pick("refs=u6,Q2,U9")
+        self.assertEqual((items, missing, small), ([u6, q2], ["U9"], True))  # small: zoomed out once
+        items, missing, small = pick("net=GLC")
+        self.assertEqual((items, missing, small), ([track, via, pad], [], False))
+        items, missing, _ = pick("at=160,50&net=NOPE")
+        self.assertEqual((items, missing), ([track, via], ["net NOPE"]))
+        self.assertEqual(pick("area=0,0,1,1")[0], [other])
+        self.assertEqual(pick("at=500,500")[:2], ([], ["anything at (497.5, 497.5)–(502.5, 502.5) mm"]))
+
+    def test_location_links_are_clickable_in_the_panel_only(self):
+        body = self.review.body_html(
+            '| F1 | [under L1](kicad:refs=L1&net=BUCK_PG) |\n|---|---|\n| x | [a"b](kicad:refs="><script>) |\n',
+            self.folder)
+        self.assertIn('<a class="loc" data-loc="refs=L1&amp;net=BUCK_PG" title="Show in KiCad">under L1</a>', body)
+        self.assertNotIn("<script>", body)
+        self.assertIn("a.loc { color: inherit;", self.review.CSS)  # plain text in the PDF
+        with open(os.path.join(ROOT, "plugin", "powerlab_assistant", "panel.html"), encoding="utf-8") as f:
+            page = f.read()
+        self.assertIn("kicad:([^)\\s]+)", page)  # Claude's replies get the links too
+        self.assertIn("post({ type: 'locate', target: loc.dataset.loc })", page)
+        skill = self.skill("powerlab-design-review")
+        self.assertIn("(kicad:refs=U6,Q2)", skill)
+        self.assertIn("kicad:net=Net-%28U1-Pad3%29", skill)
+
+    def test_without_edge_the_html_is_saved_instead(self):
+        with open(self.md, "w", encoding="utf-8") as f:
+            f.write("# Design review: b\n\n![Top](images/01-top.png)\n")
+        data = self.review.build(self.md, edge="")
+        self.assertNotIn("pdf", data)
+        self.assertIn("Edge", data["error"])
+        with open(data["html"], encoding="utf-8") as f:
+            page = f.read()
+        self.assertIn("data:image/png;base64,", page)  # works on its own
+        self.assertNotIn("data-path", page)
+
+    @unittest.skipUnless(sys.platform == "win32", "needs Microsoft Edge")
+    def test_pdf_is_printed_with_edge(self):
+        if not self.review.find_edge():
+            self.skipTest("Microsoft Edge not found")
+        with open(self.md, "w", encoding="utf-8") as f:
+            f.write("# Design review: b\n\n## Summary\n- **Verdict:** Ready to order\n\n"
+                    "| # | Rule |\n|---|---|\n| F1 | PWR-006 |\n\n![Top](images/01-top.png)\n")
+        data = self.review.build(self.md)
+        self.assertEqual(data.get("error"), None)
+        with open(data["pdf"], "rb") as f:
+            self.assertEqual(f.read(5), b"%PDF-")
+        self.assertFalse(os.path.exists(os.path.join(self.folder, "design-review.html")))
 
 
 class OnePanelTests(unittest.TestCase):

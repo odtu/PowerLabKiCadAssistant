@@ -94,7 +94,11 @@ Report real bugs upstream too.
   - it is renamed, with a `Source:` line under the title;
   - nothing lab-branded goes on other people's boards: the drawing-sheet template rule (§1.1, and its §1.9 checklist item) is removed, and §3.6 has no lab logo, website or QR code. Instead, every board gets the silkscreen text `Designed with PowerLab KiCad Assistant and Claude` (and its §3.7 checklist item).
 
+  - it has a §4 that points to `handbook/`.
+
   When the source changes, copy it again with the same edits. Change rules in the lab's file too (a PR to odtu/Powerlab), so the two stay the same. §3.3 pours, §3.4 routing, §3.5 vias: other skills (autoroute, visual review) refer to these numbers, so check they still match. `PANEL_NOTE` tells Claude to load it for any design work.
+- **The review handbook** (`skills/powerlab-pcb-design-rules/handbook/`) is a copy of `pcb-handbook/` in odtu/PCBDesignWClaude (233 rules from online reviews and app notes), without `PROGRESS.md` and without the links to the Turkish working notes in `90-visual-audit-guide.md` and `SOURCES.md`. Copy it again when the source changes; the tests count 233 unique rule IDs, so update that number with it.
+- **`powerlab-design-review`** runs at the end of placement and routing: review, fix, check again, then write `design-review\design-review.md` in the project. When a run's Write or Edit of a file with that name succeeds, the panel (`review.py`) shows the review as a card after Claude's reply and prints it to `design-review.pdf` with headless Microsoft Edge (its own temporary profile, so it never touches the user's Edge). Without Edge, it saves `design-review.html` instead. Places in the review (and in Claude's replies) are `kicad:` links (`refs=`, `net=`, `area=`, `at=`; `review.parse_location`). A click selects them in the PCB editor over the API (`KiCadSource.locate`), runs KiCad's zoom-to-selection and, for nets, highlight-net actions, and KiCad's own cross-probing then selects them in the schematic editor. KiCad 10's schematic API has no selection, so this needs the PCB editor open.
 
 ## Working on the code
 
