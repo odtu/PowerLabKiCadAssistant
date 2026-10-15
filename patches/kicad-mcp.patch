@@ -163,7 +163,7 @@ index 16a4915..cef014b 100644
                          f.write(image_bytes)
                      return {
 diff --git a/python/commands/freerouting.py b/python/commands/freerouting.py
-index 0c12af2..7dd6a2b 100644
+index 0c12af2..9fc55fa 100644
 --- a/python/commands/freerouting.py
 +++ b/python/commands/freerouting.py
 @@ -19,9 +19,44 @@ import time
@@ -211,7 +211,23 @@ index 0c12af2..7dd6a2b 100644
  logger = logging.getLogger("kicad_interface")
  
  # Default Freerouting JAR location
-@@ -306,6 +341,9 @@ class FreeroutingCommands:
+@@ -138,6 +173,7 @@ def _build_freerouting_cmd(
+             "-do",
+             f"/work/{ses_name}",
+             "--gui.enabled=false",
++            "--usage_and_diagnostic_data.disable_analytics=true",
+             "-mp",
+             str(passes),
+             *extra,
+@@ -155,6 +191,7 @@ def _build_freerouting_cmd(
+             "-do",
+             ses_path,
+             "--gui.enabled=false",
++            "--usage_and_diagnostic_data.disable_analytics=true",
+             "-mp",
+             str(passes),
+             *extra,
+@@ -306,6 +343,9 @@ class FreeroutingCommands:
  
      def __init__(self, board: Any = None) -> None:
          self.board = board
@@ -221,7 +237,7 @@ index 0c12af2..7dd6a2b 100644
  
      def _apply_project_net_classes(self, board_path: Optional[str]) -> Dict[str, Any]:
          """Push the project's net classes into the loaded board before DSN
-@@ -457,6 +495,20 @@ class FreeroutingCommands:
+@@ -457,6 +497,20 @@ class FreeroutingCommands:
                  "errorDetails": "attempts must be >= 1",
              }
          target_nets = list(params.get("targetNets") or [])
@@ -242,7 +258,7 @@ index 0c12af2..7dd6a2b 100644
          pass_schedule = list(params.get("passSchedule") or DEFAULT_PASS_SCHEDULE)
          if not pass_schedule:
              pass_schedule = [passes]
-@@ -483,6 +535,12 @@ class FreeroutingCommands:
+@@ -483,6 +537,12 @@ class FreeroutingCommands:
              }
  
          use_docker = exec_mode["use_docker"]
@@ -255,7 +271,7 @@ index 0c12af2..7dd6a2b 100644
  
          # Set up file paths. Artifacts are staged in a fresh per-run temp
          # directory instead of the user's project directory (#249): every
-@@ -518,6 +576,8 @@ class FreeroutingCommands:
+@@ -518,6 +578,8 @@ class FreeroutingCommands:
                  target_nets=target_nets,
                  pass_schedule=pass_schedule,
                  use_docker=use_docker,
@@ -264,7 +280,7 @@ index 0c12af2..7dd6a2b 100644
              )
          finally:
              # Runs on every exit -- success, failure return, or exception --
-@@ -533,6 +593,13 @@ class FreeroutingCommands:
+@@ -533,6 +595,13 @@ class FreeroutingCommands:
                          logger.warning(f"Could not keep artifact {src}: {copy_err}")
              shutil.rmtree(staging_dir, ignore_errors=True)
              _trim_shared_freerouting_log()
@@ -278,7 +294,7 @@ index 0c12af2..7dd6a2b 100644
  
      def _autoroute_staged(
          self,
-@@ -553,6 +620,8 @@ class FreeroutingCommands:
+@@ -553,6 +622,8 @@ class FreeroutingCommands:
          target_nets: List[Any],
          pass_schedule: List[Any],
          use_docker: bool,
@@ -287,7 +303,7 @@ index 0c12af2..7dd6a2b 100644
      ) -> Dict[str, Any]:
          """Body of autoroute, running against a staged artifact directory."""
          import pcbnew
-@@ -590,6 +659,19 @@ class FreeroutingCommands:
+@@ -590,6 +661,19 @@ class FreeroutingCommands:
          dsn_size = os.path.getsize(dsn_path)
          logger.info(f"DSN exported: {dsn_size} bytes")
  
@@ -307,7 +323,7 @@ index 0c12af2..7dd6a2b 100644
          # Step 2: Run Freerouting (single or multiple attempts)
          mode_label = "docker" if use_docker else "direct"
          total_start = time.time()
-@@ -598,12 +680,33 @@ class FreeroutingCommands:
+@@ -598,12 +682,33 @@ class FreeroutingCommands:
          best_attempt_idx = -1
          best_proc_stdout = ""
  
@@ -342,7 +358,7 @@ index 0c12af2..7dd6a2b 100644
              if attempts == 1:
                  attempt_passes = passes
                  single_thread = False
-@@ -752,8 +855,17 @@ class FreeroutingCommands:
+@@ -752,8 +857,17 @@ class FreeroutingCommands:
  
          # Step 3: Import the winning SES
          logger.info(f"Importing SES from {ses_path}")
@@ -360,7 +376,7 @@ index 0c12af2..7dd6a2b 100644
              if result is not True and result != 0:
                  return {
                      "success": False,
-@@ -771,12 +883,25 @@ class FreeroutingCommands:
+@@ -771,12 +885,25 @@ class FreeroutingCommands:
                  "attempts": attempt_results,
              }
  
@@ -392,7 +408,7 @@ index 0c12af2..7dd6a2b 100644
  
          # Collect stats
          tracks = self.board.GetTracks()
-@@ -810,6 +935,19 @@ class FreeroutingCommands:
+@@ -810,6 +937,19 @@ class FreeroutingCommands:
              "netClasses": netclass_report,
              "freerouting_stdout": best_proc_stdout[:1000],
          }
@@ -412,7 +428,7 @@ index 0c12af2..7dd6a2b 100644
          if attempts > 1:
              response["attempts"] = attempt_results
              response["best_attempt"] = best_attempt_idx + 1
-@@ -819,6 +957,83 @@ class FreeroutingCommands:
+@@ -819,6 +959,83 @@ class FreeroutingCommands:
              )
          return response
  

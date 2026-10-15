@@ -66,6 +66,7 @@ Users only learn about fixes through releases. Every panel reads `VERSION` from 
 - **Rotation keeps 3D models:** `move_component` puts them back, because kipy 0.8's orientation setter drops them (#10).
 - **`pourNets` on `autoroute`:** those nets are left out of the DSN, so they connect through pours instead of tracks; their existing tracks are kept.
 - **`keepoutPourNets` on `autoroute`:** left out like `pourNets`, but each pour's outline becomes a keepout on its layer, so Freerouting routes around outer-layer power pours instead of reading them as solid planes.
+- **Freerouting analytics off:** the CLI and Docker commands pass `--usage_and_diagnostic_data.disable_analytics=true`, like the live API server.
 - **Via drills after the SES import:** a session via whose annular ring is below the board minimum gets a smaller drill.
 - **`clean_up_routing` (new tool):** after autorouting, removes router stubs and dead-end tracks, widens tracks to their net-class width, and chamfers 90° corners. Each change that adds copper is checked with kicad-cli DRC (zones refilled, `--all-track-errors`, because by default a track already in one error hides its others) and taken back if it adds an error. Ported from the post-route scripts in odtu/PCBDesignWClaude (`hardware/tools/pcb`).
 - **Pours in live mode (#12):** the live `add_copper_pour` handler accepts the tool's `outline` (or `points`), and falls back to the board outline like the offline one. `add_zone` gets a handler in both modes.

@@ -81,7 +81,7 @@ Before routing, confirm with the user, or check with the kicad tools:
     - Pads of these nets outside their pour stay unconnected. Connect them by hand first (step 1 of the routing order).
   - **Check for shorts into locked copper:** Freerouting 2.4.1 can route over locked tracks and vias of any net, including the decoupling-cap vias and the hand-routed power and gate-drive copper. Switching the DSN's `fix` to `protect` doesn't help.
     - After the run, any `shorting_items`, `tracks_crossing` or `clearance` error between a new track or via and locked copper means this happened.
-    - Undo (File → Revert) and tell the user. Those nets need rule areas that keep tracks out over the locked copper, or routing by hand around it.
+    - Undo (File → Revert; after a live run, Edit → Undo, step 4) and tell the user. Those nets need rule areas that keep tracks out over the locked copper, or routing by hand around it.
   - **A 4-layer board's GND plane layer stays a plane.** If tracks land on the plane layer (e.g. In1.Cu), the plane was routed over: undo and say so.
 - **3D models:** check that the footprints still have their 3D models (`get_component_properties` or the 3D viewer). If they are missing, tell the user to run **Tools → Update Footprints from Library** with **Reset 3D models** ticked. It restores them without moving the parts.
 
@@ -91,6 +91,10 @@ Before routing, confirm with the user, or check with the kicad tools:
 - **Estimate the run time:** check the ratsnest (`get_ratsnest`) and tell the user how many connections are open. Freerouting 2.4.1 needs seconds for a small 2-layer board, about 2 minutes for a 2-layer ESP32 board with ~85 nets, and several minutes per attempt for a dense 4-layer one.
 - **Timeout:** set `timeout` from that estimate. Allow 600 s per attempt for dense boards and 900 s for very dense ones; the 300 s default is often too short.
 - **Best-of-N:** for a first run, use `attempts: 1` with the default `maxPasses` (20). Only use `attempts: 3` (or 5 for dense boards) when the user wants the most complete result and accepts the extra time; each attempt varies the max passes and the most complete result is kept.
+- **Live:** when the board is open and saved in KiCad's PCB editor and the run is a single attempt, pass `live: true`. Tell the user they can watch the routing appear in KiCad: Freerouting's partial result replaces the previous one every 2 s (`liveInterval`). At the end the result is put into KiCad's board and saved there, so the run itself needs no File → Revert.
+  - Existing and locked copper isn't touched. Zones aren't refilled; that's step 5.
+  - Each update is one undo step in KiCad. To undo the whole run, use Edit → Undo until the "Freerouting" steps are gone, then save.
+  - Not with `attempts` > 1 (refused), not in Docker, and not without KiCad open: use a normal run then.
 - **Pour nets:** always pass `pourNets` for GND and `keepoutPourNets` for the outer-layer power pours (step 3).
 - **Priority nets:** put signal nets that must be completed (e.g. MCU control, communication) in `targetNets`.
 - **If it times out:** say so plainly. Nothing is imported and the board is unchanged. Offer a longer timeout, routing more nets by hand first, or adding the missing pours.
@@ -102,6 +106,7 @@ Before routing, confirm with the user, or check with the kicad tools:
   - chamfers 90° corners to 45° (§3.4), smaller where a full chamfer breaks DRC.
 
   Every change that adds copper is checked with kicad-cli DRC, zones refilled, and taken back if it adds an error. Locked tracks are never changed. It takes a few DRC runs: about 30 s on a dense 4-layer board. Its `sharp_corners_left` and `thin_tracks_left` lists are the starting point for the corner and width checks below.
+  - **After a live run:** `clean_up_routing` changes the saved file, not KiCad's board. Ask the user to use **File → Revert** right after it, before any other edit or save in KiCad. Nothing is lost: the live run left KiCad's board saved.
 - **Refill zones:** run `refill_zones`.
 - **Look at it** (`powerlab-visual-review`): save, then render top copper, bottom copper and both layers together. Review them for detours, 90° corners, long or looping power and gate-drive paths, and pours chopped into islands. Fix what you see and render again before reporting.
 - **Pour-net pads:** in the DRC's unconnected items, find pads of the pour nets that the pour can't reach, e.g. a GND pad boxed in by tracks. Add a via next to each one (`add_via`, 0.4/0.8 mm), connected with a short track, so it reaches the bottom pour. Then refill again.
@@ -129,6 +134,6 @@ Before routing, confirm with the user, or check with the kicad tools:
 
 ## 6. Tell the user
 - **How it went:** say how many nets were routed and how many are left, plus the DRC result compared with the baseline and the rule checks from step 5.
-- **Reload:** the board file changed, so the user must use **File → Revert** in KiCad to see it (unsaved edits are lost; that's why step 3 asks them to save).
+- **Reload:** after a live run, the routing is already in KiCad and saved; only the reload after `clean_up_routing` (step 5) is needed. After a normal or best-of-N run, or a run without KiCad open, the board file changed, so the user must use **File → Revert** in KiCad to see it (unsaved edits are lost; that's why step 3 asks them to save).
 - **Finish:** suggest teardrops (Edit → Edit Teardrops, §3.4) once routing is final.
 - **Review:** remind them that autorouted power-electronics boards need a human review against the §3.7 checklist before ordering. That includes loop areas, return paths, track widths on high-current nets, and via counts on power paths. Once they have reverted, offer the design review (`powerlab-design-review`) with a `<choices>` button: it checks the routed board against the lab rules and the review handbook, fixes what it can, and writes a review with a PDF.
