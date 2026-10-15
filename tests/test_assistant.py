@@ -1028,6 +1028,13 @@ class PanelDefaultsTests(unittest.TestCase):
         self.assertIn('says "No board is loaded"', c["PANEL_NOTE"])
         self.assertIn("call open_board with the 'Board file' path", c["PANEL_NOTE"])
 
+    def test_board_views_get_the_board_path(self):
+        # Issue #52: get_board_2d_view failed with "pcbPath required" when KiCad had the board
+        # open: the tool process has no board loaded, so the path has to be passed.
+        c = self.constants()
+        self.assertIn("get_board_2d_view, always pass pcbPath: the 'Board file' path",
+                      c["PANEL_NOTE"])
+
     def test_gerbers_can_be_zipped(self):
         # Issue #24: PCBWay wants the Gerbers zipped, but only kicad-cli was allowed in the shell.
         c = self.constants()
