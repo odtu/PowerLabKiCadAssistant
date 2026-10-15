@@ -1,6 +1,6 @@
 ﻿---
 name: powerlab-pcb-design-rules
-description: METU PowerLab PCB design rules for KiCad work — PCBWay standard-price (no-surcharge) spec, fab limits and lab default DRC values, schematic rules, and common PCB layout rules. Use whenever designing, reviewing, or editing a schematic or PCB, setting up KiCad board/DRC constraints or net classes, sizing traces/vias/copper, or checking a layout for manufacturability and layout quality.
+description: METU PowerLab PCB design rules for KiCad work — PCBWay standard-price (no-surcharge) spec, fab limits and lab default DRC values, schematic rules, common PCB layout rules, and a 233-rule layout review handbook (stackup, placement, power, grounding, high-speed, RF, crystals, switching power, ESD, thermal, vias, DFM, DFA, silkscreen, mechanical, testability, aesthetics). Use whenever designing, reviewing, or editing a schematic or PCB, setting up KiCad board/DRC constraints or net classes, sizing traces/vias/copper, or checking a layout for manufacturability and layout quality.
 ---
 
 # PCB Design Rules — METU PowerLab
@@ -17,6 +17,7 @@ Sources: https://www.pcbway.com/capabilities.html and the quote form at https://
 - When two rules conflict, the stricter one wins. A project's own `CLAUDE.md` or README can override these; it wins over this file.
 - If a design can't meet a rule, don't silently break it. Tell the user which rule, where, and why.
 - Copper weight changes the limits. Always confirm the copper weight (outer and inner) before setting constraints.
+- The lab rules in §1–§3 come first. The review handbook (§4) adds detail where they say nothing; where the two give different numbers, use the lab's.
 
 ---
 
@@ -456,3 +457,40 @@ Copper comes first (§3.3): power pads, power rails and pour nets (no GND fan-ou
 - [ ] Outputs for PCBWay:
   - fabrication: Gerber RS-274X + Excellon drill files, zipped
   - assembly: BOM (`.xlsx`/`.csv` with reference, quantity, MPN, manufacturer, package, SMD/THT) and a position (centroid) file with SMD parts, X/Y, rotation and side, plus an assembly drawing if anything is unusual
+
+---
+
+## 4. Layout review handbook
+
+The `handbook/` folder next to this file holds 233 layout rules, collected from manufacturer application notes, fab capability pages and expert reviews of real boards posted online (EEVblog, KiCad forum and others), with sources. Each rule has an ID such as `SMPS-014`, a severity (Critical > High > Medium > Low > Cosmetic), how it looks on the board, why it matters, the fix, exceptions and sources.
+
+Use it when you place, route or review a board:
+- **Quick scan:** `handbook/91-checklist.md` lists every rule on one line, sorted by severity, with its file.
+- **Full rule:** open the topic file and read the rule's *How it looks in the image* and *Exceptions*. If an exception applies, it isn't a finding.
+
+| File | Prefix | Topic |
+|---|---|---|
+| `01-stackup.md` | STK | 2/4-layer stackup, reference planes |
+| `02-placement.md` | PLC | Functional blocks, connectors, heat sources |
+| `03-power-distribution.md` | PWR | Track width for current, regulators, decoupling |
+| `04-grounding.md` | GND | GND plane, splits, stitching vias, return paths |
+| `05-high-speed-signals.md` | HS | USB, differential pairs, impedance, length matching |
+| `06-rf-antenna.md` | RF | Antenna keepout, module placement, RF feed |
+| `07-crystal-oscillator.md` | XTL | Crystals and oscillators |
+| `08-switching-power.md` | SMPS | Hot loops, inductors, feedback, gate drive |
+| `09-esd-protection.md` | ESD | TVS placement and protection path |
+| `10-thermal.md` | THM | Thermal vias, copper area, exposed pads |
+| `11-vias.md` | VIA | Via-in-pad, tenting, size, current |
+| `12-dfm.md` | DFM | Fab limits, edge clearance, acid traps, slivers |
+| `13-dfa.md` | DFA | Footprints, spacing, tombstoning, polarity, fiducials |
+| `14-silkscreen.md` | SLK | Labels, revision, readability |
+| `15-mechanical.md` | MEC | Mounting holes, connector access, panels |
+| `16-testability.md` | TST | Test points, programming and debug access |
+| `17-aesthetics.md` | EST | Order, alignment, symmetry, track flow |
+| `90-visual-audit-guide.md` | GOR | Reading board images: colours, scale, analysis order, report format |
+| `92-glossary.md` | | Terms |
+| `SOURCES.md`, `DECISIONS.md` | | Every source; choices made while writing the handbook |
+
+The handbook was written for reviewers who only see a screenshot, so many rules say "ask the user" or "estimate from the image". Here you have the board itself: measure distances, widths and via counts with the kicad tools instead of estimating, and ask only for what the board can't tell you (currents, enclosure, fab, stackup choices).
+
+Cite rules by ID in reviews, e.g. "C5 is 4 mm from U2's VDD pin (PWR-006)". Report each problem once, under its primary rule: when a rule's Exceptions say "Primary rule for this finding: X", use X. The severity is the rule's; express doubt with the confidence (Certain / Likely / Needs verification), not by lowering the severity.

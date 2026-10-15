@@ -131,4 +131,4 @@ Before routing, confirm with the user, or check with the kicad tools:
 - **How it went:** say how many nets were routed and how many are left, plus the DRC result compared with the baseline and the rule checks from step 5.
 - **Reload:** the board file changed, so the user must use **File → Revert** in KiCad to see it (unsaved edits are lost; that's why step 3 asks them to save).
 - **Finish:** suggest teardrops (Edit → Edit Teardrops, §3.4) once routing is final.
-- **Review:** remind them that autorouted power-electronics boards need a human review against the §3.7 checklist before ordering. That includes loop areas, return paths, track widths on high-current nets, and via counts on power paths.
+- **Review:** remind them that autorouted power-electronics boards need a human review against the §3.7 checklist before ordering. That includes loop areas, return paths, track widths on high-current nets, and via counts on power paths. Once they have reverted, offer the design review (`powerlab-design-review`) with a `<choices>` button: it checks the routed board against the lab rules and the review handbook, fixes what it can, and writes a review with a PDF.

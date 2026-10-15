@@ -52,3 +52,5 @@ A rendered view shows all of these at a glance. On the lab's ESC3Phase board, re
 
 ## Report
 End with the final views open (Read), plus a short list: what you checked, what you changed after looking, and what the user should still review by eye.
+
+At the end of a placement or routing task, go on with `powerlab-design-review`: it reviews the whole board against the lab rules and the review handbook, fixes what it can in rounds, and writes the final review that the panel shows and saves as a PDF.

@@ -16,7 +16,7 @@ import time
 import wx
 import wx.html2
 
-from . import attachments, config, history, library, report, updates, usage
+from . import attachments, config, history, library, report, review, updates, usage
 from .common import find_gh, open_console, open_terminal, clean_env
 
 # Tools Claude may use without asking. Headless runs can't show permission
@@ -111,6 +111,11 @@ PANEL_NOTE = (
     "For any placement or routing work, also load the powerlab-visual-review skill: render the "
     "board and look at it after every step, fix what you see, and show the user the views. "
     "Save renders in the views folder named below (kicad-cli may write there too).\n"
+    "When you finish a placement or routing task, or the user asks for a review, load the "
+    "powerlab-design-review skill and follow it: review the board, fix what you can and check "
+    "again until nothing you can fix is left, then write the final review to "
+    "design-review\\design-review.md in the project folder. The panel shows it to the user "
+    "and saves it as a PDF.\n"
     "You can make mistakes: for anything that ends up in hardware (footprints, pinouts, "
     "ratings, design rules), say what the user should double-check against the datasheet."
 )
@@ -247,6 +252,8 @@ class ClaudePanel(wx.Frame):
         self.pending = []
         self.context_items = None
         self.image_reads = {}
+        self.review_writes = {}  # tool id -> design-review.md being written in this run
+        self.review_md = None  # the review written in this run, shown when the run ends
         self.activity, self.activity_sent = ("waiting", ""), 0.0
         self.thinking_tokens = 0
         self.thought, self.thought_started = "", 0.0
@@ -329,6 +336,8 @@ class ClaudePanel(wx.Frame):
         for event in self.events:
             if event["kind"] == "image":
                 self.show_image(event.get("path", ""), record=False)
+            elif event["kind"] == "review":
+                self.emit(**dict(event, **review.card(event.get("path", ""))))
             else:
                 self.emit(**event)
         if self.events:
@@ -885,6 +894,8 @@ class ClaudePanel(wx.Frame):
                     self.image_reads[block.get("id")] = (
                         tool_kind(block.get("name", "")),
                         args.get("file_path", "") if block.get("name") == "Read" else "")
+                    if block.get("name") in ("Write", "Edit") and review.is_review(args.get("file_path")):
+                        self.review_writes[block.get("id")] = args["file_path"]
         elif kind == "user":
             content = msg.get("message", {}).get("content", [])
             for block in content if isinstance(content, list) else []:
@@ -899,6 +910,9 @@ class ClaudePanel(wx.Frame):
                     detail = str(detail)[:200]
                 self.say("tool_done", id=block.get("tool_use_id"), error=failed, text=detail)
                 name, image = self.image_reads.pop(block.get("tool_use_id"), ("tool", ""))
+                written = self.review_writes.pop(block.get("tool_use_id"), None)
+                if written and not failed:
+                    self.review_md = written
                 report.note_event("tool", f"{name} {'error' if failed else 'ok'}")
                 if image and not failed and os.path.splitext(image)[1].lower() in IMAGE_TYPES:
                     self.show_image(image)
@@ -963,6 +977,21 @@ class ClaudePanel(wx.Frame):
         (self.say if record else self.emit)("image", src=f"data:{mime};base64,{data}",
                                             name=os.path.basename(path), path=path)
 
+    def show_review(self, md_path):
+        """The final design review (powerlab-design-review) in the chat, and as a PDF."""
+        if not os.path.isabs(md_path) and self.chat_cwd:
+            md_path = os.path.join(self.chat_cwd, md_path)
+
+        def done(data):
+            if isinstance(data, Exception):
+                self.problem("error", "The design review couldn't be shown.", "review failed",
+                             type(data).__name__)
+                return
+            self.say("review", **data)
+            self.save_chat()
+
+        self.in_background(lambda: review.build(md_path), done)
+
     def finished(self, returncode):
         self.proc = None
         if self.stale_session and self.retry:
@@ -975,6 +1004,9 @@ class ClaudePanel(wx.Frame):
                 return
         self.emit("busy", value=False)
         self.save_chat()
+        if self.review_md:
+            self.show_review(self.review_md)
+            self.review_md = None
         if not self.got_result and returncode not in (0, None, 1, 15, -15):
             self.problem("error", f"Claude Code stopped unexpectedly (exit code {returncode}).",
                          "claude exited without a result", f"exit code {returncode}")
