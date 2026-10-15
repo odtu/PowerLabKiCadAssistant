@@ -2,15 +2,15 @@
 
 ## Branches
 
-- **`main` is stable.** Users' clones follow it, and the panel's Update button pulls it. Within about 10 minutes of `VERSION` changing on `main`, every panel shows the update bar. So `main` changes only through a release (below), never through a fix or feature PR.
-- **`test` is where changes land first.** Branch from `test` and open PRs against it (`gh pr create --base test`). GitHub's default branch stays `main`, so pick the base when you open a PR.
+- **`main` is stable.** Users' clones follow it, and the panel's Update button pulls it. Within about 10 minutes of `VERSION` changing on `main`, every panel shows the update bar. So `main` changes only through a release (below), never through a direct commit or a fix or feature PR.
+- **`test` is where changes land first.** Work on `test` itself: commit there and push to `test` (`git push origin test`). Don't create feature branches or open PRs for your own changes, and don't leave work on a side branch. The flow is always `test` → `main`, through a release. GitHub's default branch stays `main`, so check you're on `test` before you commit.
 - **To try `test` yourself:** in the clone `install.ps1` ran from, `git switch test`, `git pull`, close KiCad, `install.ps1 -Update`. The panel's Update button then pulls `test`. The bar only appears for a newer stable `VERSION`, not for new `test` commits. Switch back with `git switch main`.
 
 ## Handling issues
 
 Problem reports from the panel arrive as public issues on odtu/PowerLabKiCadAssistant.
 
-1. Fix the problem, verify it, and merge the fix into `test` with `Fixes #N` in the commit message. GitHub closes the issue when that commit reaches `main` in a release.
+1. Fix the problem, verify it, and commit the fix to `test` and push it, with `Fixes #N` in the commit message. GitHub closes the issue when that commit reaches `main` in a release.
 2. **Always reply on the issue** after a fix: what went wrong, which commit fixed it, how it was verified, and what the reporter must do to get it (usually: pull, close KiCad, rerun `install.ps1`).
 3. **Post replies as `github-actions[bot]`, never under a maintainer's personal account.** Don't use a GitHub tool or `gh issue comment` that posts as the signed-in user. Write the reply to a file and run the `reply-to-issue.yml` workflow:
 
