@@ -106,7 +106,10 @@ Before routing, confirm with the user, or check with the kicad tools:
   - chamfers 90° corners to 45° (§3.4), smaller where a full chamfer breaks DRC.
 
   Every change that adds copper is checked with kicad-cli DRC, zones refilled, and taken back if it adds an error. Locked tracks are never changed. It takes a few DRC runs: about 30 s on a dense 4-layer board. Its `sharp_corners_left` and `thin_tracks_left` lists are the starting point for the corner and width checks below.
-  - **After a live run:** `clean_up_routing` changes the saved file, not KiCad's board. Ask the user to use **File → Revert** right after it, before any other edit or save in KiCad. Nothing is lost: the live run left KiCad's board saved.
+- **Reload KiCad:** with the board open in KiCad, `clean_up_routing` (and a normal `autoroute` run) change the saved file, not KiCad's board. Right after `clean_up_routing`, ask the user to use **File → Revert**, and wait until they have. Don't edit or save in KiCad before that.
+  - The steps below go to KiCad's board: `refill_zones`, `add_via`, `add_gnd_stitching_vias` and `save_board`. On the stale board they would work on unrouted copper, and a save would write it over the routed file.
+  - Nothing is lost: step 3 had the board saved, and a live run leaves it saved.
+  - Without KiCad open there is nothing to reload.
 - **Refill zones:** run `refill_zones`.
 - **Look at it** (`powerlab-visual-review`): save, then render top copper, bottom copper and both layers together. Review them for detours, 90° corners, long or looping power and gate-drive paths, and pours chopped into islands. Fix what you see and render again before reporting.
 - **Pour-net pads:** in the DRC's unconnected items, find pads of the pour nets that the pour can't reach, e.g. a GND pad boxed in by tracks. Add a via next to each one (`add_via`, 0.4/0.8 mm), connected with a short track, so it reaches the bottom pour. Then refill again.
@@ -134,6 +137,6 @@ Before routing, confirm with the user, or check with the kicad tools:
 
 ## 6. Tell the user
 - **How it went:** say how many nets were routed and how many are left, plus the DRC result compared with the baseline and the rule checks from step 5.
-- **Reload:** after a live run, the routing is already in KiCad and saved; only the reload after `clean_up_routing` (step 5) is needed. After a normal or best-of-N run, or a run without KiCad open, the board file changed, so the user must use **File → Revert** in KiCad to see it (unsaved edits are lost; that's why step 3 asks them to save).
+- **Reload:** with KiCad open, the user already reverted after `clean_up_routing` (step 5), and the later steps saved through KiCad, so KiCad shows the routed board. Without KiCad open, the routing is in the board file; they see it when they open the board.
 - **Finish:** suggest teardrops (Edit → Edit Teardrops, §3.4) once routing is final.
-- **Review:** remind them that autorouted power-electronics boards need a human review against the §3.7 checklist before ordering. That includes loop areas, return paths, track widths on high-current nets, and via counts on power paths. Once they have reverted, offer the design review (`powerlab-design-review`) with a `<choices>` button: it checks the routed board against the lab rules and the review handbook, fixes what it can, and writes a review with a PDF.
+- **Review:** remind them that autorouted power-electronics boards need a human review against the §3.7 checklist before ordering. That includes loop areas, return paths, track widths on high-current nets, and via counts on power paths. Then offer the design review (`powerlab-design-review`) with a `<choices>` button: it checks the routed board against the lab rules and the review handbook, fixes what it can, and writes a review with a PDF.
