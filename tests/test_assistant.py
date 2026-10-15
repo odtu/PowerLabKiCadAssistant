@@ -1018,6 +1018,72 @@ class McpPatchTests(unittest.TestCase):
     def test_session_vias_keep_their_annular_ring(self):
         self.assertIn("via_drills = _repair_via_drills(self.board)", self.patch())
 
+    def test_powerlab_router_rules(self):
+        """Milestone 1: clearance rules from .kicad_dru, last match wins, unknown terms only
+        ever make the clearance larger."""
+        module = types.ModuleType("rules")
+        exec(self.new_file("python/commands/powerlab_router/rules.py"), module.__dict__)
+        rules = module.Rules.parse('''(version 1)
+(rule "Fine-pitch pads"
+	(condition "A.Type == 'Pad' && (A.memberOfFootprint('U3') || A.memberOfFootprint('J*'))")
+	(constraint clearance (min 0.15mm)))
+(rule "Thin power tracks"
+	(condition "A.Type == 'Track' && A.Width <= 0.25mm && A.hasNetclass('Power')")
+	(constraint clearance (min 0.2mm)))
+(rule "Pads of one part"
+	(condition "A.Type == 'Pad' && B.Type == 'Pad'")
+	(constraint clearance (min 0.1mm)))
+(rule "HV inner" (layer inner)
+	(condition "A.hasNetclass('HV') || B.hasNetclass('HV')")
+	(constraint clearance (min 0.4mm)))
+(rule "Fan-out areas"
+	(condition "A.intersectsArea('FANOUT') && !(A.NetName == 'GND')")
+	(constraint clearance (min 0.5mm)))
+(rule "Ignored" (severity ignore)
+	(condition "A.Type == 'Via'")
+	(constraint clearance (min 3mm)))
+''')
+        track = {"Type": "Track", "NetClass": "Default", "NetName": "IO2", "Width": 0.2, "Footprint": None}
+        u3 = {"Type": "Pad", "NetClass": "Power", "NetName": "+3V3", "Footprint": "U3"}
+        j1 = {"Type": "Pad", "NetClass": "Default", "NetName": "CC1", "Footprint": "J1"}
+        u1 = {"Type": "Pad", "NetClass": "Power", "NetName": "+3V3", "Footprint": "U1"}
+        thin = {"Type": "Track", "NetClass": "Power", "NetName": "+3V3", "Width": 0.25, "Footprint": None}
+        hv = {"Type": "Track", "NetClass": "HV", "NetName": "VBUS", "Width": 0.5, "Footprint": None}
+        gnd = {"Type": "Track", "NetClass": "GND", "NetName": "GND", "Width": 0.3, "Footprint": None}
+        self.assertEqual(rules.unsupported, ["Fan-out areas"])
+        # the fan-out rule might match anything but GND, so it raises other clearances to 0.5
+        self.assertEqual(rules.clearance(track, u3, "F.Cu", 0.3), 0.5)
+        drop = module.Rules(r for r in rules.rules if r.name != "Fan-out areas")
+        self.assertEqual(drop.clearance(track, u3, "F.Cu", 0.3), 0.15)  # wildcard and ||
+        self.assertEqual(drop.clearance(track, j1, "F.Cu", 0.3), 0.15)
+        self.assertEqual(drop.clearance(track, u1, "F.Cu", 0.3), 0.3)  # no rule: net classes
+        self.assertEqual(drop.clearance(track, thin, "F.Cu", 0.3), 0.2)
+        self.assertEqual(drop.clearance(u3, j1, "F.Cu", 0.3), 0.1)  # pad-pad, the later rule
+        self.assertEqual(drop.clearance(track, hv, "F.Cu", 0.3), 0.3)  # layer clause
+        self.assertEqual(drop.clearance(track, hv, "In1.Cu", 0.3), 0.4)
+        self.assertEqual(rules.clearance(gnd, track, "F.Cu", 0.3), 0.5)  # B side may match
+        self.assertEqual(rules.clearance(gnd, dict(gnd), "F.Cu", 0.3), 0.3)  # !(GND): can't match
+
+    def test_powerlab_router_groups(self):
+        """Milestone 1: nets sorted into the lab's routing order (§3.4)."""
+        module = types.ModuleType("groups")
+        exec(self.new_file("python/commands/powerlab_router/groups.py"), module.__dict__)
+        classes = {"+3V3": "Power", "GND": "GND", "USB_DP": "USB", "USB_DN": "USB"}
+        nets = ["+3V3", "GND", "VBUS", "/Gate Drive/GHA", "SPI_SCK", "CAN_H", "CAN_L", "USB_DP", "USB_DN",
+                "/Sense/IBUS_SNS_P", "SENSOR_VP", "SENSOR_VN", "IO12", "Net-(SW1-Pad2)", "Net-(R5-Pad1)"]
+        got = module.classify(nets, lambda n: classes.get(n, "Default"), {"IO12": "sensitive analog"})
+        names = {n: module.GROUPS[g] for n, g in got.items()}
+        self.assertEqual(names["+3V3"], "power")
+        self.assertEqual(names["GND"], "power")
+        self.assertEqual(names["VBUS"], "power")
+        self.assertEqual(names["/Gate Drive/GHA"], "switching and clocks")
+        self.assertEqual(names["SPI_SCK"], "switching and clocks")
+        self.assertEqual(names["CAN_H"], "differential pairs")
+        self.assertEqual(names["USB_DN"], "differential pairs")
+        self.assertEqual(names["SENSOR_VP"], "sensitive analog")  # not a pair: VP/VN
+        self.assertEqual(names["IO12"], "sensitive analog")  # the user's choice
+        self.assertEqual(names["Net-(SW1-Pad2)"], "other")  # automatic names go by class only
+
     def test_powerlab_router_search(self):
         """docs/powerlab-router-plan.md milestone 0: 45 degree turns only, spaced apart,
         arrival straight along the goal pad's lane, and a via when one layer is walled off."""

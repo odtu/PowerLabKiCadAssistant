@@ -1,6 +1,6 @@
 # PowerLab router: design plan
 
-Status: milestone 0 done (results in §12). The router isn't a tool yet: its code is in the MCP patch (`python/commands/powerlab_router/`), and `tools/router_bench.py` runs it. Phase 1 (pad-centre entry and shortcuts in `clean_up_routing`) is on hold.
+Status: milestones 0 and 1 done (results in §12 and §13). The router isn't a tool yet: its code is in the MCP patch (`python/commands/powerlab_router/`), and `tools/router_bench.py` runs it. Phase 1 (pad-centre entry and shortcuts in `clean_up_routing`) is on hold.
 
 ## 1. Why
 
@@ -228,3 +228,41 @@ On the 27 nets both finished: 394.5 mm against 365.0 mm (+8%), 18 vias against 1
 - **"Most constrained first"** inside a group.
 - **Incremental grid updates** instead of rebuilding the grids for each net.
 - **KiCad 10 Python:** use `board.Delete()`, not `board.Remove()` (crashes), and `PCB_VIA.GetWidth(layer)`.
+
+## 13. Milestone 1 results (2026-10-15)
+
+**What was built:**
+- `rules.py`: the board's `.kicad_dru` clearance rules, parsed and evaluated in Python. It covers `Type`, `NetName`, `NetClass`, `Width`, `memberOfFootprint` (with wildcards), `hasNetclass`, `isPlated`, `existsOnLayer`, `&&`, `||`, `!` and `(layer ...)`. The last matching rule wins, as in KiCad.
+  - A term it doesn't know (e.g. `intersectsArea`) makes the rule "maybe". Such a rule is applied only where it makes the clearance larger, and is listed in the report.
+  - It reads the lab's rule files (TestPCB, ESC3Phase, EncoderSignal). Only ESC3Phase's `intersectsArea` rule comes out as not understood.
+- **Clearances everywhere follow those rules:** the grids, the exact checks and the lanes. Edge and hole clearance come from the board constraints, not fixed numbers.
+- **Incremental grids:** one raster per net and layer for each "key" (net class, track width, via size), plus a count of nets per cell. A net's obstacles are the cells another net covers. Accepted copper is stamped in, and nothing is rebuilt.
+- **Node limit:** 1M nodes per search by default. A search that hits it gives up, without trying a bigger window.
+- **Groups:** `groups.py` sorts nets into the lab order of §5, which can be overridden per net. `router.py` routes group by group and reports routed/left per group.
+- **Lanes:** each lane tries several exit lengths, the preferred one and longer first, then shorter ones down to one track width beyond the pad. A USB-C pin had free space only 0.2–0.4 mm beyond its tip.
+- **Tests:** rules (precedence, layer clause, wildcards, "maybe" terms) and groups.
+
+**TestPCB, same benchmark as milestone 0:**
+
+| Setting | Routed | Time | New DRC errors | Track, vias |
+|---|---|---|---|---|
+| M0: length order, rebuilt grids, 600k-node search without limit stop | 42 of 52 | 37 s | 1 (starved thermal) | 402 mm, 18 |
+| M1: most constrained first | 42 | 40 s | 0 | 389 mm, 21 |
+| M1: most constrained first + reserved lanes of waiting pins | 42 | 32–39 s | 2 starved thermal | 391 mm, 17 |
+| M1: length order | 43 | 47 s | 0 | 371 mm, 14 |
+| M1: length order + reserved lanes | 43 | 70 s | 1 starved thermal | 379 mm, 16 |
+| **M1 default: length order, 1M-node limit** | **44** | 74 s | **0** | 410 mm, 15 |
+| Freerouting + `clean_up_routing` | 51 | 69 s | 26 (17 clearance, 3 shorts) | — |
+
+**What this showed:**
+- **Most constrained first doesn't pay on this board.** Length order routes as many or more, with shorter tracks and fewer vias. Lane counts at the start don't predict which pins get boxed in later.
+- **Reserving waiting pins' lanes doesn't help either.** Most connections can't get around the reserved lanes and go through them anyway. Both stay as options (`order`, `reserve`) to try again with rip-up. The default is length order without reservation.
+- **The node limit** trades time for connections: 600k nodes gives 43, 1M gives 44, 1.5M gives 44.
+- **One hopeless search** (`J1.A5`, its lane leads into a pocket next to a via) still costs 13 s. Milestone 2 should notice an enclosed lane exit before searching.
+- **What's left is rip-up work.**
+  - 5 ESP32 module pins: the channel between the module and the 2.54 mm headers is full.
+  - 2 QFN pins.
+  - 1 USB-C pin.
+
+  Every one is "no lane" or "no path" after other nets took the space. Next is milestone 2: rip-up and reroute, then the shortcut pass.
+
