@@ -571,6 +571,13 @@ class DesignReviewTests(unittest.TestCase):
         for rule in ids:
             self.assertIn(f"**{rule}**", checklist)
         rules = self.skill("powerlab-pcb-design-rules")
+        # Lab rules brought in line with the handbook (also in odtu/Powerlab's file)
+        for rule in ("**0.5 A per 0.3 mm via**", "**Ø 8 mm keepout**", "place the hot loop first",
+                     "TVS and ESD diodes go at the connector", "Power input protection sits at the input connector",
+                     "Gate return is Kelvin", "Current-sense shunts use Kelvin connections",
+                     "No copper on any layer under the antenna", "within about 2.5 mm of its pin"):
+            self.assertIn(rule, rules)
+        self.assertNotIn("0.4 mm via ≈ 1.5 A", rules)
         self.assertIn("## 4. Layout review handbook", rules)
         self.assertIn("handbook/91-checklist.md", rules)
         for name in re.findall(r"`(\d\d-[a-z0-9-]+\.md)`", rules):
