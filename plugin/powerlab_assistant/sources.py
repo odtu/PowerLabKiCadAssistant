@@ -106,6 +106,7 @@ def is_kicad_schematic(text):
 
 
 EDITOR_TITLES = {"pcb": "PCB Editor", "schematic": "Schematic Editor"}
+LOCATE_TIMEOUT_MS = 5000
 EDITOR_NAMES = {"pcb": "PCB editor", "schematic": "schematic editor"}
 
 
@@ -381,6 +382,49 @@ class KiCadSource:
                 done(False)
 
         wx.CallLater(150, confirm)
+
+    def locate(self, target):
+        """Select what a `kicad:` link points at in the PCB editor and zoom to it. KiCad's
+        cross-probing then shows the same parts and nets in the schematic editor.
+
+        Runs off the GUI thread, on a connection of its own with a longer timeout (a net
+        on a big board is many items). Returns (items selected, what wasn't found)."""
+        from kipy import KiCad
+
+        from .review import parse_location, pick_items
+
+        where = parse_location(target)
+        name = f"powerlab-assistant-locate-{os.getpid()}"
+        if self.pid:
+            if not self.socket:
+                raise ConnectionError("this KiCad has no API connection")
+            kicad = KiCad(socket_path=self.socket, client_name=name, kicad_token="",
+                          timeout_ms=LOCATE_TIMEOUT_MS)
+        else:
+            kicad = KiCad(client_name=name, kicad_token=self.token, timeout_ms=LOCATE_TIMEOUT_MS)
+        board = kicad.get_board()
+        nets = bool(where["nets"])
+        items, missing, small = pick_items(
+            where, board.get_footprints(),
+            board.get_tracks() if nets or where["areas"] else [],
+            board.get_vias() if nets or where["areas"] else [],
+            board.get_pads() if nets else [])
+        kicad.run_action("pcbnew.EditorControl.clearHighlight")
+        board.clear_selection()
+        if not items:
+            return 0, missing
+        board.add_to_selection(items)
+        kicad.run_action("common.Control.zoomFitSelection")
+        if small:
+            kicad.run_action("common.Control.zoomOutCenter")
+        if nets:
+            kicad.run_action("pcbnew.EditorControl.highlightNetSelection")  # dims the rest
+        return len(items), missing
+
+    def show_pcb_editor(self):
+        hwnd = kicad_window.find_editor("PCB Editor", pid=self.pid)
+        if hwnd:
+            kicad_window.bring_to_front(hwnd)
 
     def kicad_version(self):
         try:

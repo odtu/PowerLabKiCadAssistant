@@ -502,6 +502,37 @@ class ChatHistoryTests(unittest.TestCase):
         panel.finished(0)
         self.assertFalse(any(e["kind"] == "review" for e in panel.emitted))
 
+    def test_clicked_location_is_shown_in_kicad(self):
+        from powerlab_assistant.panel import ClaudePanel
+        panel = self.fake_panel()
+        calls = []
+        results =[(3, []), (1, ["U9"]), (0, ["net NOPE"]), ConnectionError("no board")]
+
+        def locate(target):
+            calls.append(target)
+            result = results.pop(0)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        panel.source = types.SimpleNamespace(locate=locate, show_pcb_editor=lambda: calls.append("front"))
+        panel.in_background = lambda work, done: done(_run(work))
+
+        def _run(work):
+            try:
+                return work()
+            except Exception as exc:
+                return exc
+
+        for target in ("refs=U6", "refs=U6,U9", "net=NOPE", "refs=U1"):
+            ClaudePanel.msg_locate(panel, {"type": "locate", "target": target})
+        self.assertEqual(calls, ["refs=U6", "front", "refs=U6,U9", "front", "net=NOPE", "refs=U1"])
+        notes = [(e["level"], e["text"]) for e in panel.emitted]
+        self.assertEqual(notes[0], ("info", "Not found on the board: U9"))
+        self.assertEqual(notes[1], ("warn", "Not found on the board: net NOPE"))
+        self.assertIn("Open the board in the PCB editor", notes[2][1])
+        self.assertEqual(len(notes), 3)
+
 
 class DesignReviewTests(unittest.TestCase):
     """The review handbook, the design-review skill, and the review's HTML and PDF."""
@@ -586,6 +617,53 @@ class DesignReviewTests(unittest.TestCase):
         self.assertIn("&lt;script&gt;", body)
         self.assertFalse(self.review.is_review(os.path.join(self.folder, "notes.md")))
         self.assertTrue(self.review.is_review(self.md.upper()))
+
+    def test_locations_are_parsed(self):
+        parse = self.review.parse_location
+        self.assertEqual(parse("refs=U6,Q2&net=GLC"), {"refs": ["U6", "Q2"], "nets": ["GLC"], "areas": []})
+        self.assertEqual(parse("U1")["refs"], ["U1"])
+        self.assertEqual(parse("net=Net-%28U1-Pad3%29&net=A%2CB")["nets"], ["Net-(U1-Pad3)", "A,B"])
+        self.assertEqual(parse("area=20,30,10,5")["areas"], [(10, 5, 20, 30)])
+        self.assertEqual(parse("at=100,50")["areas"], [(97.5, 47.5, 102.5, 52.5)])
+        self.assertEqual(parse("at=x,1&area=1,2&bogus=3"), {"refs": [], "nets": [], "areas": []})
+
+    def test_location_picks_board_items(self):
+        from types import SimpleNamespace as NS
+
+        def at(x, y):
+            return NS(x=int(x * 1e6), y=int(y * 1e6))
+
+        u6 = NS(reference_field=NS(text=NS(value="U6")), position=at(100, 50))
+        q2 = NS(reference_field=NS(text=NS(value="Q2")), position=at(104, 52))
+        track = NS(net=NS(name="GLC"), start=at(100, 50), end=at(160, 50))
+        via = NS(net=NS(name="GLC"), position=at(160, 50))
+        pad = NS(net=NS(name="GLC"), position=at(100, 50))
+        other = NS(net=NS(name="GND"), start=at(0, 0), end=at(1, 1))
+        board = ([u6, q2], [track, other], [via], [pad])
+        pick = lambda target: self.review.pick_items(self.review.parse_location(target), *board)
+        items, missing, small = pick("refs=u6,Q2,U9")
+        self.assertEqual((items, missing, small), ([u6, q2], ["U9"], True))  # small: zoomed out once
+        items, missing, small = pick("net=GLC")
+        self.assertEqual((items, missing, small), ([track, via, pad], [], False))
+        items, missing, _ = pick("at=160,50&net=NOPE")
+        self.assertEqual((items, missing), ([track, via], ["net NOPE"]))
+        self.assertEqual(pick("area=0,0,1,1")[0], [other])
+        self.assertEqual(pick("at=500,500")[:2], ([], ["anything at (497.5, 497.5)–(502.5, 502.5) mm"]))
+
+    def test_location_links_are_clickable_in_the_panel_only(self):
+        body = self.review.body_html(
+            '| F1 | [under L1](kicad:refs=L1&net=BUCK_PG) |\n|---|---|\n| x | [a"b](kicad:refs="><script>) |\n',
+            self.folder)
+        self.assertIn('<a class="loc" data-loc="refs=L1&amp;net=BUCK_PG" title="Show in KiCad">under L1</a>', body)
+        self.assertNotIn("<script>", body)
+        self.assertIn("a.loc { color: inherit;", self.review.CSS)  # plain text in the PDF
+        with open(os.path.join(ROOT, "plugin", "powerlab_assistant", "panel.html"), encoding="utf-8") as f:
+            page = f.read()
+        self.assertIn("kicad:([^)\\s]+)", page)  # Claude's replies get the links too
+        self.assertIn("post({ type: 'locate', target: loc.dataset.loc })", page)
+        skill = self.skill("powerlab-design-review")
+        self.assertIn("(kicad:refs=U6,Q2)", skill)
+        self.assertIn("kicad:net=Net-%28U1-Pad3%29", skill)
 
     def test_without_edge_the_html_is_saved_instead(self):
         with open(self.md, "w", encoding="utf-8") as f:

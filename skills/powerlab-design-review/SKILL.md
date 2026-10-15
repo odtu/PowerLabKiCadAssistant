@@ -58,7 +58,7 @@ Never write the final review while DRC shows errors you could fix. Never stop a 
 2. **Write `design-review\design-review.md`** in the project folder with the Write tool, in the format below. Replace an older one.
    - The panel turns it into `design-review.pdf` next to it and shows the whole review in the chat after your reply. Don't make the PDF yourself and don't open it.
    - In a terminal session (not the panel) there is no PDF: tell the user where the `.md` file is.
-3. **Reply in a few lines:** the verdict, the counts, and the "needs you" items as a short numbered list. The full review shows under your reply, so don't repeat it. If a "needs you" item has clear options, end with a `<choices>` block.
+3. **Reply in a few lines:** the verdict, the counts, and the "needs you" items as a short numbered list, with the same `kicad:` links. The full review shows under your reply, so don't repeat it. If a "needs you" item has clear options, end with a `<choices>` block.
 
 ### Format
 
@@ -78,18 +78,18 @@ Keep to this structure. The panel and the PDF understand headings, `-` lists, nu
 ## Needs you
 | # | Rule | Where | Finding | What to do |
 |---|---|---|---|---|
-| N1 | RF-006 | Top edge, J1 | J1 is 1.9 mm from the antenna keepout; at least 10 mm is needed. | Move J1 to the top left next to SW1, or accept a shorter Wi-Fi range. |
+| N1 | RF-006 | [Top edge, J1](kicad:refs=J1) | J1 is 1.9 mm from the antenna keepout; at least 10 mm is needed. | Move J1 to the top left next to SW1, or accept a shorter Wi-Fi range. |
 
 ## Open findings
 ### High
 | # | Rule | Where | Finding | Confidence | Fix |
 |---|---|---|---|---|---|
-| F1 | SMPS-006 | Middle left, under L1 | BUCK_PG (In2.Cu, 0.2 mm) runs under the inductor L1. | Certain | Route it outside L1's body (x 7.8–14.1, y 32.0–40.5 mm). |
+| F1 | SMPS-006 | [Middle left, under L1](kicad:refs=L1&net=BUCK_PG) | BUCK_PG (In2.Cu, 0.2 mm) runs under the inductor L1. | Certain | Route it outside L1's body (x 7.8–14.1, y 32.0–40.5 mm). |
 
 ## Fixed during the review
 | Round | Rule | Where | Change |
 |---|---|---|---|
-| 1 | PWR-006 | U2, right side | C5 moved from 4.2 mm to 1.1 mm of U2 pin 7. |
+| 1 | PWR-006 | [U2, right side](kicad:refs=U2,C5) | C5 moved from 4.2 mm to 1.1 mm of U2 pin 7. |
 
 ## Checked and fine
 - In1.Cu is a continuous GND plane under all signals (STK-002, GND-001).
@@ -109,6 +109,13 @@ Keep to this structure. The panel and the PDF understand headings, `-` lists, nu
 - **Severity** comes from the rule (handbook) or, for lab rules (`§3.4`), from how much it matters. Order: Critical, High, Medium, Low, Cosmetic. Show doubt in the confidence (Certain / Likely / Needs verification), not by lowering the severity.
 - **Number** open findings F1, F2, … and "needs you" items N1, N2, …, across the whole report.
 - **Where:** a place on the board in words plus the reference designators ("top right, between U6 and Q2"), and coordinates when that helps.
+- **Make every "Where" a `kicad:` link,** so a click in the panel selects that place in KiCad and zooms to it (the schematic editor follows by cross-probing). Point at what the finding is about:
+  - parts: `[top right, U6 → Q2](kicad:refs=U6,Q2)`
+  - a net (its tracks, vias and pads, highlighted): `[GLC gate track](kicad:net=GLC)`
+  - parts and a net: `[under L1](kicad:refs=L1&net=BUCK_PG)`
+  - a place with no part on it, in mm in board coordinates as KiCad shows them: `kicad:area=x1,y1,x2,y2`, or `kicad:at=x,y` for what lies within 2.5 mm of a point
+  - In net names, write `(`, `)`, `&`, `,`, `%` and spaces as `%28`, `%29`, `%26`, `%2C`, `%25` and `%20`: `kicad:net=Net-%28U1-Pad3%29`.
+  - Use the board's real references and net names, and check them: a link to something not on the board only shows "Not found".
 - **Measured numbers** in findings and fixes, with the limit they break.
 - **Each problem once,** under its primary rule.
 - **Verdict:** one of "Ready to order", "Ready to order after the items under Needs you", or "Not ready: <the main reason>". "Ready to order" needs 0 DRC errors, no open Critical or High findings, and nothing under "Needs you".

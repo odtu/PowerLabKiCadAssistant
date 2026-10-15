@@ -130,6 +130,10 @@ header {
 }
 .assistant pre code { background: none; padding: 0; }
 .assistant a { color: var(--accent); }
+/* a place on the board: click to select it and zoom to it in KiCad */
+a.loc { color: var(--accent); cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
+a.loc::after { content: ' \2316'; font-size: .9em; text-decoration: none; display: inline-block; margin-left: 1px; }
+a.loc:hover { text-decoration-style: solid; }
 .assistant table { border-collapse: collapse; margin: 0 0 8px; font-size: 12px; display: block; overflow-x: auto; }
 .assistant th, .assistant td { border: 1px solid var(--border); padding: 3px 7px; text-align: left; }
 .assistant th { background: var(--surface-2); }
@@ -386,6 +390,7 @@ function inline(s) {
     .replace(/`([^`]+)`/g, '<code>$1</code>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/(^|[^*])\*([^*\s][^*]*)\*/g, '$1<em>$2</em>')
+    .replace(/\[([^\]]+)\]\(kicad:([^)\s]+)\)/g, '<a class="loc" data-loc="$2" title="Show in KiCad">$1</a>')
     .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2">$1</a>');
 }
 
@@ -724,6 +729,11 @@ function autosize() { input.style.height = 'auto'; input.style.height = Math.min
 input.addEventListener('input', () => { autosize(); updateSend(); });
 input.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); } });
 send.addEventListener('click', submit);
+// A place on the board, in a review or a reply: select it and zoom to it in KiCad.
+log.addEventListener('click', e => {
+  const loc = e.target.closest && e.target.closest('a.loc');
+  if (loc) { e.preventDefault(); post({ type: 'locate', target: loc.dataset.loc }); }
+});
 $('attach').addEventListener('click', () => post({ type: 'attach' }));
 input.addEventListener('paste', e => {
   const files = [...((e.clipboardData && e.clipboardData.files) || [])];

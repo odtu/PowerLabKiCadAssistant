@@ -56,6 +56,7 @@ code { font-family: Consolas, monospace; font-size: 9pt; background: #eef1f4; pa
 pre { background: #eef1f4; padding: 6pt 8pt; border-radius: 4pt; white-space: pre-wrap; }
 pre code { background: none; padding: 0; }
 a { color: #1f5fa8; }
+a.loc { color: inherit; text-decoration: none; }  /* clickable in the panel only */
 figure { margin: 8pt 0 12pt; break-inside: avoid; }
 figure img { display: block; box-sizing: border-box; max-width: 100%; max-height: 235mm; margin: 0 auto; border: 0.75pt solid #c9d0d7; }
 figcaption { font-size: 9pt; color: #5b6672; text-align: center; margin-top: 3pt; }
@@ -80,7 +81,108 @@ def _inline(text):
     out = re.sub(r"`([^`]+)`", r"<code>\1</code>", out)
     out = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", out)
     out = re.sub(r"(^|[^*])\*([^*\s][^*]*)\*", r"\1<em>\2</em>", out)
+    # A place on the board (see parse_location): the panel shows it in KiCad when clicked.
+    out = re.sub(r"\[([^\]]+)\]\(kicad:([^)\s]+)\)",
+                 r'<a class="loc" data-loc="\2" title="Show in KiCad">\1</a>', out)
     return re.sub(r"\[([^\]]+)\]\((https?:[^)\s]+)\)", r'<a href="\2">\1</a>', out)
+
+
+NEAR_MM = 2.5  # at=x,y: what lies within this distance of the point
+SMALL_MM = 10.0  # a selection smaller than this gets zoomed out once, to show its surroundings
+
+
+def parse_location(target):
+    """A `kicad:` link target -> {"refs": [...], "nets": [...], "areas": [(x1, y1, x2, y2)]}.
+
+    `refs=U6,Q2` parts; `net=GLC` a net (repeatable); `area=x1,y1,x2,y2` and `at=x,y` places,
+    in mm in board coordinates as KiCad shows them. Joined with `&`; values percent-encoded.
+    A bare `U6,Q2` means refs."""
+    from urllib.parse import unquote
+
+    found = {"refs": [], "nets": [], "areas": []}
+    for part in (target or "").strip().split("&"):
+        key, sep, value = part.partition("=")
+        if not sep:
+            key, value = "refs", part
+        key = key.strip().lower()
+        if key == "net":
+            if unquote(value).strip():
+                found["nets"].append(unquote(value).strip())
+            continue
+        values = [unquote(v).strip() for v in value.split(",") if unquote(v).strip()]
+        if key in ("refs", "ref"):
+            found["refs"] += values
+            continue
+        try:
+            numbers = [float(v) for v in values]
+        except ValueError:
+            continue
+        if key == "area" and len(numbers) == 4:
+            x1, y1, x2, y2 = numbers
+            found["areas"].append((min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)))
+        elif key == "at" and len(numbers) == 2:
+            x, y = numbers
+            found["areas"].append((x - NEAR_MM, y - NEAR_MM, x + NEAR_MM, y + NEAR_MM))
+    return found
+
+
+def _mm(point):
+    return point.x / 1e6, point.y / 1e6
+
+
+def pick_items(where, footprints, tracks, vias, pads):
+    """The board items a parse_location() result points at.
+
+    Returns (items, missing, small): missing lists the refs, nets and places with nothing
+    on the board; small is True when everything picked fits in SMALL_MM."""
+    items, missing, points = [], [], []
+
+    def take(item, *spots):
+        if all(item is not other for other in items):
+            items.append(item)
+        points.extend(spots)
+
+    by_ref = {fp.reference_field.text.value.upper(): fp for fp in footprints}
+    for ref in where["refs"]:
+        fp = by_ref.get(ref.upper())
+        if fp is None:
+            missing.append(ref)
+        else:
+            take(fp, _mm(fp.position))
+    for net in where["nets"]:
+        hits = 0
+        for t in tracks:
+            if t.net.name == net:
+                take(t, _mm(t.start), _mm(t.end))
+                hits += 1
+        for item in list(vias) + list(pads):
+            if item.net.name == net:
+                take(item, _mm(item.position))
+                hits += 1
+        if not hits:
+            missing.append(f"net {net}")
+    for x1, y1, x2, y2 in where["areas"]:
+        def inside(p):
+            return x1 <= p[0] <= x2 and y1 <= p[1] <= y2
+        hits = 0
+        for fp in footprints:
+            if inside(_mm(fp.position)):
+                take(fp, _mm(fp.position))
+                hits += 1
+        for t in tracks:
+            ends = [p for p in (_mm(t.start), _mm(t.end)) if inside(p)]
+            if ends:
+                take(t, *ends)
+                hits += 1
+        for v in vias:
+            if inside(_mm(v.position)):
+                take(v, _mm(v.position))
+                hits += 1
+        if not hits:
+            missing.append(f"anything at ({x1:g}, {y1:g})–({x2:g}, {y2:g}) mm")
+    small = bool(points) and max(max(p[0] for p in points) - min(p[0] for p in points),
+                                 max(p[1] for p in points) - min(p[1] for p in points)) < SMALL_MM
+    return items, missing, small
 
 
 def _image(alt, src, base_dir, for_panel):

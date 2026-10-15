@@ -83,6 +83,10 @@ PANEL_NOTE = (
     "'Board file' path above, then retry the tool once.\n"
     "Images you open with the Read tool are shown to the user in the panel automatically, "
     "so never try to open them in another program.\n"
+    "When you name parts, nets or places on the board, make them links the user can click "
+    "to see them in KiCad: [U6 and Q2](kicad:refs=U6,Q2), [the GLC track](kicad:net=GLC), "
+    "or a spot in mm, [here](kicad:at=120.5,80.2). The panel selects them in the PCB editor "
+    "and zooms there; the schematic editor follows.\n"
     "kicad-cli is already on PATH. Run it by name as a single plain command, e.g. "
     "`kicad-cli sch export pdf -o out.pdf design.kicad_sch` - never locate it first, and never "
     "use variables, `&`, `;`, pipes or its full path: the panel only allows a plain "
@@ -434,6 +438,28 @@ class ClaudePanel(wx.Frame):
     def msg_open(self, msg):
         if os.path.isfile(msg.get("path", "")):
             os.startfile(msg["path"])
+
+    def msg_locate(self, msg):
+        """A `kicad:` link was clicked: show that place in the PCB editor (and, through
+        KiCad's cross-probing, in the schematic editor)."""
+        target = str(msg.get("target", ""))[:2000]
+        locate = getattr(self.source, "locate", None)
+        if not target or not locate:
+            return
+
+        def done(result):
+            if isinstance(result, Exception):
+                self.emit("note", level="warn", text="Couldn't show it in KiCad. Open the board in "
+                          "the PCB editor (with the KiCad API on) and click again.")
+                return
+            count, missing = result
+            if count:
+                self.source.show_pcb_editor()
+            if missing:
+                self.emit("note", level="warn" if not count else "info",
+                          text="Not found on the board: " + ", ".join(missing))
+
+        self.in_background(lambda: locate(target), done)
 
     def msg_reload(self, msg):
         self.reload_editor()
