@@ -4,7 +4,9 @@
 """
 
 import base64
+import math
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -1018,6 +1020,88 @@ class McpPatchTests(unittest.TestCase):
     def test_session_vias_keep_their_annular_ring(self):
         self.assertIn("via_drills = _repair_via_drills(self.board)", self.patch())
 
+    def router_package(self):
+        """The router's files from the patch, as an importable package in a temp folder."""
+        root = tempfile.mkdtemp()
+        pkg = os.path.join(root, "commands", "powerlab_router")
+        os.makedirs(pkg)
+        open(os.path.join(root, "commands", "__init__.py"), "w").close()
+        for name in re.findall(r"\+\+\+ b/python/commands/powerlab_router/(\w+\.py)", self.patch()):
+            with open(os.path.join(pkg, name), "w", encoding="utf-8") as f:
+                f.write(self.new_file(f"python/commands/powerlab_router/{name}") + "\n")
+        return root
+
+    def test_powerlab_router_shortcut(self):
+        """Milestone 2: the shortcut pass straightens a staircase, keeps the pad lanes and
+        never turns by more than 45 degrees."""
+        module = types.ModuleType("finish")
+        exec(self.new_file("python/commands/powerlab_router/finish.py"), module.__dict__)
+        # pad centre, lane exit, a staircase, then the far lane exit and pad centre
+        pts = [(0, 0), (1, 0), (1.5, 0.5), (2, 0.5), (2.5, 1), (3, 1), (3.5, 1.5), (5, 1.5), (6, 1.5)]
+        out = module._shorten(lambda a, b: True, pts, 1, len(pts) - 2)
+        self.assertEqual(out[:2], pts[:2])
+        self.assertEqual(out[-2:], pts[-2:])
+        self.assertLess(len(out), len(pts))
+        self.assertLess(module._length(out), module._length(pts))
+        dirs = [module._unit(a, b) for a, b in zip(out, out[1:])]
+        self.assertTrue(all(module._turn_ok(u, v) for u, v in zip(dirs, dirs[1:])))
+        for a, b in zip(out, out[1:]):
+            self.assertTrue(module._octilinear(b[0] - a[0], b[1] - a[1]))
+        # nothing is clear: nothing changes
+        self.assertEqual(module._shorten(lambda a, b: False, pts, 1, len(pts) - 2), pts)
+
+    def test_powerlab_router_routes_a_board(self):
+        """Milestone 2, end to end: two pads with another net's pad between them. The track
+        goes around it, starts and ends at the pad centres, and turns by 45 degrees at most."""
+        try:
+            import pcbnew
+        except ImportError:
+            self.skipTest("needs KiCad's Python")
+        sys.path.insert(0, self.router_package())
+        try:
+            for m in [m for m in sys.modules if m == "commands" or m.startswith("commands.")]:
+                del sys.modules[m]
+            from commands.powerlab_router.router import Router
+        finally:
+            sys.path.pop(0)
+        mm, P = pcbnew.FromMM, lambda x, y: pcbnew.VECTOR2I(pcbnew.FromMM(x), pcbnew.FromMM(y))
+        board = pcbnew.BOARD()
+        for a, b in (((0, 0), (30, 0)), ((30, 0), (30, 20)), ((30, 20), (0, 20)), ((0, 20), (0, 0))):
+            edge = pcbnew.PCB_SHAPE(board, pcbnew.SHAPE_T_SEGMENT)
+            edge.SetStart(P(*a)); edge.SetEnd(P(*b)); edge.SetLayer(pcbnew.Edge_Cuts); edge.SetWidth(mm(0.1))
+            board.Add(edge)
+        nets = {}
+        for name in ("SIG", "OTHER"):
+            nets[name] = pcbnew.NETINFO_ITEM(board, name)
+            board.Add(nets[name])
+        for ref, (x, y), size, net in (("R1", (5, 10), (1, 1), "SIG"), ("R2", (25, 10), (1, 1), "SIG"),
+                                       ("U1", (15, 10), (2, 8), "OTHER")):
+            fp = pcbnew.FOOTPRINT(board)
+            fp.SetReference(ref)
+            fp.SetPosition(P(x, y))
+            pad = pcbnew.PAD(fp)
+            pad.SetShape(pcbnew.PAD_SHAPE_RECTANGLE)
+            pad.SetAttribute(pcbnew.PAD_ATTRIB_SMD)
+            pad.SetLayerSet(pcbnew.PAD.SMDMask())
+            pad.SetSize(pcbnew.F_Cu, P(*size))
+            pad.SetPosition(P(x, y))
+            pad.SetNumber("1")
+            pad.SetNet(nets[net])
+            fp.Add(pad)
+            board.Add(fp)
+        report = Router(board).run(["SIG"])
+        self.assertEqual(report["routed"], 1, report["left"])
+        tracks = [t for t in board.GetTracks() if t.Type() == pcbnew.PCB_TRACE_T]
+        ends = {(round(pcbnew.ToMM(p.x), 3), round(pcbnew.ToMM(p.y), 3)) for t in tracks for p in (t.GetStart(), t.GetEnd())}
+        self.assertIn((5.0, 10.0), ends)  # pad centres
+        self.assertIn((25.0, 10.0), ends)
+        for t in tracks:
+            dx, dy = pcbnew.ToMM(t.GetEnd().x - t.GetStart().x), pcbnew.ToMM(t.GetEnd().y - t.GetStart().y)
+            angle = math.degrees(math.atan2(dy, dx)) % 45
+            self.assertTrue(angle < 0.5 or angle > 44.5, (dx, dy))
+            # around U1's pad, never through it
+            self.assertFalse(13.8 < pcbnew.ToMM(t.GetStart().x) < 16.2 and 5.8 < pcbnew.ToMM(t.GetStart().y) < 14.2)
+
     def test_powerlab_router_rules(self):
         """Milestone 1: clearance rules from .kicad_dru, last match wins, unknown terms only
         ever make the clearance larger."""
@@ -1130,10 +1214,24 @@ class McpPatchTests(unittest.TestCase):
         self.assertEqual({s[2] for s in path}, {0, 1})
         check_turns(path, 2)
 
-        # no via allowed: no path
+        # no via allowed: no path, and the pocket check sees it without a search
         path, _ = module.search([grid(wall), grid()], bytes(nx * ny), nx, ny, 0.1, [(2, 20, 0, 0, 0.0)],
                                 {(35, 20, 1): (0, 0.0)}, (0, 0, nx - 1, ny - 1), costs)
         self.assertIsNone(path)
+        self.assertTrue(module.enclosed([grid(wall), grid()], bytes(nx * ny), nx, ny, [(2, 20, 0, 0, 0.0)],
+                                        {(35, 20, 1): (0, 0.0)}))
+        self.assertFalse(module.enclosed([grid(wall), grid()], vias_ok, nx, ny, [(2, 20, 0, 0, 0.0)],
+                                         {(35, 20, 1): (0, 0.0)}))
+
+        # a penalty steers the path away from cells without blocking them
+        band = bytearray(nx * ny)
+        for i in range(12, 28):
+            for j in range(15, 25):
+                band[j * nx + i] = 50
+        path, _ = module.search([grid()], grid(), nx, ny, 0.1, [(2, 20, 0, 0, 0.0)], {(37, 20, 0): (0, 0.0)},
+                                (0, 0, nx - 1, ny - 1), costs, penalty=[bytes(band)])
+        self.assertIsNotNone(path)
+        self.assertFalse(any(15 <= j < 25 and 12 <= i < 28 for i, j, *_ in path))
 
     def test_autoroute_can_be_undone(self):
         """File > Revert loads the routed file, so autoroute keeps the board from before it."""

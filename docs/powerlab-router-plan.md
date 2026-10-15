@@ -1,6 +1,6 @@
 # PowerLab router: design plan
 
-Status: milestones 0 and 1 done (results in §12 and §13). The router isn't a tool yet: its code is in the MCP patch (`python/commands/powerlab_router/`), and `tools/router_bench.py` runs it. Phase 1 (pad-centre entry and shortcuts in `clean_up_routing`) is on hold.
+Status: milestones 0–2 done (results in §12–14). The router isn't a tool yet: its code is in the MCP patch (`python/commands/powerlab_router/`), and `tools/router_bench.py` runs it. Phase 1 (pad-centre entry and shortcuts in `clean_up_routing`) is on hold.
 
 ## 1. Why
 
@@ -265,4 +265,61 @@ On the 27 nets both finished: 394.5 mm against 365.0 mm (+8%), 18 vias against 1
   - 1 USB-C pin.
 
   Every one is "no lane" or "no path" after other nets took the space. Next is milestone 2: rip-up and reroute, then the shortcut pass.
+
+## 14. Milestone 2 results (2026-10-15)
+
+**What was built:**
+- **Rip-up and reroute** (`router.py`), when a connection finds no way:
+  - It searches again with the router's copper of the same or later groups passable at a cost: 1 mm per cell, `SOFT`.
+  - It rips up the connections whose copper the new way touches, takes the way, and queues those connections again.
+  - Never ripped up: copper of earlier groups, the board's own copper, and a net that also has copper that may not be ripped.
+  - Limits: a connection is ripped up at most 3 times and rips others up at most 3 times, with 2 rip-ups per connection overall.
+  - Cells fought over get a growing history cost (PathFinder).
+  - If the rip-up search finds a way that touches no copper at all, it is kept as it is. The normal grid had been too pessimistic at a pin.
+- **Grids:** the board's own copper and the router's are kept apart (`model.py`), so the router's copper of chosen nets can be "soft" for that search. A grid created mid-run, e.g. for a margin retry, knows which copper is the router's.
+- **Shortcut pass** (`finish.py`), after routing:
+  - It takes the farthest straight or straight + 45° jump that is clear, if it is shorter or as long with fewer corners. A staircase of 45° and 90° steps is as long as one dogleg.
+  - Lanes and vias stay. Every corner still turns by 45° at most.
+- **Fail fast:**
+  - A flood fill notices lanes that open into a closed pocket.
+  - The node limit grows with the connection's length: 100k + 40k per mm, at most 1M. A 2 mm connection that needs a million nodes won't find a way. `J1.A5` now gives up in 1.4 s instead of 12 s.
+- **Board edge:**
+  - The exact checks include it now.
+  - The grid's "inside the board" mask shrinks one more cell. Pillow's fill erred outward, and a via landed at 0.45 mm from the edge (minimum 0.5).
+- **Thermal spokes:** cells in front of pour-net pads' spokes cost 2 mm per cell, so new tracks keep clear of them.
+- **Via cost:** 4 mm of track by default (was 2).
+- **Tests:**
+  - shortcut;
+  - pocket check;
+  - penalties;
+  - an end-to-end route of a small board: around another net's pad, ends at both pad centres, 45° turns only. It builds the package from the patch.
+
+**TestPCB, same benchmark:**
+
+| | Routed | Time | New DRC errors | Track | Vias |
+|---|---|---|---|---|---|
+| M1 default | 44 of 52 | 74 s | 0 | 410 mm | 15 |
+| M2, via cost 2 | 51 | 168 s | 2 starved thermal | 555 mm | 36 |
+| **M2 default, via cost 4** | **51** | **121 s** | 2 starved thermal | 557 mm | 33 |
+| M2, via cost 8 | 50 | 125 s | 1 starved thermal | 520 mm | 24 |
+| Freerouting + `clean_up_routing` | 51 | 69 s | 26: 17 clearance, 3 shorts, 3 hole clearance, 1 crossing, 2 starved thermal | 503 mm | 15 |
+
+- **Rip-up** ran 12 times and moved 15 connections. It untangled the ESP32 fan-out to the headers, where several pins had been boxed in.
+- **The shortcut pass** changed 43 connections: 80 corners fewer, 4.4 mm shorter.
+- **Left:** `J1.A5`, the USB-C pin whose only lane leads into a pocket next to a `USB_DP` via. That via is the board's own copper, so nothing may rip it up.
+
+**What this showed:**
+- **Completion now matches Freerouting** on TestPCB, with no clearance errors, against Freerouting's 26 DRC errors including 3 shorts.
+- **Still behind Freerouting** on:
+  - time: 121 s against 69 s;
+  - length: about 10% more;
+  - vias: 33 against 15.
+
+  Rip-up and history costs push connections onto the other layer. A dearer via trades completion for vias.
+- **The 2 starved thermals** are GND pads in pockets of the pour that new tracks cut off from the rest. That is pour integrity, not spokes. The autoroute skill already gives such a pad a via after the zone fill (§3.3). Teaching the router to keep pours whole goes to milestone 3.
+
+**Next (milestone 3), besides the lab costs already planned:**
+- keep pours in one piece (cost for cutting a pour-net region off);
+- fewer vias, e.g. a rip-up search that may not add vias first;
+- speed: incremental lane counts, a coarse corridor search before the 0.1 mm one.
 

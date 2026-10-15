@@ -10,7 +10,7 @@ JSON summary: routed/left per group, time, search nodes, retries, new DRC errors
 The board's .kicad_pro and .kicad_dru are copied next to the output, so the router and
 DRC use the same custom rules. Costs can be set with the environment variables TURN, RUN
 (min straight cells between turns), VIA, NODES (node limit per search), ORDER
-("constrained" or "length") and RESERVE (1 = block waiting pins' lanes, 0 = don't).
+("length" or "constrained"), RIPUP (1/0) and FINISH (1/0, the shortcut pass).
 """
 import json
 import os
@@ -48,13 +48,13 @@ def main(src, out, only=None, pitch=0.1):
     base = drc.errors(b)
 
     env = os.environ.get
-    costs = Costs(turn=float(env("TURN", "0.4")), via=float(env("VIA", "2.0")), min_run=int(env("RUN", "2")),
+    costs = Costs(turn=float(env("TURN", "0.4")), via=float(env("VIA", "4.0")), min_run=int(env("RUN", "2")),
                   layer_factor={1: 1.2}, max_nodes=int(env("NODES", "1000000")))
-    router = Router(b, pitch=pitch, costs=costs, order=env("ORDER", "length"), reserve=env("RESERVE", "0") == "1")
+    router = Router(b, pitch=pitch, costs=costs, order=env("ORDER", "length"), ripup=env("RIPUP", "1") == "1",
+                    finish=env("FINISH", "1") == "1")
 
     def log(r):
-        print(r["net"], r["connection"], r["group"], "lanes", r["lanes"], r["length"],
-              "ok" if r["ok"] else r["reason"], r.get("nodes"), r.get("seconds"))
+        print(r["net"], r["connection"], r["group"], r["event"], r.get("nodes"), r.get("seconds"))
 
     report = router.run(nets, log=log)
     pcbnew.ZONE_FILLER(b).Fill(b.Zones())
@@ -66,7 +66,7 @@ def main(src, out, only=None, pitch=0.1):
         kinds[k] = kinds.get(k, 0) + 1
     length = sum(pcbnew.ToMM(t.GetLength()) for t in b.GetTracks() if t.Type() == pcbnew.PCB_TRACE_T and t.GetNetname() in nets)
     vias = sum(1 for t in b.GetTracks() if t.Type() == pcbnew.PCB_VIA_T and t.GetNetname() in nets)
-    report.pop("rows")
+    report.pop("connections_list")
     report.update(pitch=pitch, new_drc_errors=kinds, track_mm=round(length, 1), vias=vias)
     print(json.dumps(report, indent=1))
     drc.close()
