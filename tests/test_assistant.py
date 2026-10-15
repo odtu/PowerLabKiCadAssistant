@@ -941,6 +941,80 @@ class McpPatchTests(unittest.TestCase):
         self.assertIn('(keepout "" (polygon F.Cu 0 0 0 10 0 10 10 0 10))', out)
         self.assertEqual(out.count("("), out.count(")"))
 
+    def test_live_autoroute_copper(self):
+        """Live autoroute: partial results replace each other in KiCad; locked copper stays."""
+        try:
+            import pcbnew
+            from kipy.board_types import Track, Via
+            from kipy.geometry import Vector2
+            from kipy.proto.board.board_types_pb2 import BoardLayer
+        except ImportError:
+            self.skipTest("needs KiCad's Python with kipy")
+        patch = self.patch()
+        self.assertIn('"autoroute": self._handle_autoroute,', patch)
+        self.assertIn("for idx in range(0 if live else attempts):", patch)
+        self.assertIn("--api_server.authentication.enabled=false", patch)
+        module = types.ModuleType("freerouting_live")
+        exec(self.new_file("python/commands/freerouting_live.py"), module.__dict__)
+
+        # The same track has the same key on both sides, whichever way round it's drawn
+        board = pcbnew.BOARD()
+        net = pcbnew.NETINFO_ITEM(board, "SIG")
+        board.Add(net)
+        t = pcbnew.PCB_TRACK(board)
+        t.SetStart(pcbnew.VECTOR2I(3000000, 1000000)); t.SetEnd(pcbnew.VECTOR2I(1000000, 1000000))
+        t.SetWidth(200000); t.SetLayer(pcbnew.B_Cu); t.SetNet(net)
+        board.Add(t)
+        (key, spec), = module.pcbnew_copper(board).items()
+        k = Track()
+        k.start, k.end = Vector2.from_xy(1000000, 1000000), Vector2.from_xy(3000000, 1000000)
+        k.width, k.layer = 200000, BoardLayer.BL_B_Cu
+        self.assertEqual(module.kipy_key(k)[:-1], key[:-1])  # the kipy track has no net
+        self.assertEqual(key[-1], "SIG")
+        self.assertEqual(module.pcbnew_copper(board, ["SIG"]), {})
+
+        class FakeBoard:
+            def __init__(self):
+                self.items, self.commits = [], 0
+            def get_nets(self):
+                return []
+            def begin_commit(self):
+                return object()
+            def push_commit(self, commit, message):
+                self.commits += 1
+            def create_items(self, items):
+                self.items += items
+                return items
+            def remove_items(self, items):
+                self.items = [i for i in self.items if all(i is not r for r in items)]
+            def get_tracks(self):
+                return [i for i in self.items if isinstance(i, Track)]
+            def get_vias(self):
+                return [i for i in self.items if isinstance(i, Via)]
+
+        def track(x):
+            spec = {"kind": "track", "layer": "F.Cu", "start": (x, 0), "end": (x, 1000), "width": 200, "net": ""}
+            return ("t", "F.Cu", x, 0, x, 1000, 200, ""), spec
+        via = (("v", 5, 5, 600, 300, ""), {"kind": "via", "pos": (5, 5), "dia": 600, "drill": 300, "net": ""})
+        fake = FakeBoard()
+        locked = Track()
+        locked.start, locked.end = Vector2.from_xy(9, 0), Vector2.from_xy(9, 1000)
+        locked.width, locked.layer, locked.locked = 200, BoardLayer.BL_F_Cu, True
+        fake.items.append(locked)
+        copper = module.LiveCopper(fake)
+        copper.show(dict([track(1), track(2)]))
+        copper.show(dict([track(2), track(3), via]))
+        self.assertEqual(sorted(copper.shown), sorted([track(2)[0], track(3)[0], via[0]]))
+        self.assertEqual(len(fake.items), 4)  # the locked track and this run's three items
+        copper.show(dict([track(2), track(3), via]))  # nothing new: no commit
+        self.assertEqual(fake.commits, 2)
+        result = copper.finish(dict([track(3), track(4)]))  # final result
+        self.assertEqual(result, {"added": 1, "removed": 2, "locked_kept": 1})
+        self.assertEqual(sorted(module.kipy_key(i) for i in fake.items),
+                         sorted([track(3)[0], track(4)[0], track(9)[0]]))
+        copper.clear()  # after finish there's nothing left to take back
+        self.assertEqual(len(fake.items), 3)
+
     def test_session_vias_keep_their_annular_ring(self):
         self.assertIn("via_drills = _repair_via_drills(self.board)", self.patch())
 

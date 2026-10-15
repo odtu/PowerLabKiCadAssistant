@@ -163,14 +163,15 @@ index 16a4915..cef014b 100644
                          f.write(image_bytes)
                      return {
 diff --git a/python/commands/freerouting.py b/python/commands/freerouting.py
-index 0c12af2..fcc644b 100644
+index 0c12af2..7dd6a2b 100644
 --- a/python/commands/freerouting.py
 +++ b/python/commands/freerouting.py
-@@ -19,9 +19,43 @@ import time
+@@ -19,9 +19,44 @@ import time
  from pathlib import Path
  from typing import Any, Dict, Iterable, List, Optional, Tuple
  
 +from commands.pour_nets import PLACEHOLDER_NET, leave_to_pours
++from commands import freerouting_live
 +from utils.board_items import delete_board_item
  from utils.project_netclasses import apply_net_classes_to_board, load_project_net_classes
  from utils.project_settings_guard import preserve_project_settings
@@ -210,7 +211,83 @@ index 0c12af2..fcc644b 100644
  logger = logging.getLogger("kicad_interface")
  
  # Default Freerouting JAR location
-@@ -590,6 +624,19 @@ class FreeroutingCommands:
+@@ -306,6 +341,9 @@ class FreeroutingCommands:
+ 
+     def __init__(self, board: Any = None) -> None:
+         self.board = board
++        # KiCad's open board over IPC (kipy), for live autorouting (PowerLab patch)
++        self.live_board: Any = None
++        self._live_copper: Any = None
+ 
+     def _apply_project_net_classes(self, board_path: Optional[str]) -> Dict[str, Any]:
+         """Push the project's net classes into the loaded board before DSN
+@@ -457,6 +495,20 @@ class FreeroutingCommands:
+                 "errorDetails": "attempts must be >= 1",
+             }
+         target_nets = list(params.get("targetNets") or [])
++        # Live mode shows the routing in KiCad as it happens (PowerLab patch)
++        live = bool(params.get("live"))
++        if live and attempts > 1:
++            return {
++                "success": False,
++                "message": "live runs one attempt",
++                "errorDetails": "Use attempts: 1 with live, or leave live out for best-of-N",
++            }
++        if live and self.live_board is None:
++            return {
++                "success": False,
++                "message": "live needs the board open in KiCad",
++                "errorDetails": "Open this board in KiCad's PCB editor (with the API enabled) and save it first",
++            }
+         pass_schedule = list(params.get("passSchedule") or DEFAULT_PASS_SCHEDULE)
+         if not pass_schedule:
+             pass_schedule = [passes]
+@@ -483,6 +535,12 @@ class FreeroutingCommands:
+             }
+ 
+         use_docker = exec_mode["use_docker"]
++        if live and use_docker:
++            return {
++                "success": False,
++                "message": "live needs Java 21+ on this computer",
++                "errorDetails": "Live autorouting runs Freerouting's API server locally, not in Docker",
++            }
+ 
+         # Set up file paths. Artifacts are staged in a fresh per-run temp
+         # directory instead of the user's project directory (#249): every
+@@ -518,6 +576,8 @@ class FreeroutingCommands:
+                 target_nets=target_nets,
+                 pass_schedule=pass_schedule,
+                 use_docker=use_docker,
++                live=live,
++                staging_dir=staging_dir,
+             )
+         finally:
+             # Runs on every exit -- success, failure return, or exception --
+@@ -533,6 +593,13 @@ class FreeroutingCommands:
+                         logger.warning(f"Could not keep artifact {src}: {copy_err}")
+             shutil.rmtree(staging_dir, ignore_errors=True)
+             _trim_shared_freerouting_log()
++            # A live run that didn't finish leaves no preview copper behind
++            copper, self._live_copper = getattr(self, "_live_copper", None), None
++            if copper is not None:
++                try:
++                    copper.clear()
++                except Exception as e:
++                    logger.warning(f"Live autoroute: could not remove the preview copper: {e}")
+ 
+     def _autoroute_staged(
+         self,
+@@ -553,6 +620,8 @@ class FreeroutingCommands:
+         target_nets: List[Any],
+         pass_schedule: List[Any],
+         use_docker: bool,
++        live: bool = False,
++        staging_dir: str = "",
+     ) -> Dict[str, Any]:
+         """Body of autoroute, running against a staged artifact directory."""
+         import pcbnew
+@@ -590,6 +659,19 @@ class FreeroutingCommands:
          dsn_size = os.path.getsize(dsn_path)
          logger.info(f"DSN exported: {dsn_size} bytes")
  
@@ -230,7 +307,42 @@ index 0c12af2..fcc644b 100644
          # Step 2: Run Freerouting (single or multiple attempts)
          mode_label = "docker" if use_docker else "direct"
          total_start = time.time()
-@@ -752,8 +799,17 @@ class FreeroutingCommands:
+@@ -598,12 +680,33 @@ class FreeroutingCommands:
+         best_attempt_idx = -1
+         best_proc_stdout = ""
+ 
++        # Live mode: Freerouting's API server, with its partial results shown in KiCad
++        # as it routes (PowerLab patch)
++        copper = None
++        live_stats: Dict[str, Any] = {}
++        if live:
++            routed = self._route_live(
++                board_path, dsn_path, ses_path, jar_path, timeout, passes, pour_nets, staging_dir, params
++            )
++            if not routed.get("success"):
++                return routed
++            copper = routed["copper"]
++            live_stats = routed["live"]
++            mode_label = "live"
++            with open(ses_path, "r", encoding="utf-8", errors="replace") as fh:
++                score_info = _score_ses(fh.read(), target_nets)
++            attempt_results.append(
++                {"attempt": 1, "max_passes": passes, "elapsed_seconds": live_stats["routing_seconds"],
++                 "ok": True, **score_info}
++            )
++            best_attempt_idx, best_score = 0, score_info["score"]
++
+         # If only one attempt, use the legacy maxPasses value (preserves
+         # exact backward-compatible behaviour). Otherwise cycle through
+         # passSchedule. Always run single-threaded when scoring multiple
+         # attempts so the optimiser doesn't introduce clearance violations
+         # that would distort the comparison.
+-        for idx in range(attempts):
++        for idx in range(0 if live else attempts):
+             if attempts == 1:
+                 attempt_passes = passes
+                 single_thread = False
+@@ -752,8 +855,17 @@ class FreeroutingCommands:
  
          # Step 3: Import the winning SES
          logger.info(f"Importing SES from {ses_path}")
@@ -248,7 +360,39 @@ index 0c12af2..fcc644b 100644
              if result is not True and result != 0:
                  return {
                      "success": False,
-@@ -810,6 +866,13 @@ class FreeroutingCommands:
+@@ -771,12 +883,25 @@ class FreeroutingCommands:
+                 "attempts": attempt_results,
+             }
+ 
+-        # Step 4: Save board
+-        try:
+-            with preserve_project_settings(board_path):
+-                self.board.Save(board_path)
+-        except Exception as e:
+-            logger.warning(f"Board save after autoroute failed: {e}")
++        # Step 4: Save board. In live mode, bring KiCad's board in line with the
++        # result and save it there, so no File > Revert is needed (PowerLab patch).
++        if copper is not None:
++            t0 = time.time()
++            try:
++                live_stats["final_sync"] = copper.finish(freerouting_live.pcbnew_copper(self.board))
++                self.live_board.save()
++                live_stats["saved_in_kicad"] = True
++            except Exception as e:
++                logger.warning(f"Live autoroute: final sync with KiCad failed: {e}")
++                live_stats["final_sync_error"] = str(e)
++                live_stats["saved_in_kicad"] = False
++            live_stats["final_sync_seconds"] = round(time.time() - t0, 2)
++        if copper is None or not live_stats.get("saved_in_kicad"):
++            try:
++                with preserve_project_settings(board_path):
++                    self.board.Save(board_path)
++            except Exception as e:
++                logger.warning(f"Board save after autoroute failed: {e}")
+ 
+         # Collect stats
+         tracks = self.board.GetTracks()
+@@ -810,6 +935,19 @@ class FreeroutingCommands:
              "netClasses": netclass_report,
              "freerouting_stdout": best_proc_stdout[:1000],
          }
@@ -259,9 +403,482 @@ index 0c12af2..fcc644b 100644
 +        if keepout_nets:
 +            response["keepoutPourNets"] = keepout_nets
 +        response["via_drills"] = via_drills
++        if live:
++            response["live"] = live_stats
++            if live_stats.get("saved_in_kicad"):
++                response["message"] += "; shown live and saved in KiCad (no File > Revert needed)"
++            else:
++                response["message"] += "; KiCad couldn't be updated, so use File > Revert to see the result"
          if attempts > 1:
              response["attempts"] = attempt_results
              response["best_attempt"] = best_attempt_idx + 1
+@@ -819,6 +957,83 @@ class FreeroutingCommands:
+             )
+         return response
+ 
++    def _route_live(
++        self,
++        board_path: str,
++        dsn_path: str,
++        ses_path: str,
++        jar_path: str,
++        timeout: Any,
++        passes: Any,
++        pour_nets: List[str],
++        staging_dir: str,
++        params: Dict[str, Any],
++    ) -> Dict[str, Any]:
++        """Route on Freerouting's API server, showing partial results in KiCad (PowerLab patch).
++
++        Writes the final session to ses_path. Returns {"success", "copper", "live"} or an
++        error response.
++        """
++        interval = max(0.5, float(params.get("liveInterval", 2)))
++        java_exe = _find_java()
++        try:
++            copper = freerouting_live.LiveCopper(self.live_board)
++        except Exception as e:
++            return {"success": False, "message": "Can't reach the board in KiCad", "errorDetails": str(e)}
++        self._live_copper = copper
++        try:
++            settings = load_project_net_classes(os.path.splitext(board_path)[0] + ".kicad_pro")
++        except ValueError:
++            settings = None
++        preview = freerouting_live.LivePreview(
++            board_path, settings, copper, list(pour_nets) + ["", PLACEHOLDER_NET], _repair_via_drills, staging_dir
++        )
++        t0 = time.time()
++        server = freerouting_live.FreeroutingServer(java_exe, jar_path, staging_dir)
++        try:
++            server.wait_ready()
++            startup = time.time() - t0
++            job = freerouting_live.run_job(server, dsn_path, passes, float(timeout), interval, preview.update)
++        except Exception as e:
++            return {
++                "success": False,
++                "message": "Failed to run Freerouting",
++                "errorDetails": f"{e}; {server.log_tail()}",
++            }
++        finally:
++            server.close()
++
++        timings = preview.timings
++        pushes = copper.pushes
++        stats = {
++            "server_start_seconds": round(startup, 1),
++            "routing_seconds": round(job["elapsed"], 1),
++            "interval_seconds": interval,
++            "updates": job["updates"],
++            "update_errors": preview.errors,
++            "update_seconds_avg": round(sum(timings) / len(timings), 3) if timings else None,
++            "update_seconds_max": round(max(timings), 3) if timings else None,
++            "kicad_push_seconds_max": max((p["seconds"] for p in pushes), default=None),
++            "items_pushed_max": max((p["added"] + p["removed"] for p in pushes), default=None),
++        }
++        if job["state"] == "TIMED_OUT":
++            return {
++                "success": False,
++                "message": f"Freerouting timed out after {timeout}s",
++                "errorDetails": "Increase timeout or reduce board complexity; the board is unchanged",
++                "live": stats,
++            }
++        if not job["ses"]:
++            return {
++                "success": False,
++                "message": f"Freerouting ended with state {job['state']}",
++                "errorDetails": job.get("log", ""),
++                "live": stats,
++            }
++        with open(ses_path, "w", encoding="utf-8") as fh:
++            fh.write(job["ses"])
++        return {"success": True, "copper": copper, "live": stats}
++
+     def export_dsn(self, params: Dict[str, Any]) -> Dict[str, Any]:
+         """Export the board to Specctra DSN format only."""
+         try:
+diff --git a/python/commands/freerouting_live.py b/python/commands/freerouting_live.py
+new file mode 100644
+index 0000000..a44f0b2
+--- /dev/null
++++ b/python/commands/freerouting_live.py
+@@ -0,0 +1,377 @@
++"""
++Live autorouting (PowerLab patch): show Freerouting's work in KiCad while it routes.
++
++Freerouting 2.4.1 runs as a local API server. Its partial session (SES) output is
++imported into a scratch copy of the board every few seconds, and the difference
++from the previous update is pushed into the open KiCad PCB editor over the IPC
++API (kipy), in one commit per update. Only copper this run added is touched;
++pre-existing and locked copper is never changed during routing.
++"""
++
++import base64
++import hashlib
++import json
++import logging
++import os
++import socket
++import subprocess
++import tempfile
++import time
++import urllib.error
++import urllib.request
++import uuid
++from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
++
++logger = logging.getLogger("kicad_interface")
++
++# Copper item key: everything that decides what the item looks like, so an
++# unchanged track or via keeps its key from one update to the next.
++Key = Tuple[Any, ...]
++
++_DONE_STATES = ("COMPLETED", "CANCELLED", "TERMINATED", "TIMED_OUT", "INVALID")
++
++
++def _free_port() -> int:
++    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
++        s.bind(("127.0.0.1", 0))
++        return s.getsockname()[1]
++
++
++class FreeroutingServer:
++    """A Freerouting API server on localhost for one autoroute run."""
++
++    def __init__(self, java_exe: str, jar_path: str, work_dir: str) -> None:
++        self.port = _free_port()
++        self.base = f"http://127.0.0.1:{self.port}/v1"
++        self.log_path = os.path.join(work_dir, "freerouting-api.log")
++        self._log = open(self.log_path, "w", encoding="utf-8", errors="replace")
++        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
++        self.proc = subprocess.Popen(
++            [
++                java_exe,
++                "-jar",
++                jar_path,
++                "--gui.enabled=false",
++                "--api_server.enabled=true",
++                f"--api_server.endpoints=http://127.0.0.1:{self.port}",
++                # Local only, so no API key; Freerouting otherwise asks for one
++                "--api_server.authentication.enabled=false",
++                "--usage_and_diagnostic_data.disable_analytics=true",
++                "--feature_flags.save_jobs=false",
++            ],
++            stdout=self._log,
++            stderr=subprocess.STDOUT,
++            cwd=work_dir,
++            creationflags=flags,
++        )
++        self.headers = {
++            "Content-Type": "application/json",
++            "Freerouting-Profile-ID": str(uuid.uuid4()),
++            "Freerouting-Environment-Host": "KiCad/10.0",
++        }
++
++    def call(self, method: str, path: str, body: Any = None, timeout: float = 30) -> Tuple[int, str]:
++        data = json.dumps(body).encode() if body is not None else None
++        req = urllib.request.Request(self.base + path, data=data, method=method, headers=self.headers)
++        try:
++            with urllib.request.urlopen(req, timeout=timeout) as r:
++                return r.status, r.read().decode("utf-8", errors="replace")
++        except urllib.error.HTTPError as e:
++            return e.code, e.read().decode("utf-8", errors="replace")
++
++    def wait_ready(self, timeout: float = 60) -> None:
++        deadline = time.time() + timeout
++        while time.time() < deadline:
++            if self.proc.poll() is not None:
++                raise RuntimeError(f"Freerouting exited with code {self.proc.returncode}: {self.log_tail()}")
++            try:
++                if self.call("GET", "/system/status", timeout=2)[0] == 200:
++                    return
++            except (urllib.error.URLError, OSError):
++                pass
++            time.sleep(0.25)
++        raise RuntimeError(f"Freerouting API server did not start in {timeout:.0f}s")
++
++    def log_tail(self, chars: int = 800) -> str:
++        try:
++            self._log.flush()
++            with open(self.log_path, "r", encoding="utf-8", errors="replace") as fh:
++                return fh.read()[-chars:]
++        except OSError:
++            return ""
++
++    def close(self) -> None:
++        if self.proc.poll() is None:
++            self.proc.terminate()
++            try:
++                self.proc.wait(timeout=10)
++            except subprocess.TimeoutExpired:
++                self.proc.kill()
++        self._log.close()
++
++
++def _json(status_text: Tuple[int, str], what: str) -> Dict[str, Any]:
++    status, text = status_text
++    if status != 200:
++        raise RuntimeError(f"Freerouting {what} failed ({status}): {text[:300]}")
++    return json.loads(text)
++
++
++def _ses_text(payload: str) -> str:
++    return base64.b64decode(json.loads(payload)["data"]).decode("utf-8", errors="replace")
++
++
++def run_job(
++    server: FreeroutingServer,
++    dsn_path: str,
++    passes: int,
++    timeout: float,
++    interval: float,
++    on_partial: Callable[[str], None],
++) -> Dict[str, Any]:
++    """Route one DSN on the server, calling on_partial with each new partial SES.
++
++    Returns {"state", "ses" (final SES text or None), "elapsed", "updates", "log"}.
++    """
++    session = _json(server.call("POST", "/sessions/create", {}), "session")
++    job = _json(
++        server.call("POST", "/jobs/enqueue", {"session_id": session["id"], "name": "kicad", "priority": "NORMAL"}),
++        "enqueue",
++    )
++    jid = job["id"]
++    with open(dsn_path, "rb") as fh:
++        dsn = base64.b64encode(fh.read()).decode()
++    _json(server.call("POST", f"/jobs/{jid}/input", {"filename": os.path.basename(dsn_path), "data": dsn}), "input")
++    _json(server.call("POST", f"/jobs/{jid}/settings", {"max_passes": int(passes)}), "settings")
++    _json(server.call("PUT", f"/jobs/{jid}/start"), "start")
++
++    start = time.time()
++    last_hash = None
++    updates = 0
++    state = "RUNNING"
++    while True:
++        state = _json(server.call("GET", f"/jobs/{jid}"), "status").get("state", "")
++        if state in _DONE_STATES:
++            break
++        if time.time() - start > timeout:
++            server.call("PUT", f"/jobs/{jid}/cancel")
++            return {"state": "TIMED_OUT", "ses": None, "elapsed": time.time() - start, "updates": updates}
++        status, text = server.call("GET", f"/jobs/{jid}/output")
++        if status == 202 and text:
++            ses = _ses_text(text)
++            h = hashlib.sha1(ses.encode()).hexdigest()
++            if h != last_hash and "(wire" in ses:
++                last_hash = h
++                on_partial(ses)
++                updates += 1
++        time.sleep(interval)
++
++    ses = None
++    if state == "COMPLETED":
++        status, text = server.call("GET", f"/jobs/{jid}/output")
++        if status == 200:
++            ses = _ses_text(text)
++    log = ""
++    if ses is None:
++        status, text = server.call("GET", f"/jobs/{jid}/logs")
++        log = text[-1500:]
++    return {"state": state, "ses": ses, "elapsed": time.time() - start, "updates": updates, "log": log}
++
++
++# ---------------------------------------------------------------------------
++# Copper on both sides: pcbnew (scratch board) and kipy (KiCad's live board)
++# ---------------------------------------------------------------------------
++
++
++def _seg(layer: str, a: Tuple[int, int], b: Tuple[int, int]) -> Tuple[Any, ...]:
++    return (layer,) + (a + b if a <= b else b + a)
++
++
++def pcbnew_copper(board: Any, skip_nets: Iterable[str] = ()) -> Dict[Key, Dict[str, Any]]:
++    """Tracks, arcs and vias of a pcbnew board, keyed like kipy_key()."""
++    import pcbnew
++
++    skip = set(skip_nets)
++    out: Dict[Key, Dict[str, Any]] = {}
++    for t in board.GetTracks():
++        net = t.GetNetname()
++        if net in skip:
++            continue
++        kind = t.Type()
++        if kind == pcbnew.PCB_VIA_T:
++            p = t.GetPosition()
++            spec = {"kind": "via", "pos": (p.x, p.y), "dia": t.GetWidth(pcbnew.F_Cu),
++                    "drill": t.GetDrillValue(), "net": net}
++            key: Key = ("v", p.x, p.y, spec["dia"], spec["drill"], net)
++        else:
++            layer = pcbnew.BOARD.GetStandardLayerName(t.GetLayer())
++            s, e = t.GetStart(), t.GetEnd()
++            spec = {"layer": layer, "start": (s.x, s.y), "end": (e.x, e.y), "width": t.GetWidth(), "net": net}
++            if kind == pcbnew.PCB_ARC_T:
++                m = t.GetMid()
++                spec.update(kind="arc", mid=(m.x, m.y))
++                key = ("a",) + _seg(layer, (s.x, s.y), (e.x, e.y)) + ((m.x, m.y), spec["width"], net)
++            else:
++                spec["kind"] = "track"
++                key = ("t",) + _seg(layer, (s.x, s.y), (e.x, e.y)) + (spec["width"], net)
++        out[key] = spec
++    return out
++
++
++def _layer_name(layer: int) -> str:
++    from kipy.proto.board.board_types_pb2 import BoardLayer
++
++    return BoardLayer.Name(layer)[3:].replace("_", ".")
++
++
++def kipy_key(item: Any) -> Optional[Key]:
++    from kipy.board_types import ArcTrack, Track, Via
++
++    net = item.net.name if item.net else ""
++    if isinstance(item, Via):
++        p = item.position
++        return ("v", p.x, p.y, item.diameter, item.drill_diameter, net)
++    layer = _layer_name(item.layer)
++    s, e = item.start, item.end
++    if isinstance(item, ArcTrack):
++        m = item.mid
++        return ("a",) + _seg(layer, (s.x, s.y), (e.x, e.y)) + ((m.x, m.y), item.width, net)
++    if isinstance(item, Track):
++        return ("t",) + _seg(layer, (s.x, s.y), (e.x, e.y)) + (item.width, net)
++    return None
++
++
++class LiveCopper:
++    """Keeps KiCad's open board showing a changing set of copper items."""
++
++    def __init__(self, kboard: Any) -> None:
++        self.board = kboard
++        self.nets = {n.name: n for n in kboard.get_nets()}
++        self.shown: Dict[Key, Any] = {}
++        self.pushes: List[Dict[str, Any]] = []
++
++    def _build(self, spec: Dict[str, Any]) -> Any:
++        from kipy.board_types import ArcTrack, Track, Via
++        from kipy.geometry import Vector2
++        from kipy.proto.board.board_types_pb2 import BoardLayer, ViaType
++
++        if spec["kind"] == "via":
++            item = Via()
++            item.position = Vector2.from_xy(*spec["pos"])
++            item.type = ViaType.VT_THROUGH
++            item.diameter = spec["dia"]
++            item.drill_diameter = spec["drill"]
++        else:
++            item = ArcTrack() if spec["kind"] == "arc" else Track()
++            item.start = Vector2.from_xy(*spec["start"])
++            item.end = Vector2.from_xy(*spec["end"])
++            if spec["kind"] == "arc":
++                item.mid = Vector2.from_xy(*spec["mid"])
++            item.width = spec["width"]
++            item.layer = BoardLayer.Value("BL_" + spec["layer"].replace(".", "_"))
++        net = self.nets.get(spec["net"])
++        if net is not None:
++            item.net = net
++        return item
++
++    def _apply(self, remove: List[Any], add: List[Tuple[Key, Dict[str, Any]]], message: str) -> List[Any]:
++        t0 = time.time()
++        created: List[Any] = []
++        commit = self.board.begin_commit()
++        try:
++            if remove:
++                self.board.remove_items(remove)
++            if add:
++                created = self.board.create_items([self._build(spec) for _, spec in add])
++            self.board.push_commit(commit, message)
++        except Exception:
++            try:
++                self.board.drop_commit(commit)
++            except Exception:
++                pass
++            raise
++        self.pushes.append({"added": len(add), "removed": len(remove), "seconds": round(time.time() - t0, 3)})
++        return created
++
++    def show(self, specs: Dict[Key, Dict[str, Any]]) -> None:
++        """Make the copper this run added match specs (one undo step)."""
++        remove = [self.shown.pop(k) for k in [k for k in self.shown if k not in specs]]
++        add = [(k, s) for k, s in specs.items() if k not in self.shown]
++        if not remove and not add:
++            return
++        created = self._apply(remove, add, "Freerouting (live)")
++        for (k, _), item in zip(add, created):
++            self.shown[k] = item
++
++    def clear(self) -> None:
++        """Take this run's copper out of KiCad again."""
++        if self.shown:
++            self._apply(list(self.shown.values()), [], "Freerouting (live): cancelled")
++            self.shown.clear()
++
++    def finish(self, final: Dict[Key, Dict[str, Any]]) -> Dict[str, int]:
++        """Make KiCad's board copper match the routed result.
++
++        Copper already there with the same geometry is left alone, so locked
++        items keep their lock. Locked copper the result doesn't have is kept.
++        """
++        live: Dict[Key, List[Any]] = {}
++        for item in list(self.board.get_tracks()) + list(self.board.get_vias()):
++            k = kipy_key(item)
++            if k is not None:
++                live.setdefault(k, []).append(item)
++        remove: List[Any] = []
++        kept_locked = 0
++        for k, items in live.items():
++            extra = items if k not in final else items[1:]  # drop duplicates too
++            for item in extra:
++                if item.locked:
++                    kept_locked += 1
++                else:
++                    remove.append(item)
++        add = [(k, s) for k, s in final.items() if k not in live]
++        self._apply(remove, add, "Freerouting autoroute")
++        self.shown.clear()
++        return {"added": len(add), "removed": len(remove), "locked_kept": kept_locked}
++
++
++class LivePreview:
++    """Imports partial sessions into a scratch board and shows the new copper."""
++
++    def __init__(self, board_path: str, net_settings: Optional[Dict[str, Any]], live: LiveCopper,
++                 skip_nets: Iterable[str], repair: Callable[[Any], Any], work_dir: str) -> None:
++        import pcbnew
++
++        self.board = pcbnew.LoadBoard(board_path)
++        if net_settings:
++            try:
++                from utils.project_netclasses import apply_net_classes_to_board
++
++                apply_net_classes_to_board(self.board, net_settings)
++            except Exception as e:
++                logger.debug(f"Live preview: net classes not applied ({e})")
++        self.skip = set(skip_nets)
++        self.before = set(pcbnew_copper(self.board))
++        self.live = live
++        self.repair = repair
++        self.ses_path = os.path.join(work_dir, "partial.ses")
++        self.timings: List[float] = []
++        self.errors = 0
++
++    def update(self, ses_text: str) -> None:
++        import pcbnew
++
++        t0 = time.time()
++        try:
++            with open(self.ses_path, "w", encoding="utf-8") as fh:
++                fh.write(ses_text)
++            if not pcbnew.ImportSpecctraSES(self.board, self.ses_path):
++                raise RuntimeError("ImportSpecctraSES failed")
++            self.repair(self.board)
++            new = {k: s for k, s in pcbnew_copper(self.board, self.skip).items() if k not in self.before}
++            self.live.show(new)
++        except Exception as e:
++            # A bad partial update must not stop the routing; the final import decides.
++            self.errors += 1
++            logger.warning(f"Live autoroute update skipped: {e}")
++        self.timings.append(time.time() - t0)
 diff --git a/python/commands/pour_nets.py b/python/commands/pour_nets.py
 new file mode 100644
 index 0000000..052abc5
@@ -851,7 +1468,7 @@ index 6f9a813..827e3fa 100644
              # Apply changes
              commit = board.begin_commit()
 diff --git a/python/kicad_interface.py b/python/kicad_interface.py
-index c6ac305..d6eab39 100644
+index c6ac305..58b9b6e 100644
 --- a/python/kicad_interface.py
 +++ b/python/kicad_interface.py
 @@ -558,6 +558,7 @@ class KiCADInterface(SchematicHandlersMixin):
@@ -862,7 +1479,12 @@ index c6ac305..d6eab39 100644
              "route_differential_pair": self.routing_commands.route_differential_pair,
              "refill_zones": self._handle_refill_zones,
              # Design rule commands
-@@ -736,6 +737,7 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -732,10 +733,11 @@ class KiCADInterface(SchematicHandlersMixin):
+             "remove_library_table_entry": remove_library_table_entry,
+             "set_library_table_uri": set_library_table_uri,
+             # Freerouting autoroute commands
+-            "autoroute": self.freerouting_commands.autoroute,
++            "autoroute": self._handle_autoroute,  # PowerLab patch: live mode
              "export_dsn": self.freerouting_commands.export_dsn,
              "import_ses": self.freerouting_commands.import_ses,
              "check_freerouting": self.freerouting_commands.check_freerouting,
@@ -901,10 +1523,28 @@ index c6ac305..d6eab39 100644
          "refill_zones",
          "import_svg_logo",
          "sync_schematic_to_board",
-@@ -1848,6 +1854,70 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -1848,6 +1854,88 @@ class KiCADInterface(SchematicHandlersMixin):
          state = self._dirty_state(board_path)
          return {"success": True, "boardPath": board_path, **state}
  
++    def _handle_autoroute(self, params: Dict[str, Any]) -> Dict[str, Any]:
++        """autoroute, with KiCad's open board handed over for live mode (PowerLab patch)."""
++        fr = self.freerouting_commands
++        fr.live_board = None
++        if params.get("live"):
++            self._try_enable_ipc_backend()
++            board_path = params.get("boardPath") or (self.board.GetFileName() if self.board else "")
++            backend = getattr(self, "ipc_backend", None)
++            if backend and backend.is_connected() and self._ipc_board_path_matches(board_path):
++                try:
++                    fr.live_board = backend._kicad.get_board()
++                except Exception as e:
++                    logger.warning(f"Live autoroute: no board from KiCad: {e}")
++        try:
++            return fr.autoroute(params)
++        finally:
++            fr.live_board = None
++
 +    def _handle_clean_up_routing(self, params: Dict[str, Any]) -> Dict[str, Any]:
 +        """Clean up tracks after autorouting, on the saved board file (PowerLab patch).
 +
@@ -972,7 +1612,7 @@ index c6ac305..d6eab39 100644
      def _handle_batch_move_components(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """Batch move wrapper that preserves the external-edit save guard."""
          if getattr(self, "session_backend", None) == "ipc" and not self._ipc_session_alive():
-@@ -5079,6 +5149,65 @@ print("ok")
+@@ -5079,6 +5167,65 @@ print("ok")
              logger.error(f"IPC route_arc_trace error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -1038,7 +1678,7 @@ index c6ac305..d6eab39 100644
      def _ipc_add_via(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for add_via - adds via with real-time UI update"""
          try:
-@@ -5131,21 +5260,37 @@ print("ok")
+@@ -5131,21 +5278,37 @@ print("ok")
              net = params.get("net")
              clearance = params.get("clearance", 0.5)
              min_width = params.get("minWidth", 0.25)
@@ -1083,7 +1723,7 @@ index c6ac305..d6eab39 100644
  
              success = self.ipc_board_api.add_zone(
                  points=formatted_points,
-@@ -5833,6 +5978,100 @@ print("ok")
+@@ -5833,6 +5996,100 @@ print("ok")
              logger.error(f"IPC set_footprint_type error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -1232,10 +1872,10 @@ index 2738ebc..7f0b245 100644
  
        if (result.success) {
 diff --git a/src/tools/freerouting.ts b/src/tools/freerouting.ts
-index d9942f7..c89867e 100644
+index d9942f7..7bd9f7f 100644
 --- a/src/tools/freerouting.ts
 +++ b/src/tools/freerouting.ts
-@@ -55,6 +55,18 @@ export function registerFreeroutingTools(server: McpServer, callKicadScript: Fun
+@@ -55,12 +55,34 @@ export function registerFreeroutingTools(server: McpServer, callKicadScript: Fun
          .describe(
            "Per-attempt `--max-passes` values to cycle through (default: [50, 60, 65, 70, 75, 80, 85, 90, 55, 95]). The list wraps if `attempts` exceeds its length.",
          ),
@@ -1254,7 +1894,23 @@ index d9942f7..c89867e 100644
        keepArtifacts: z
          .boolean()
          .optional()
-@@ -75,6 +87,34 @@ export function registerFreeroutingTools(server: McpServer, callKicadScript: Fun
+         .describe(
+           "Keep the intermediate .dsn/.ses files next to the board after the run (default: false). Artifacts are staged in a temporary directory and removed on every exit — success, failure, or crash — unless this is set.",
+         ),
++      live: z
++        .boolean()
++        .optional()
++        .describe(
++          "Show the routing in KiCad as it happens (default: false). Needs this board open and saved in KiCad's PCB editor, and one attempt. Freerouting runs as a local API server; every liveInterval seconds its partial result appears in KiCad, replacing the previous one, without touching existing or locked copper. At the end the result is put into KiCad's board and saved there, so no File > Revert is needed. The routing itself is the same as without live.",
++        ),
++      liveInterval: z
++        .number()
++        .optional()
++        .describe("Seconds between live updates in KiCad (default 2, minimum 0.5)"),
+     },
+     async (args: any) => {
+       const result = await callKicadScript("autoroute", args);
+@@ -75,6 +97,34 @@ export function registerFreeroutingTools(server: McpServer, callKicadScript: Fun
      },
    );
  
