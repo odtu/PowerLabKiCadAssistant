@@ -1018,6 +1018,30 @@ class McpPatchTests(unittest.TestCase):
     def test_session_vias_keep_their_annular_ring(self):
         self.assertIn("via_drills = _repair_via_drills(self.board)", self.patch())
 
+    def test_autoroute_can_be_undone(self):
+        """File > Revert loads the routed file, so autoroute keeps the board from before it."""
+        patch = self.patch()
+        self.assertIn('result["backupPath"] = autoroute_backup.keep(before_path, board_path)', patch)
+        self.assertIn('+            "undo_autoroute": self._handle_undo_autoroute,', patch)
+        self.assertIn('"check_freerouting", "clean_up_routing", "undo_autoroute"]', patch)
+        module = types.ModuleType("autoroute_backup")
+        exec(self.new_file("python/commands/autoroute_backup.py"), module.__dict__)
+
+        folder = tempfile.mkdtemp()
+        board = os.path.join(folder, "b.kicad_pcb")
+        before = os.path.join(folder, "staged.kicad_pcb")
+        with open(before, "w") as f:
+            f.write("unrouted")
+        with open(board, "w") as f:
+            f.write("routed")
+        self.assertFalse(module.restore(board)["success"])  # no run yet
+        self.assertEqual(module.keep(before, board), os.path.join(folder, "autoroute-backup", "b.kicad_pcb"))
+        self.assertTrue(module.restore(board)["success"])
+        with open(board) as f:
+            self.assertEqual(f.read(), "unrouted")
+        self.assertFalse(os.path.exists(os.path.join(folder, "autoroute-backup")))
+        self.assertFalse(module.restore(board)["success"])  # once only
+
     def test_clean_up_routing(self):
         """Post-route clean-up: stubs, dead ends, net-class widths and 90 degree corners."""
         try:

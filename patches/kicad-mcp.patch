@@ -81,6 +81,61 @@ index 831a2f3..49ff333 100644
  
  - Project management with snapshot checkpointing
  - Complete board design (outline, layers, zones, mounting holes, text, SVG logos)
+diff --git a/python/commands/autoroute_backup.py b/python/commands/autoroute_backup.py
+new file mode 100644
+index 0000000..4215435
+--- /dev/null
++++ b/python/commands/autoroute_backup.py
+@@ -0,0 +1,49 @@
++"""
++The board as it was before the last autoroute run, so the run can be undone (PowerLab patch).
++
++autoroute writes the routed board over the saved .kicad_pcb, so File > Revert in KiCad
++loads the routed board, not the one before. Each run that changes the board keeps a copy
++of the saved file from before it in autoroute-backup/ next to the board; undo_autoroute
++copies it back and removes it.
++"""
++
++import os
++import shutil
++from datetime import datetime
++from typing import Any, Dict
++
++BACKUP_FOLDER = "autoroute-backup"
++
++
++def backup_path(board_path: str) -> str:
++    """Where the pre-autoroute copy of this board is kept."""
++    folder = os.path.join(os.path.dirname(os.path.abspath(board_path)), BACKUP_FOLDER)
++    return os.path.join(folder, os.path.basename(board_path))
++
++
++def keep(before: str, board_path: str) -> str:
++    """Keep ``before`` (the saved board from before the run) as the board's backup."""
++    target = backup_path(board_path)
++    os.makedirs(os.path.dirname(target), exist_ok=True)
++    shutil.copy2(before, target)
++    return target
++
++
++def restore(board_path: str) -> Dict[str, Any]:
++    """Copy the backup back over the board file and remove it."""
++    source = backup_path(board_path)
++    if not os.path.isfile(source):
++        return {
++            "success": False,
++            "message": "No autoroute backup for this board",
++            "errorDetails": f"Expected {source}. Only a successful autoroute run leaves one, and undo_autoroute uses it up.",
++        }
++    taken = datetime.fromtimestamp(os.path.getmtime(source)).strftime("%Y-%m-%d %H:%M")
++    # copyfile, not copy2: a fresh modification time, so KiCad sees the file changed
++    shutil.copyfile(source, board_path)
++    os.remove(source)
++    try:
++        os.rmdir(os.path.dirname(source))
++    except OSError:
++        pass
++    return {"success": True, "restored_from": source, "saved_before_run": taken}
 diff --git a/python/commands/board/view.py b/python/commands/board/view.py
 index 16a4915..cef014b 100644
 --- a/python/commands/board/view.py
@@ -163,7 +218,7 @@ index 16a4915..cef014b 100644
                          f.write(image_bytes)
                      return {
 diff --git a/python/commands/freerouting.py b/python/commands/freerouting.py
-index 0c12af2..9fc55fa 100644
+index 0c12af2..cedd101 100644
 --- a/python/commands/freerouting.py
 +++ b/python/commands/freerouting.py
 @@ -19,9 +19,44 @@ import time
@@ -171,7 +226,7 @@ index 0c12af2..9fc55fa 100644
  from typing import Any, Dict, Iterable, List, Optional, Tuple
  
 +from commands.pour_nets import PLACEHOLDER_NET, leave_to_pours
-+from commands import freerouting_live
++from commands import autoroute_backup, freerouting_live
 +from utils.board_items import delete_board_item
  from utils.project_netclasses import apply_net_classes_to_board, load_project_net_classes
  from utils.project_settings_guard import preserve_project_settings
@@ -271,16 +326,40 @@ index 0c12af2..9fc55fa 100644
  
          # Set up file paths. Artifacts are staged in a fresh per-run temp
          # directory instead of the user's project directory (#249): every
-@@ -518,6 +578,8 @@ class FreeroutingCommands:
+@@ -500,8 +560,13 @@ class FreeroutingCommands:
+         best_ses_path = os.path.join(staging_dir, f"{board_stem}_best.ses")
+         kept_paths: Dict[str, str] = {}
+ 
++        # The saved board before the run, kept if the run changes it (PowerLab patch)
++        before_path = os.path.join(staging_dir, "before.kicad_pcb")
++        if os.path.isfile(board_path):
++            shutil.copy2(board_path, before_path)
++
+         try:
+-            return self._autoroute_staged(
++            result = self._autoroute_staged(
+                 params,
+                 board_path=board_path,
+                 board_dir=board_dir,
+@@ -518,7 +583,17 @@ class FreeroutingCommands:
                  target_nets=target_nets,
                  pass_schedule=pass_schedule,
                  use_docker=use_docker,
 +                live=live,
 +                staging_dir=staging_dir,
              )
++            if result.get("success") and os.path.isfile(before_path):
++                try:
++                    result["backupPath"] = autoroute_backup.keep(before_path, board_path)
++                    result["undo"] = "undo_autoroute puts back the board from before this run"
++                except OSError as e:
++                    logger.warning(f"Could not keep the pre-autoroute board: {e}")
++                    result["undo"] = f"no backup kept ({e}), so this run can't be undone"
++            return result
          finally:
              # Runs on every exit -- success, failure return, or exception --
-@@ -533,6 +595,13 @@ class FreeroutingCommands:
+             # so no artefact can outlive the run unless explicitly kept.
+@@ -533,6 +608,13 @@ class FreeroutingCommands:
                          logger.warning(f"Could not keep artifact {src}: {copy_err}")
              shutil.rmtree(staging_dir, ignore_errors=True)
              _trim_shared_freerouting_log()
@@ -294,7 +373,7 @@ index 0c12af2..9fc55fa 100644
  
      def _autoroute_staged(
          self,
-@@ -553,6 +622,8 @@ class FreeroutingCommands:
+@@ -553,6 +635,8 @@ class FreeroutingCommands:
          target_nets: List[Any],
          pass_schedule: List[Any],
          use_docker: bool,
@@ -303,7 +382,7 @@ index 0c12af2..9fc55fa 100644
      ) -> Dict[str, Any]:
          """Body of autoroute, running against a staged artifact directory."""
          import pcbnew
-@@ -590,6 +661,19 @@ class FreeroutingCommands:
+@@ -590,6 +674,19 @@ class FreeroutingCommands:
          dsn_size = os.path.getsize(dsn_path)
          logger.info(f"DSN exported: {dsn_size} bytes")
  
@@ -323,7 +402,7 @@ index 0c12af2..9fc55fa 100644
          # Step 2: Run Freerouting (single or multiple attempts)
          mode_label = "docker" if use_docker else "direct"
          total_start = time.time()
-@@ -598,12 +682,33 @@ class FreeroutingCommands:
+@@ -598,12 +695,33 @@ class FreeroutingCommands:
          best_attempt_idx = -1
          best_proc_stdout = ""
  
@@ -358,7 +437,7 @@ index 0c12af2..9fc55fa 100644
              if attempts == 1:
                  attempt_passes = passes
                  single_thread = False
-@@ -752,8 +857,17 @@ class FreeroutingCommands:
+@@ -752,8 +870,17 @@ class FreeroutingCommands:
  
          # Step 3: Import the winning SES
          logger.info(f"Importing SES from {ses_path}")
@@ -376,7 +455,7 @@ index 0c12af2..9fc55fa 100644
              if result is not True and result != 0:
                  return {
                      "success": False,
-@@ -771,12 +885,25 @@ class FreeroutingCommands:
+@@ -771,12 +898,25 @@ class FreeroutingCommands:
                  "attempts": attempt_results,
              }
  
@@ -408,7 +487,7 @@ index 0c12af2..9fc55fa 100644
  
          # Collect stats
          tracks = self.board.GetTracks()
-@@ -810,6 +937,19 @@ class FreeroutingCommands:
+@@ -810,6 +950,19 @@ class FreeroutingCommands:
              "netClasses": netclass_report,
              "freerouting_stdout": best_proc_stdout[:1000],
          }
@@ -428,7 +507,7 @@ index 0c12af2..9fc55fa 100644
          if attempts > 1:
              response["attempts"] = attempt_results
              response["best_attempt"] = best_attempt_idx + 1
-@@ -819,6 +959,83 @@ class FreeroutingCommands:
+@@ -819,6 +972,83 @@ class FreeroutingCommands:
              )
          return response
  
@@ -1484,7 +1563,7 @@ index 6f9a813..827e3fa 100644
              # Apply changes
              commit = board.begin_commit()
 diff --git a/python/kicad_interface.py b/python/kicad_interface.py
-index c6ac305..58b9b6e 100644
+index c6ac305..d8c69ce 100644
 --- a/python/kicad_interface.py
 +++ b/python/kicad_interface.py
 @@ -558,6 +558,7 @@ class KiCADInterface(SchematicHandlersMixin):
@@ -1495,7 +1574,7 @@ index c6ac305..58b9b6e 100644
              "route_differential_pair": self.routing_commands.route_differential_pair,
              "refill_zones": self._handle_refill_zones,
              # Design rule commands
-@@ -732,10 +733,11 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -732,10 +733,12 @@ class KiCADInterface(SchematicHandlersMixin):
              "remove_library_table_entry": remove_library_table_entry,
              "set_library_table_uri": set_library_table_uri,
              # Freerouting autoroute commands
@@ -1505,10 +1584,11 @@ index c6ac305..58b9b6e 100644
              "import_ses": self.freerouting_commands.import_ses,
              "check_freerouting": self.freerouting_commands.check_freerouting,
 +            "clean_up_routing": self._handle_clean_up_routing,  # PowerLab patch
++            "undo_autoroute": self._handle_undo_autoroute,  # PowerLab patch
              # Eagle import commands
              "import_eagle_project": self.eagle_commands.import_eagle_project,
              # Schematic migration
-@@ -756,12 +758,14 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -756,12 +759,14 @@ class KiCADInterface(SchematicHandlersMixin):
          "route_trace": "_ipc_route_trace",
          "route_arc_trace": "_ipc_route_arc_trace",
          "add_via": "_ipc_add_via",
@@ -1523,7 +1603,7 @@ index c6ac305..58b9b6e 100644
          "refill_zones": "_ipc_refill_zones",
          # Board commands
          "add_text": "_ipc_add_text",
-@@ -779,6 +783,7 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -779,6 +784,7 @@ class KiCADInterface(SchematicHandlersMixin):
          "get_component_list": "_ipc_get_component_list",
          "get_component_properties": "_ipc_get_component_properties",
          "set_footprint_type": "_ipc_set_footprint_type",
@@ -1531,7 +1611,7 @@ index c6ac305..58b9b6e 100644
          "add_component_3d_model": "_ipc_add_component_3d_model",
          # Save command
          "save_project": "_ipc_save_project",
-@@ -1236,6 +1241,7 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -1236,6 +1242,7 @@ class KiCADInterface(SchematicHandlersMixin):
          "add_board_text",
          "move_footprint_text",
          "add_copper_pour",
@@ -1539,7 +1619,7 @@ index c6ac305..58b9b6e 100644
          "refill_zones",
          "import_svg_logo",
          "sync_schematic_to_board",
-@@ -1848,6 +1854,88 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -1848,6 +1855,118 @@ class KiCADInterface(SchematicHandlersMixin):
          state = self._dirty_state(board_path)
          return {"success": True, "boardPath": board_path, **state}
  
@@ -1614,6 +1694,36 @@ index c6ac305..58b9b6e 100644
 +            ),
 +        }
 +
++    def _handle_undo_autoroute(self, params: Dict[str, Any]) -> Dict[str, Any]:
++        """Put back the saved board from before the last autoroute run (PowerLab patch)."""
++        from commands import autoroute_backup
++
++        board_path = params.get("boardPath") or self._authoritative_board_path()
++        if not board_path:
++            return {
++                "success": False,
++                "message": "No board",
++                "errorDetails": "Open the board with open_board, or pass boardPath",
++            }
++        board_path = str(board_path)
++        result = autoroute_backup.restore(board_path)
++        if not result.get("success"):
++            return result
++        board = self._safe_load_board(board_path)
++        if board is not None:
++            self.board = board
++            self._update_command_handlers()
++            self._record_board_signature()
++        return {
++            **result,
++            "message": f"Put back {os.path.basename(board_path)} as saved before the last autoroute run",
++            "boardPath": board_path,
++            "next_steps": (
++                "If the board is open in KiCad, use File > Revert now, before any edit or save "
++                "there: a save in KiCad would write the routed board back."
++            ),
++        }
++
 +    def _handle_add_zone(self, params: Dict[str, Any]) -> Dict[str, Any]:
 +        """add_zone = add_copper_pour with explicit points in any unit (PowerLab patch)."""
 +        to_mm = {"mm": 1.0, "mil": 0.0254, "inch": 25.4}.get(params.get("unit") or "mm", 1.0)
@@ -1628,7 +1738,7 @@ index c6ac305..58b9b6e 100644
      def _handle_batch_move_components(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """Batch move wrapper that preserves the external-edit save guard."""
          if getattr(self, "session_backend", None) == "ipc" and not self._ipc_session_alive():
-@@ -5079,6 +5167,65 @@ print("ok")
+@@ -5079,6 +5198,65 @@ print("ok")
              logger.error(f"IPC route_arc_trace error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -1694,7 +1804,7 @@ index c6ac305..58b9b6e 100644
      def _ipc_add_via(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for add_via - adds via with real-time UI update"""
          try:
-@@ -5131,21 +5278,37 @@ print("ok")
+@@ -5131,21 +5309,37 @@ print("ok")
              net = params.get("net")
              clearance = params.get("clearance", 0.5)
              min_width = params.get("minWidth", 0.25)
@@ -1739,7 +1849,7 @@ index c6ac305..58b9b6e 100644
  
              success = self.ipc_board_api.add_zone(
                  points=formatted_points,
-@@ -5833,6 +5996,100 @@ print("ok")
+@@ -5833,6 +6027,100 @@ print("ok")
              logger.error(f"IPC set_footprint_type error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -1888,9 +1998,18 @@ index 2738ebc..7f0b245 100644
  
        if (result.success) {
 diff --git a/src/tools/freerouting.ts b/src/tools/freerouting.ts
-index d9942f7..7bd9f7f 100644
+index d9942f7..485eade 100644
 --- a/src/tools/freerouting.ts
 +++ b/src/tools/freerouting.ts
+@@ -19,7 +19,7 @@ export function registerFreeroutingTools(server: McpServer, callKicadScript: Fun
+   // unrouted count to zero.
+   server.tool(
+     "autoroute",
+-    "Run Freerouting autorouter on the current PCB. Exports to Specctra DSN, runs Freerouting CLI, and imports the routed SES result. Requires Java 11+ and freerouting.jar (see check_freerouting). Set `attempts` > 1 to run best-of-N: Freerouting is invoked multiple times with varied `--max-passes`, each result is scored by (nets_routed * 1000 + segments, +50000 bonus when every `targetNets` entry routed), and the winning SES is imported. Single-attempt behaviour is unchanged when `attempts` is omitted.",
++    "Run Freerouting autorouter on the current PCB. Exports to Specctra DSN, runs Freerouting CLI, and imports the routed SES result. Requires Java 11+ and freerouting.jar (see check_freerouting). Set `attempts` > 1 to run best-of-N: Freerouting is invoked multiple times with varied `--max-passes`, each result is scored by (nets_routed * 1000 + segments, +50000 bonus when every `targetNets` entry routed), and the winning SES is imported. Single-attempt behaviour is unchanged when `attempts` is omitted. A successful run keeps the saved board from before it in autoroute-backup/; undo_autoroute puts it back.",
+     {
+       boardPath: z.string().optional().describe("Path to .kicad_pcb file (default: current board)"),
+       freeroutingJar: z
 @@ -55,12 +55,34 @@ export function registerFreeroutingTools(server: McpServer, callKicadScript: Fun
          .describe(
            "Per-attempt `--max-passes` values to cycle through (default: [50, 60, 65, 70, 75, 80, 85, 90, 55, 95]). The list wraps if `attempts` exceeds its length.",
@@ -1926,7 +2045,7 @@ index d9942f7..7bd9f7f 100644
      },
      async (args: any) => {
        const result = await callKicadScript("autoroute", args);
-@@ -75,6 +97,34 @@ export function registerFreeroutingTools(server: McpServer, callKicadScript: Fun
+@@ -75,6 +97,54 @@ export function registerFreeroutingTools(server: McpServer, callKicadScript: Fun
      },
    );
  
@@ -1958,11 +2077,31 @@ index d9942f7..7bd9f7f 100644
 +    },
 +  );
 +
++  // Undo the last autoroute run (PowerLab patch)
++  server.tool(
++    "undo_autoroute",
++    "Undo the last autoroute run: put back the saved .kicad_pcb from before it. Each successful autoroute run keeps that copy in autoroute-backup/ next to the board; this copies it back over the board file and removes it, so it works once. Everything done to the board after the run is lost too (clean_up_routing, refilled zones, vias, edits). With the board open in KiCad, use File > Revert right after, before any edit or save there.",
++    {
++      boardPath: z.string().optional().describe("Path to .kicad_pcb file (default: current board)"),
++    },
++    async (args: any) => {
++      const result = await callKicadScript("undo_autoroute", args);
++      return {
++        content: [
++          {
++            type: "text",
++            text: JSON.stringify(result, null, 2),
++          },
++        ],
++      };
++    },
++  );
++
    // Export DSN only
    server.tool(
      "export_dsn",
 diff --git a/src/tools/registry.ts b/src/tools/registry.ts
-index 902f7b1..5819afe 100644
+index 902f7b1..efaf3dc 100644
 --- a/src/tools/registry.ts
 +++ b/src/tools/registry.ts
 @@ -235,7 +235,7 @@ export const toolCategories: ToolCategory[] = [
@@ -1970,7 +2109,7 @@ index 902f7b1..5819afe 100644
      name: "autoroute",
      description: "Freerouting autorouter: automatic PCB routing via Specctra DSN/SES",
 -    tools: ["autoroute", "export_dsn", "import_ses", "check_freerouting"],
-+    tools: ["autoroute", "export_dsn", "import_ses", "check_freerouting", "clean_up_routing"],
++    tools: ["autoroute", "export_dsn", "import_ses", "check_freerouting", "clean_up_routing", "undo_autoroute"],
    },
    {
      name: "validation",
