@@ -6062,7 +6062,7 @@ index 6f9a813..5d40efc 100644
              # Create outline polyline
              outline = PolyLine()
 diff --git a/python/kicad_interface.py b/python/kicad_interface.py
-index c6ac305..03b6fdd 100644
+index c6ac305..89c29c4 100644
 --- a/python/kicad_interface.py
 +++ b/python/kicad_interface.py
 @@ -558,6 +558,7 @@ class KiCADInterface(SchematicHandlersMixin):
@@ -6104,7 +6104,17 @@ index c6ac305..03b6fdd 100644
          "refill_zones": "_ipc_refill_zones",
          # Board commands
          "add_text": "_ipc_add_text",
-@@ -779,6 +786,7 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -771,6 +778,9 @@ class KiCADInterface(SchematicHandlersMixin):
+         "add_board_outline": "_ipc_add_board_outline",
+         "add_mounting_hole": "_ipc_add_mounting_hole",
+         "get_layer_list": "_ipc_get_layer_list",
++        "list_graphics": "_ipc_list_graphics",  # PowerLab patch (#56)
++        "delete_graphic": "_ipc_delete_graphic",  # PowerLab patch (#56)
++        "clear_board_outline": "_ipc_clear_board_outline",  # PowerLab patch (#56)
+         # Component commands
+         "place_component": "_ipc_place_component",
+         "move_component": "_ipc_move_component",
+@@ -779,6 +789,7 @@ class KiCADInterface(SchematicHandlersMixin):
          "get_component_list": "_ipc_get_component_list",
          "get_component_properties": "_ipc_get_component_properties",
          "set_footprint_type": "_ipc_set_footprint_type",
@@ -6112,7 +6122,30 @@ index c6ac305..03b6fdd 100644
          "add_component_3d_model": "_ipc_add_component_3d_model",
          # Save command
          "save_project": "_ipc_save_project",
-@@ -1236,6 +1244,7 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -1075,6 +1086,22 @@ class KiCADInterface(SchematicHandlersMixin):
+             if handler:
+                 # Execute the command
+                 result = handler(params)
++                # PowerLab patch (#57): a tool that works on the saved board (run_drc,
++                # get_design_rules, ...) answered "No board is loaded" in a live session,
++                # although KiCad had the board open, until open_board was called again.
++                # Load that board and try once more.
++                if (
++                    isinstance(result, dict)
++                    and not result.get("success", True)
++                    and result.get("message") == "No board is loaded"
++                    and command not in ("open_board", "open_project", "close_project")
++                ):
++                    path = self._board_path_to_load(params)
++                    if path:
++                        self._reload_board_file(path)
++                        if getattr(self, "board", None) is not None:
++                            logger.info(f"{command}: loaded {path} and ran again")
++                            result = handler(params)
+                 logger.debug(f"Command result: {result}")
+ 
+                 # Add backend indicator
+@@ -1236,6 +1263,7 @@ class KiCADInterface(SchematicHandlersMixin):
          "add_board_text",
          "move_footprint_text",
          "add_copper_pour",
@@ -6120,7 +6153,7 @@ index c6ac305..03b6fdd 100644
          "refill_zones",
          "import_svg_logo",
          "sync_schematic_to_board",
-@@ -1848,6 +1857,257 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -1848,6 +1876,272 @@ class KiCADInterface(SchematicHandlersMixin):
          state = self._dirty_state(board_path)
          return {"success": True, "boardPath": board_path, **state}
  
@@ -6241,6 +6274,21 @@ index c6ac305..03b6fdd 100644
 +                "there: a save in KiCad would write the routed board back."
 +            ),
 +        }
++
++    def _board_path_to_load(self, params: Dict[str, Any]) -> Optional[str]:
++        """The saved board a "No board is loaded" command should use (PowerLab patch, #57):
++        the one it names, this session's, or the one KiCad has open."""
++        candidates = [params.get("boardPath"), params.get("pcbPath"), self._authoritative_board_path()]
++        backend = getattr(self, "ipc_backend", None)
++        if backend:
++            try:
++                candidates.append(backend.get_open_board_path())
++            except Exception:
++                pass
++        for path in candidates:
++            if path and str(path).endswith(".kicad_pcb") and os.path.isfile(str(path)):
++                return str(path)
++        return None
 +
 +    def _reload_board_file(self, board_path: str) -> None:
 +        board = self._safe_load_board(board_path)
@@ -6378,7 +6426,7 @@ index c6ac305..03b6fdd 100644
      def _handle_batch_move_components(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """Batch move wrapper that preserves the external-edit save guard."""
          if getattr(self, "session_backend", None) == "ipc" and not self._ipc_session_alive():
-@@ -5079,6 +5339,65 @@ print("ok")
+@@ -5079,6 +5373,65 @@ print("ok")
              logger.error(f"IPC route_arc_trace error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -6444,7 +6492,7 @@ index c6ac305..03b6fdd 100644
      def _ipc_add_via(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for add_via - adds via with real-time UI update"""
          try:
-@@ -5131,21 +5450,37 @@ print("ok")
+@@ -5131,21 +5484,37 @@ print("ok")
              net = params.get("net")
              clearance = params.get("clearance", 0.5)
              min_width = params.get("minWidth", 0.25)
@@ -6489,7 +6537,7 @@ index c6ac305..03b6fdd 100644
  
              success = self.ipc_board_api.add_zone(
                  points=formatted_points,
-@@ -5156,6 +5491,7 @@ print("ok")
+@@ -5156,6 +5525,7 @@ print("ok")
                  priority=priority,
                  fill_mode=fill_type,
                  name=name,
@@ -6497,7 +6545,195 @@ index c6ac305..03b6fdd 100644
              )
  
              return {
-@@ -5833,6 +6169,100 @@ print("ok")
+@@ -5456,11 +5826,182 @@ print("ok")
+             return {"success": False, "message": str(e)}
+ 
+     def _ipc_delete_trace(self, params: Dict[str, Any]) -> Dict[str, Any]:
+-        """IPC handler for delete_trace - Note: IPC doesn't support direct trace deletion yet"""
+-        # IPC API doesn't have a direct delete track method
+-        # Fall back to SWIG for this operation
+-        logger.info("delete_trace: Falling back to SWIG (IPC doesn't support trace deletion)")
+-        return self.routing_commands.delete_trace(params)
++        """IPC handler for delete_trace (PowerLab patch, #56).
++
++        It used to fall back to the SWIG handler, which deleted from the tool's own copy
++        of the board and reported success; KiCad's board kept the copper and the next
++        save wrote it back. Now the tracks and vias are deleted in KiCad's board, in one
++        commit, by UUID, position (the nearest within 1 mm) or net, like the SWIG
++        handler; nothing found is a failure.
++        """
++        try:
++            import math
++
++            from kipy.board_types import Via
++            from kipy.proto.board.board_types_pb2 import BoardLayer
++
++            trace_uuid = params.get("traceUuid")
++            position = params.get("position")
++            net_name = params.get("net")
++            layer = params.get("layer")
++            include_vias = params.get("includeVias", False)
++            if not trace_uuid and not position and not net_name:
++                return {
++                    "success": False,
++                    "message": "Missing parameters",
++                    "errorDetails": "One of traceUuid, position, or net must be provided",
++                }
++            board = self.ipc_board_api._get_board()
++            items = list(board.get_tracks()) + list(board.get_vias())
++            layer_of = lambda it: self._normalize_ipc_layer_name(BoardLayer.Name(it.layer))
++            if net_name:
++                found = [
++                    it for it in items
++                    if (net_name == "*" or (it.net.name if it.net else "") == net_name)
++                    and (include_vias or not isinstance(it, Via))
++                    and (not layer or isinstance(it, Via) or layer_of(it) == layer)
++                ]
++            elif trace_uuid:
++                # query_traces reports the live UUID as kipy's KIID text ('value: "..."')
++                import re
++
++                m = re.search(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", trace_uuid)
++                wanted = m.group(0).lower() if m else trace_uuid
++                found = [it for it in items if it.id.value.lower() == wanted]
++            else:
++                scale = {"mm": 1_000_000, "mil": 25_400, "inch": 25_400_000}.get(position.get("unit", "mm"), 1_000_000)
++                px, py = float(position["x"]) * scale, float(position["y"]) * scale
++
++                def distance(it):
++                    if isinstance(it, Via):
++                        return math.hypot(it.position.x - px, it.position.y - py)
++                    ax, ay, bx, by = it.start.x, it.start.y, it.end.x, it.end.y
++                    dx, dy = bx - ax, by - ay
++                    n2 = dx * dx + dy * dy
++                    t = 0.0 if n2 == 0 else max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / n2))
++                    return math.hypot(ax + t * dx - px, ay + t * dy - py)
++                near = [it for it in items if not layer or isinstance(it, Via) or layer_of(it) == layer]
++                # a point on a via means the via, not a track that ends there
++                on_via = [it for it in near if isinstance(it, Via) and distance(it) <= it.diameter / 2]
++                best = min(on_via or near, key=distance) if near else None
++                found = [best] if best is not None and distance(best) < 1_000_000 else []
++            if not found:
++                return {
++                    "success": False,
++                    "message": "No track found",
++                    "errorDetails": "Nothing in KiCad's board matches; list the tracks with query_traces "
++                                    "(includeVias: true) for their UUIDs and positions",
++                }
++            locked = [it for it in found if getattr(it, "locked", False)]
++            found = [it for it in found if not getattr(it, "locked", False)]
++            if not found:
++                return {"success": False, "message": "Only locked copper matches; unlock it in KiCad first"}
++            commit = board.begin_commit()
++            try:
++                board.remove_items(found)
++                board.push_commit(commit, "Delete tracks")
++            except Exception:
++                board.drop_commit(commit)
++                raise
++            vias = sum(1 for it in found if isinstance(it, Via))
++            out = {
++                "success": True,
++                "message": f"Deleted {len(found) - vias} track(s) and {vias} via(s) in KiCad's board",
++                "deletedCount": len(found),
++            }
++            if locked:
++                out["lockedKept"] = len(locked)
++            return out
++        except Exception as e:
++            logger.error(f"IPC delete_trace error: {e}")
++            return {"success": False, "message": "Failed to delete trace", "errorDetails": str(e)}
++
++    def _ipc_shape_payload(self, shape: Any) -> Dict[str, Any]:
++        """A board shape from KiCad's board, like the SWIG list_graphics entries."""
++        from kipy.proto.board.board_types_pb2 import BoardLayer
++
++        mm = lambda v: {"x": v.x / 1_000_000, "y": v.y / 1_000_000, "unit": "mm"}
++        out: Dict[str, Any] = {
++            "uuid": shape.id.value,
++            "type": type(shape).__name__,
++            "layer": self._normalize_ipc_layer_name(BoardLayer.Name(shape.layer)),
++        }
++        for key, attr in (("start", "start"), ("end", "end"), ("mid", "mid"), ("center", "center"),
++                          ("topLeft", "top_left"), ("bottomRight", "bottom_right")):
++            try:
++                value = getattr(shape, attr)
++            except Exception:
++                continue
++            if value is not None and hasattr(value, "x"):
++                out[key] = mm(value)
++        return out
++
++    def _ipc_list_graphics(self, params: Dict[str, Any]) -> Dict[str, Any]:
++        """IPC handler for list_graphics (PowerLab patch, #56): KiCad's board shapes, with
++        the UUIDs delete_graphic needs in live mode."""
++        try:
++            board = self.ipc_board_api._get_board()
++            layer = params.get("layer")
++            graphics = [self._ipc_shape_payload(s) for s in board.get_shapes()]
++            if layer:
++                graphics = [g for g in graphics if g["layer"] == layer]
++            return {"success": True, "count": len(graphics), "graphics": graphics}
++        except Exception as e:
++            logger.error(f"IPC list_graphics error: {e}")
++            return {"success": False, "message": "Failed to list graphics", "errorDetails": str(e)}
++
++    def _ipc_delete_graphic(self, params: Dict[str, Any]) -> Dict[str, Any]:
++        """IPC handler for delete_graphic (PowerLab patch, #56): deletes the shape in KiCad's
++        board (the SWIG handler only changed the tool's own copy)."""
++        try:
++            uuid = params.get("uuid")
++            if not uuid:
++                return {"success": False, "message": "uuid is required"}
++            board = self.ipc_board_api._get_board()
++            found = [s for s in board.get_shapes() if s.id.value == uuid]
++            if not found:
++                return {
++                    "success": False,
++                    "message": "Graphic not found",
++                    "errorDetails": f"KiCad's board has no graphic with uuid {uuid}; list_graphics gives "
++                                    "the current UUIDs",
++                }
++            commit = board.begin_commit()
++            try:
++                board.remove_items(found)
++                board.push_commit(commit, "Delete graphic")
++            except Exception:
++                board.drop_commit(commit)
++                raise
++            return {"success": True, "message": f"Deleted graphic {uuid} in KiCad's board", "uuid": uuid}
++        except Exception as e:
++            logger.error(f"IPC delete_graphic error: {e}")
++            return {"success": False, "message": "Failed to delete graphic", "errorDetails": str(e)}
++
++    def _ipc_clear_board_outline(self, params: Dict[str, Any]) -> Dict[str, Any]:
++        """IPC handler for clear_board_outline (PowerLab patch, #56): every Edge.Cuts shape
++        goes from KiCad's board, in one commit."""
++        try:
++            from kipy.proto.board.board_types_pb2 import BoardLayer
++
++            board = self.ipc_board_api._get_board()
++            edge = [s for s in board.get_shapes() if s.layer == BoardLayer.BL_Edge_Cuts]
++            if edge:
++                commit = board.begin_commit()
++                try:
++                    board.remove_items(edge)
++                    board.push_commit(commit, "Clear board outline")
++                except Exception:
++                    board.drop_commit(commit)
++                    raise
++            return {
++                "success": True,
++                "message": f"Removed {len(edge)} Edge.Cuts item(s) from KiCad's board",
++                "removed": len(edge),
++            }
++        except Exception as e:
++            logger.error(f"IPC clear_board_outline error: {e}")
++            return {"success": False, "message": "Failed to clear board outline", "errorDetails": str(e)}
+ 
+     def _ipc_query_traces(self, params: Dict[str, Any]) -> Dict[str, Any]:
+         """IPC handler for query_traces - reads traces from the live KiCAD board."""
+@@ -5833,6 +6374,100 @@ print("ok")
              logger.error(f"IPC set_footprint_type error: {e}")
              return {"success": False, "message": str(e)}
  

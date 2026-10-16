@@ -90,7 +90,7 @@ The router never forces a connection. Whatever it leaves, and every DRC error it
 - **Connections left (`report.left`):** route each one by hand with `route_pad_to_pad` or `route_trace` (and `add_via` where it must change layer), at the net's class width, following §3.4: straight into the pad centre, 45° corners, no detours.
 - **DRC errors:** run `run_drc` and compare with the baseline. Fix every new error: move or reroute the track, nudge a via. The goal is **0 new errors**. Track-width or clearance errors usually mean the net classes don't match the board constraints: fix the rules and route again rather than hiding the errors.
 - **Pour-net pads the pour can't reach** (unconnected in DRC, e.g. a GND pad boxed in by tracks): give that pad a via (0.4/0.8 mm) next to it with a short stub, then refill.
-- **Live-mode limits:** with KiCad open, `delete_trace` and `modify_trace` don't reach KiCad's board. To remove copper, ask the user to delete it in KiCad, or route around it.
+- **Removing copper:** with KiCad open, `delete_trace` deletes in KiCad's board (by `traceUuid` from `query_traces`, by `position`, or every track of a `net`); a point on a via deletes the via. It refuses locked copper. `modify_trace` still doesn't reach KiCad's board: delete and route the track again instead.
 
 ## 5. Check the result against the rules (§3.3–3.7)
 - **Look at it** (`powerlab-visual-review`): render top copper, bottom copper and both together. Look for:

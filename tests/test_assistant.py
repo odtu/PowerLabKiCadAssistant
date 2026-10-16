@@ -1029,6 +1029,24 @@ class McpPatchTests(unittest.TestCase):
         copper.clear()  # after finish there's nothing left to take back
         self.assertEqual(len(fake.items), 3)
 
+    def test_live_deletes_reach_kicads_board(self):
+        # Issue #56: with KiCad open, delete_trace changed only the tool's own copy and
+        # said it worked; nothing could delete board-outline lines live
+        patch = self.patch()
+        self.assertNotIn("+        return self.routing_commands.delete_trace(params)", patch)
+        self.assertIn('+        """IPC handler for delete_trace (PowerLab patch, #56).', patch)
+        for handler in ("_ipc_delete_graphic", "_ipc_list_graphics", "_ipc_clear_board_outline"):
+            self.assertIn(f"+    def {handler}(self, params", patch)
+        for name in ("list_graphics", "delete_graphic", "clear_board_outline"):
+            self.assertIn(f'+        "{name}": "_ipc_{name}",  # PowerLab patch (#56)', patch)
+        self.assertIn("board.remove_items(found)", patch)
+
+    def test_no_board_loaded_loads_kicads_board(self):
+        # Issue #57: run_drc said "No board is loaded" while KiCad had the board open
+        patch = self.patch()
+        self.assertIn("+    def _board_path_to_load(self, params", patch)
+        self.assertIn('and result.get("message") == "No board is loaded"', patch)
+
     def test_session_vias_keep_their_annular_ring(self):
         self.assertIn("via_drills = _repair_via_drills(self.board)", self.patch())
 

@@ -40,7 +40,7 @@ Say in one line that you're starting the review, e.g. "Layout done. Reviewing it
    - If a fix adds DRC errors or makes something else worse, undo it (move the part back) and move the finding to "needs the user".
    - Keep a log for the report: round, rule, where, what you changed (with numbers, e.g. "C5 moved from 4.2 mm to 1.1 mm of U2 pin 7").
 
-**When a tool can't do it.** Some edits don't reach KiCad's live board: a tool says it worked, but the next DRC or render shows no change. Deleting or changing existing tracks is the usual case. Don't retry. Put it under "needs the user" with exact steps for KiCad, e.g. "Delete the 0.25 mm track from U3 pin 4 to the via at (106.2, 124.0) on B.Cu".
+**When a tool can't do it.** Some edits don't reach KiCad's live board: a tool says it worked, but the next DRC or render shows no change. Changing an existing track in place (`modify_trace`) is the usual case; delete it with `delete_trace` and route it again instead. Board-outline lines are deleted with `list_graphics` + `delete_graphic`, or all at once with `clear_board_outline`. If a tool still shows no change, don't retry. Put it under "needs the user" with exact steps for KiCad, e.g. "Delete the 0.25 mm track from U3 pin 4 to the via at (106.2, 124.0) on B.Cu".
 
 ## When to stop
 After a round with fixes, start another round. Stop when one of these is true:
