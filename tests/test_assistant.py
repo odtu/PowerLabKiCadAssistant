@@ -1031,6 +1031,65 @@ class McpPatchTests(unittest.TestCase):
                 f.write(self.new_file(f"python/commands/powerlab_router/{name}") + "\n")
         return root
 
+    def test_powerlab_router_river(self):
+        """A bus between two parallel pin rows, drawn as by hand: every bend 45 degrees, the
+        runs in the channel exactly one pitch apart, no two tracks crossing, and a track
+        that doesn't fit its slot moves along the channel."""
+        module = types.ModuleType("bus")
+        exec(self.new_file("python/commands/powerlab_router/bus.py"), module.__dict__)
+        # module row at x = 106.25 (1.27 mm pitch), header row at x = 101.3 (2.54 mm), header left
+        pairs = [((106.25, 110 + 1.27 * i), (101.3, 108 + 2.54 * i)) for i in range(6)]
+        shapes = module.plan(pairs, 0.4, 0.9, 1.0)
+        self.assertEqual(sorted(shapes), list(range(6)))
+        for i, pts in shapes.items():
+            self.assertEqual((pts[0], pts[-1]), pairs[i])
+            for a, b in zip(pts, pts[1:]):
+                angle = math.degrees(math.atan2(b[1] - a[1], b[0] - a[0])) % 45
+                self.assertTrue(angle < 0.01 or angle > 44.99, (i, a, b))
+        runs = sorted(round(pts[2][0], 3) for i, pts in shapes.items() if pairs[i][1][1] > pairs[i][0][1] + 0.05)
+        self.assertTrue(all(abs((b - a) - 0.4) < 1e-6 for a, b in zip(runs, runs[1:])), runs)
+
+        def crosses(p, q):
+            def side(a, b, c):
+                return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+            for a, b in zip(p, p[1:]):
+                for c, d in zip(q, q[1:]):
+                    if side(a, b, c) * side(a, b, d) < -1e-9 and side(c, d, a) * side(c, d, b) < -1e-9:
+                        return True
+            return False
+        for i in shapes:
+            for j in shapes:
+                if i < j:
+                    self.assertFalse(crosses(shapes[i], shapes[j]), (i, j))
+
+        # copper on the first downward track's slot: it steps past it, the next one a pitch beyond
+        first = min(i for i in shapes if pairs[i][1][1] > pairs[i][0][1] + 0.05)
+        x0 = shapes[first][2][0]
+        blocked = lambda i, pts: not any(x0 - 0.05 <= p[0] <= x0 + 0.25 for p in pts[2:-2]) if i == first else True
+        moved = module.plan(pairs, 0.4, 0.9, 1.0, clear=blocked)
+        self.assertGreater(moved[first][2][0], x0 + 0.25)
+        self.assertGreaterEqual(moved[first + 1][2][0], moved[first][2][0] + 0.4 - 1e-9)
+
+        # pins in a different order on the two rows would cross: no plan
+        crossed = [pairs[1], (pairs[0][0], pairs[2][1]), (pairs[2][0], pairs[0][1])]
+        self.assertEqual(module.plan(crossed, 0.4, 0.9, 1.0), {})
+
+    def test_powerlab_router_shapes(self):
+        """Hand-drawn shapes between two points: straight, one bend, Z; 45 degree bends only."""
+        module = types.ModuleType("patterns")
+        exec(self.new_file("python/commands/powerlab_router/patterns.py"), module.__dict__)
+        found = module.shapes((0, 0), 0, (3, 1), 0, step=0.1)
+        self.assertTrue(found)
+        self.assertEqual(min(module.bends(s) for s in found), 1)
+        for s in found:
+            self.assertEqual(s[0], (0, 0))
+            self.assertEqual(s[-1], (3, 1))
+            for a, b in zip(s, s[1:]):
+                angle = math.degrees(math.atan2(b[1] - a[1], b[0] - a[0])) % 45
+                self.assertTrue(angle < 0.01 or angle > 44.99)
+        self.assertEqual(module.shapes((0, 0), 0, (3, 0), 0)[0], [(0, 0), (3, 0)])  # straight
+        self.assertEqual(module.shapes((0, 0), 0, (-3, 0), 4, most=4), [])  # a U-turn: left to the search
+
     def test_powerlab_router_shortcut(self):
         """Milestone 2: the shortcut pass straightens a staircase, keeps the pad lanes and
         never turns by more than 45 degrees."""

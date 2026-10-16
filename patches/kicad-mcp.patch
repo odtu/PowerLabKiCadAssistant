@@ -1084,19 +1084,138 @@ index 0000000..acab7e9
 @@ -0,0 +1,2 @@
 +"""PowerLab router (PowerLab patch): routes by the lab rules, see docs/powerlab-router-plan.md
 +in odtu/PowerLabKiCadAssistant. Milestone 0: grid, search and pad entry lanes."""
+diff --git a/python/commands/powerlab_router/bus.py b/python/commands/powerlab_router/bus.py
+new file mode 100644
+index 0000000..719fe25
+--- /dev/null
++++ b/python/commands/powerlab_router/bus.py
+@@ -0,0 +1,110 @@
++"""River routing of a bus between two parallel pin rows, as drawn by hand (no pcbnew).
++
++A module's pin row and a header's pin row side by side, with one connection per pin
++pair and the pins in the same order on both rows: each track leaves its pin straight,
++bends 45 degrees into the channel between the rows, runs along it, bends 45 degrees and
++enters the other pin straight. The tracks share the channel in slots one track pitch
++apart, so they run side by side at exactly the pitch:
++- Tracks going down the channel are placed in order from the top pin: the first takes
++  the slot nearest the far row, the next the slot beside it, and so on. Then no track's
++  stub crosses another's run. Tracks going up are the mirror image.
++- A track whose pins are level runs straight across.
++
++Works in a local frame where the rows run along y, the near row ("a") is at larger x and
++the far row ("b") at smaller x; plan() maps in and out of it.
++"""
++
++def plan(pairs, pitch, edge_a, edge_b, clear=None, chamfers=(0.6, 0.4, 0.25), tolerance=0.05, step=0.1,
++         round_b=False):
++    """Shapes for a bus. `pairs`: [(a centre, b centre)] in world mm; `edge_a`, `edge_b`:
++    how far from its row's centre line a track's centre must stay in the channel (pad
++    half-width + clearance + half a track). `clear(index, points)` says whether the shape
++    for pair `index` (world mm) keeps its clearance to other copper: a track that doesn't fit in its slot moves
++    `step` mm further along the channel until it does (trying the 45 degree bends at
++    each size in `chamfers`), and the next one starts a pitch beyond it. With round_b
++    (round pads on the far row, which have no axis), a track may also end with a 45
++    degree run straight into the pad's centre instead of a level one: from the channel,
++    or after a level run just above or below the pin's row (to pass under copper that
++    sits on that row, as the hand-routed TestPCB does at J2.9). Returns {index: [points,
++    a centre first]} for the pairs it could place, or {} when the rows aren't two
++    parallel lines in the same pin order."""
++    if len(pairs) < 2:
++        return {}
++    xs, ys = [a[0] for a, _b in pairs], [a[1] for a, _b in pairs]
++    swap = (max(xs) - min(xs)) > (max(ys) - min(ys))  # rows along x: work with x and y swapped
++
++    def sw(p):
++        return (p[1], p[0]) if swap else p
++
++    pts = [(sw(a), sw(b)) for a, b in pairs]
++    # the pins on the two rows: those on the commonest line of each side (a module's pin
++    # on another side, say, is left to the search)
++    def line(vals):
++        return max(vals, key=lambda v: sum(1 for w in vals if abs(w - v) <= tolerance))
++    xa0, xb0 = line([a[0] for a, _b in pts]), line([b[0] for _a, b in pts])
++    keep = [i for i, (a, b) in enumerate(pts) if abs(a[0] - xa0) <= tolerance and abs(b[0] - xb0) <= tolerance]
++    if len(keep) < 2:
++        return {}
++    flip = xb0 > xa0  # the far row at smaller x
++
++    def fl(p):
++        return (-p[0], p[1]) if flip else p
++
++    local = {i: (fl(pts[i][0]), fl(pts[i][1])) for i in keep}  # world = sw(fl(local)): both are their own inverse
++    xa, xb = fl((xa0, 0))[0], fl((xb0, 0))[0]
++    lo, hi = xb + edge_b, xa - edge_a  # where a track centre may run in the channel
++    if hi <= lo:
++        return {}
++    order_a = sorted(keep, key=lambda i: local[i][0][1])
++    order_b = sorted(keep, key=lambda i: local[i][1][1])
++    if order_a != order_b:
++        return {}  # pins not in the same order on both rows: the tracks would cross
++    def world(p):
++        return [sw(fl(q)) for q in p]
++
++    out = {}
++    for i in order_a:
++        a, b = local[i]
++        if abs(b[1] - a[1]) <= tolerance and (clear is None or clear(i, world([a, b]))):
++            out[i] = [a, b]  # level: straight across
++    down = [i for i in order_a if local[i][1][1] - local[i][0][1] > tolerance]
++    up = [i for i in reversed(order_a) if local[i][0][1] - local[i][1][1] > tolerance]
++    for members, sign in ((down, 1.0), (up, -1.0)):
++        nxt = lo + min(chamfers)
++        for i in members:
++            a, b = local[i]
++            dy = abs(b[1] - a[1])
++            x = nxt
++            placed = False
++            while x + min(chamfers) <= hi and not placed:
++                for size in chamfers:
++                    e = min(size, dy / 2.0)
++                    if x - e < lo or x + e > hi:
++                        continue
++                    p = [a, (x + e, a[1]), (x, a[1] + sign * e)]
++                    if dy - 2 * e > 1e-6:
++                        p.append((x, b[1] - sign * e))
++                    p += [(x - e, b[1]), b]
++                    tries = [p]
++                    run = x - b[0]  # a 45 degree end: as long across as along
++                    if round_b and dy - e - run > 1e-6:
++                        tries.append(p[:3] + [(x, b[1] - sign * run), b])
++                    if round_b:
++                        for dd in (0.5, 0.7, 1.0):
++                            for side in (1.0, -1.0):
++                                yh = b[1] + side * sign * dd  # the level run, beside the pin's row
++                                down = sign * (yh - sign * e - (a[1] + sign * e))
++                                if down < -1e-6 or x - e <= b[0] + dd + 1e-6:
++                                    continue
++                                tries.append(p[:3] + [(x, yh - sign * e), (x - e, yh), (b[0] + dd, yh), b])
++                    for q in tries:
++                        if clear is None or clear(i, world(q)):
++                            out[i] = q
++                            nxt = x + pitch
++                            placed = True
++                            break
++                    if placed:
++                        break
++                x += step
++            # one that found no slot goes to the search; the next ones may still fit
++    return {i: world(p) for i, p in out.items()}
 diff --git a/python/commands/powerlab_router/costs.py b/python/commands/powerlab_router/costs.py
 new file mode 100644
-index 0000000..1dd02bc
+index 0000000..a2aef7b
 --- /dev/null
 +++ b/python/commands/powerlab_router/costs.py
-@@ -0,0 +1,320 @@
+@@ -0,0 +1,331 @@
 +"""The lab rules as search costs (plan §4.4, milestone 3).
 +
 +Per-cell penalties, in units of Costs.unit (0.1 mm of track), composed per connection:
-+- Pours stay whole (§3.3): on layers with a pour, a cell costs more the farther it is from
-+  copper or the board edge (up to HUG_MM away). Tracks then hug pads, edges and each
-+  other, and run in bundles, instead of cutting through the open pour. Learnt from the
-+  hand-routed TestPCB, whose GND pours stayed larger and in fewer pieces.
++- Pours stay whole, without slivers (§3.3): on layers with a pour, a track either hugs
++  other copper or the board edge at the clearance (one track pitch, as the hand-routed
++  TestPCB does: 31 of its 64 parallel runs sit exactly 0.4 mm apart), or stands far
++  enough off that the pour fills the gap (two zone clearances plus its minimum width).
++  In between, where the gap is too narrow to pour, cells cost the most; in the open pour,
++  less; hugging, nothing. So tracks run in tight bundles instead of cutting through the
++  pour or leaving voids beside each other.
 +- Thermal spokes of pour-net pads stay clear, so the pad keeps its connection.
 +- No tracks under inductors, transformers or chokes, on any layer (§3.4), except the
 +  part's own nets.
@@ -1118,8 +1237,8 @@ index 0000000..1dd02bc
 +
 +T = pcbnew.ToMM
 +
-+HUG = 3  # units per cell far from copper (0.3 mm per 0.1 mm cell)
-+HUG_MM = 1.0  # beyond this distance from copper a cell costs the full HUG
++HUG = 3  # units per cell in the open pour (0.3 mm per 0.1 mm cell)
++SLIVER = 8  # units per cell too close to copper for the pour to fill between (§3.3 slivers)
 +SPOKES = 20
 +MAGNETICS = 120
 +MAGNETICS_MARGIN = 0.3  # mm around the courtyard: half a track and some
@@ -1246,6 +1365,14 @@ index 0000000..1dd02bc
 +        self.escape_total, self.escape_own = self._escape_room()
 +        self.power_pour = self._power_pours()
 +        self.edge_band = [~rb.inside(CLOCK_EDGE_MM)] * self.n
++        # cells (beyond the hugging one) where the gap to copper is too narrow to pour
++        gap, width = 0.2, 0.25
++        if pour_zones:
++            z = pour_zones[0]
++            gap = max(T(z.GetLocalClearance() or 0) if hasattr(z, "GetLocalClearance") else 0.0,
++                      T(rb.netclass(z.GetNetname()).GetClearance()))
++            width = T(z.GetMinThickness())
++        self.sliver_cells = int(math.ceil((2 * gap + width) / g.pitch))
 +
 +    # --- static maps -----------------------------------------------------------------
 +    def _zeros(self):
@@ -1358,14 +1485,14 @@ index 0000000..1dd02bc
 +        rb = self.rb
 +        g = rb.grid
 +        fast = conn.group == 1  # switching and clocks
-+        steps = max(1, int(round(HUG_MM / g.pitch)))
++        sliver = self.sliver_cells
 +        out = []
 +        for i in range(self.n):
 +            p = hist[i].astype(np.int32) + self.spokes[i]
 +            if self.pour_layer[i]:
 +                hard = np.frombuffer(blocked[i], np.uint8).reshape(self.shape).astype(bool)
-+                dist = _dilate(hard, steps + 1)
-+                p += (np.minimum(dist.astype(np.int32), steps) * HUG) // steps
++                dist = _dilate(hard, sliver + 2).astype(np.int32)
++                p += np.where(dist <= 1, 0, np.where(dist <= sliver, SLIVER, HUG))
 +            for nets, mask in self.magnetic:
 +                if conn.net not in nets:
 +                    p += mask * MAGNETICS
@@ -1728,10 +1855,10 @@ index 0000000..4d59b97
 +    return out
 diff --git a/python/commands/powerlab_router/model.py b/python/commands/powerlab_router/model.py
 new file mode 100644
-index 0000000..7a5a506
+index 0000000..0964daf
 --- /dev/null
 +++ b/python/commands/powerlab_router/model.py
-@@ -0,0 +1,631 @@
+@@ -0,0 +1,640 @@
 +"""Board side of the PowerLab router (pcbnew): obstacles, pad entry lanes, results as tracks.
 +
 +Clearances are KiCad's: the larger of the two net classes' clearances and the board
@@ -1784,6 +1911,14 @@ index 0000000..7a5a506
 +    sp = pcbnew.SHAPE_POLY_SET()
 +    item.TransformShapeToPolygon(sp, layer, MM(by_mm), ERR, pcbnew.ERROR_OUTSIDE)
 +    return sp
++
++
++def is_round(pad, layer):
++    try:
++        shape = pad.GetShape(layer)
++    except TypeError:
++        shape = pad.GetShape()
++    return shape == pcbnew.PAD_SHAPE_CIRCLE
 +
 +
 +def _uuid(item):
@@ -2085,8 +2220,9 @@ index 0000000..7a5a506
 +            if not pad.IsOnLayer(L):
 +                continue
 +            pts = [pt for outline, _h in _polys(_grown(pad, L, 0.0)) for pt in outline]
-+            for k in range(4):
-+                a = theta + 90 * k
++            # a round pad has no axis: every 45 degree direction goes straight to its centre
++            for k in range(8 if is_round(pad, L) else 4):
++                a = theta + (45 if is_round(pad, L) else 90) * k
 +                d8 = a / 45.0
 +                if abs(d8 - round(d8)) > 1e-3:
 +                    continue  # pad not at a multiple of 45 degrees
@@ -2363,12 +2499,121 @@ index 0000000..7a5a506
 +    t = (rx * (-v1[1]) - ry * (-v1[0])) / det
 +    corner = (exact[0] + t * v0[0], exact[1] + t * v0[1])
 +    return [exact, corner] + pts[2:]
+diff --git a/python/commands/powerlab_router/patterns.py b/python/commands/powerlab_router/patterns.py
+new file mode 100644
+index 0000000..d5193b9
+--- /dev/null
++++ b/python/commands/powerlab_router/patterns.py
+@@ -0,0 +1,103 @@
++"""Hand-drawn shapes for a run of track (plan §15 follow-up). No pcbnew.
++
++A person routes a run between two fixed points (a pin's stub, a via) with a few long
++straight segments: straight, one bend, or a Z of up to three bends, every bend 45 degrees.
++These are those shapes, as lists of points: segment directions are multiples of 45
++degrees and each turns by exactly 45 from the last. The run leaves `a` heading `da` and
++arrives at `b` heading `db` (direction indices 0-7, 45 degrees apart, 0 = +x, 2 = +y;
++None = any, e.g. at a via).
++
++The free parameters (where the middle segments lie) are sampled every `step` mm, so
++parallel tracks can sit on a regular pitch.
++"""
++
++import math
++
++DIRS = [(math.cos(math.radians(45 * k)), math.sin(math.radians(45 * k))) for k in range(8)]
++EPS = 1e-6
++
++
++def _solve2(u, v, r):
++    """l, m with l*u + m*v = r, or None if u and v are parallel."""
++    det = u[0] * v[1] - u[1] * v[0]
++    if abs(det) < EPS:
++        return None
++    return ((r[0] * v[1] - r[1] * v[0]) / det, (u[0] * r[1] - u[1] * r[0]) / det)
++
++
++def _sequences(da, db, most):
++    """Direction sequences from da to db, each step turning by 45 degrees, up to `most` segments."""
++    starts = [da] if da is not None else list(range(8))
++    out = []
++
++    def grow(seq):
++        if db is None or seq[-1] == db:
++            out.append(list(seq))
++        if len(seq) == most:
++            return
++        for turn in (1, -1):
++            grow(seq + [(seq[-1] + turn) % 8])
++
++    for s in starts:
++        grow([s])
++    return out
++
++
++def shapes(a, da, b, db, most=4, step=0.1, min_segment=0.3, reach=1.5):
++    """Point lists from a to b (a and b included) for every direction sequence of up to
++    `most` segments; the middle segments' lengths are sampled every `step` mm up to
++    `reach` times the distance. Segments other than the first and last are at least
++    `min_segment` long; the first and last may be 0 (a bend right at a or b)."""
++    r = (b[0] - a[0], b[1] - a[1])
++    dist = math.hypot(*r)
++    if dist < EPS:
++        return []
++    top = max(dist * reach, 1.0)
++    samples = [k * step for k in range(int(top / step) + 1)]
++    out = []
++    for seq in _sequences(da, db, most):
++        u = [DIRS[d] for d in seq]
++        n = len(seq)
++        if n == 1:
++            if abs(u[0][0] * r[1] - u[0][1] * r[0]) < EPS * max(1, dist) and u[0][0] * r[0] + u[0][1] * r[1] > 0:
++                out.append([a, b])
++            continue
++        # two segments whose lengths are solved for; the others are sampled
++        pairs = [(0, n - 1)] + [(i, j) for i in range(n) for j in range(i + 1, n) if (i, j) != (0, n - 1)]
++        solve = next(((i, j) for i, j in pairs if abs(u[i][0] * u[j][1] - u[i][1] * u[j][0]) > EPS), None)
++        if solve is None:
++            continue
++        free = [k for k in range(n) if k not in solve]
++        for vals in _grid(samples, len(free)):
++            lengths = [0.0] * n
++            for k, v in zip(free, vals):
++                lengths[k] = v
++            rest = (r[0] - sum(lengths[k] * u[k][0] for k in free), r[1] - sum(lengths[k] * u[k][1] for k in free))
++            ends = _solve2(u[solve[0]], u[solve[1]], rest)
++            if ends is None:
++                continue
++            lengths[solve[0]], lengths[solve[1]] = ends
++            if any(L < -EPS for L in lengths):
++                continue
++            if any(lengths[k] < min_segment for k in range(1, n - 1)):
++                continue  # a middle segment too short to draw
++            pts = [a]
++            for d, L in zip(u, lengths):
++                if L > EPS:
++                    pts.append((pts[-1][0] + d[0] * L, pts[-1][1] + d[1] * L))
++            pts[-1] = b  # exact end
++            out.append(pts)
++    return out
++
++
++def _grid(samples, k):
++    if k == 0:
++        yield ()
++        return
++    for v in samples:
++        for rest in _grid(samples, k - 1):
++            yield (v,) + rest
++
++
++def bends(pts):
++    return max(0, len(pts) - 2)
 diff --git a/python/commands/powerlab_router/router.py b/python/commands/powerlab_router/router.py
 new file mode 100644
-index 0000000..addf917
+index 0000000..50db9f9
 --- /dev/null
 +++ b/python/commands/powerlab_router/router.py
-@@ -0,0 +1,508 @@
+@@ -0,0 +1,777 @@
 +"""The PowerLab router's main loop (plan §4.2-4.6).
 +
 +Connections are the edges of a minimum spanning tree over each net's pads. Groups are
@@ -2395,7 +2640,9 @@ index 0000000..addf917
 +
 +from commands.powerlab_router.costs import LabCosts, labels, pieces
 +from commands.powerlab_router.groups import GROUPS, classify, is_clock
-+from commands.powerlab_router.model import FINE_PITCH, MM, RouterBoard, _grown, _polys
++from commands.powerlab_router.model import FINE_PITCH, MM, RouterBoard, _grown, _polys, is_round
++from commands.powerlab_router import bus as river
++from commands.powerlab_router.patterns import shapes
 +from commands.powerlab_router.search import Costs
 +
 +T = pcbnew.ToMM
@@ -2406,6 +2653,12 @@ index 0000000..addf917
 +CUT = 60  # penalty units on cells where a track cut a pour in pieces
 +POUR_PIECE_MM2 = 2.0  # pour pieces smaller than this don't count
 +REPAIR_ROUNDS = 3  # passes of the pour repair after routing
++BEND = 1.5  # mm: what a bend costs a hand-drawn shape (few long segments, like hand routing)
++SHORT = 1.5  # mm extra for a segment shorter than SHORT_MM (a jog or a hook)
++SHORT_MM = 0.5
++SHAPE_TRIES = 40  # grid-free shapes scored per run, cheapest first
++BUS_MIN = 3  # connections between two parts that make a bus
++VIA_COLUMN_EXTRA = (0.0, 0.5, 1.0, 1.5)  # mm beyond the closest via column that are tried
 +POUR_BLOCK = 1  # the pour grid already keeps the zone's minimum width
 +MAX_RIPPED = 3
 +MAX_RIPS = 3
@@ -2436,6 +2689,7 @@ index 0000000..addf917
 +        self.ripped = 0  # times its copper was ripped up
 +        self.rips = 0  # times it ripped others up
 +        self.reason = None
++        self.bus, self.bus_size, self.bus_rank = None, 0, 0  # see Router._buses
 +
 +    def name(self):
 +        return f"{_name(self.a)}-{_name(self.b)}"
@@ -2446,6 +2700,11 @@ index 0000000..addf917
 +    me = _uuid(pad)
 +    return any(_uuid(p) != me and 1e-3 < math.dist(c, _xy(p)) < FINE_PITCH
 +               for p in pad.GetParentFootprint().Pads())
++
++
++def _direction(p, q):
++    """Index (0-7, 45 degrees apart) of the direction from p to q."""
++    return int(round(math.degrees(math.atan2(q[1] - p[1], q[0] - p[0])) / 45.0)) % 8
 +
 +
 +def _mst(pads):
@@ -2460,7 +2719,7 @@ index 0000000..addf917
 +
 +class Router:
 +    def __init__(self, board, pitch=0.1, pour_nets=("GND",), costs=None, rules=None, groups=None,
-+                 order="length", ripup=True, finish=True):
++                 order="bus", ripup=True, finish=True):
 +        self.order, self.ripup, self.finish = order, ripup, finish
 +        self.rb = RouterBoard(board, pitch=pitch, pour_nets=pour_nets, rules=rules)
 +        self.costs = costs or Costs(layer_factor={1: 1.2} if len(self.rb.layers) == 2 else None)
@@ -2475,6 +2734,160 @@ index 0000000..addf917
 +            if len(pads) >= 2:
 +                out += [Connection(net, pads[i], pads[j], group[net]) for i, j in _mst(pads)]
 +        return out
++
++    def _buses(self, conns):
++        """Connections between the same two parts (BUS_MIN or more, in one group) are a bus:
++        routed together, one after the other in the order of their pins along the row, as
++        a person routes a fan-out from a module to a header. Routed apart, unrelated
++        connections take the channel first and the later pins have to dodge."""
++        sets = {}
++        for c in conns:
++            parts = tuple(sorted((c.a.GetParentFootprint().GetReference(), c.b.GetParentFootprint().GetReference())))
++            if parts[0] != parts[1]:
++                sets.setdefault((c.group, parts), []).append(c)
++        for (group, parts), members in sets.items():
++            if len(members) < BUS_MIN:
++                continue
++            ref = parts[0]
++            pins = [_xy(c.a if c.a.GetParentFootprint().GetReference() == ref else c.b) for c in members]
++            xs, ys = [p[0] for p in pins], [p[1] for p in pins]
++            axis = 0 if max(xs) - min(xs) >= max(ys) - min(ys) else 1
++            for rank, (c, _p) in enumerate(sorted(zip(members, pins), key=lambda m: m[1][axis])):
++                c.bus, c.bus_size, c.bus_rank = "-".join(parts), len(members), rank
++
++    def _river_all(self, conns):
++        """Route each bus between two parallel pin rows the way it is drawn by hand; returns
++        the connections it placed:
++        1. as a river on the layer both rows share (bus.py), each track in the first free
++           slot of the channel, a pitch beside the one before;
++        2. the rest, when the near row is on one layer and the far row on both: a short
++           stub from each pin to an escape via, the vias in one column beside the pin row
++           (on whichever side places more), then a river on the other layer from the via
++           column into the far row.
++        What doesn't fit goes to the search."""
++        rb = self.rb
++        placed = []
++        buses = {}
++        for c in conns:
++            if c.bus:
++                buses.setdefault(c.bus, []).append(c)
++        for _name, members in sorted(buses.items(), key=lambda kv: -len(kv[1])):
++            ends = [self._near_far(c) for c in members]
++            shared = [L for L in rb.layers if all(a.IsOnLayer(L) and b.IsOnLayer(L) for a, b in ends)]
++            if not shared:
++                continue
++            L = shared[0]
++            key = rb.key(members[0].net)
++            w, vd = key[1], key[2]
++            pitch = w + max(rb.clearance_to(o, key, "Track", L) for c in members for o in (c.a, c.b))
++            pairs = [(_xy(a), _xy(b)) for a, b in ends]
++            axis = self._row_axis([p[0] for p in pairs])
++            a_pads, b_pads = [a for a, _b in ends], [b for _a, b in ends]
++            edge_a = self._row_edge(a_pads, axis, key, L, w)
++            edge_b = self._row_edge(b_pads, axis, key, L, w)
++            done = self._place(members, river.plan(pairs, pitch, edge_a, edge_b, clear=self._clear_on(members, L, w),
++                                                   round_b=all(is_round(b, L) for b in b_pads)),
++                               lambda i, pts: ([(rb.layers.index(L), pts)], []))
++            placed += done
++            # 2. escape vias and a river on the other layer
++            rest = [i for i, c in enumerate(members) if c not in done]
++            others = [M for M in rb.layers if M != L and all(b.IsOnLayer(M) for _a, b in ends)]
++            if len(rest) < 2 or not others or any(len([M for M in rb.layers if a.IsOnLayer(M)]) > 1 for a in a_pads):
++                continue
++            M = others[0]
++            n = self._toward(pairs, axis)  # unit vector from the near row to the far row
++            best = []
++            # the via column beyond the pins or on the channel side, at a few distances: a
++            # column further out leaves more room for the bundle on the other layer
++            for side, extra in [(s, x) for s in (-1.0, 1.0) for x in VIA_COLUMN_EXTRA]:
++                vias, ok = {}, []
++                for i in rest:
++                    a, _b = ends[i]
++                    half = self._half_across(a, axis)
++                    off = half + 0.25 + vd / 2 + 0.05 + extra  # via ring at least 0.25 mm off the pad (§3.5)
++                    v = (_xy(a)[0] + side * n[0] * off, _xy(a)[1] + side * n[1] * off)
++                    if rb.clear(members[i].net, L, _xy(a), v, w) and self._via_fits(members[i].net, v):
++                        vias[i] = v
++                        ok.append(i)
++                if len(ok) < 2:
++                    continue
++                sub = [(vias[i], _xy(ends[i][1])) for i in ok]
++                edge_v = vd / 2 + max(rb.clearance_to(o, key, "Via", M) for c in members for o in (c.a, c.b)) + w / 2
++                plan = river.plan(sub, pitch, edge_v, self._row_edge(b_pads, axis, key, M, w),
++                                  clear=self._clear_on([members[i] for i in ok], M, w),
++                                  round_b=all(is_round(b, M) for b in b_pads))
++                found = {ok[j]: pts for j, pts in plan.items()}
++                if len(found) > len(best):
++                    best = [(i, vias[i], found[i]) for i in sorted(found)]
++            shapes2 = {i: pts for i, _v, pts in best}
++            via_at = {i: v for i, v, _p in best}
++            placed += self._place(members, shapes2, lambda i, pts: (
++                [(rb.layers.index(L), [_xy(ends[i][0]), via_at[i]]), (rb.layers.index(M), pts)], [via_at[i]]))
++        self._q = None
++        return placed
++
++    def _near_far(self, c):
++        """(near pad, far pad): the near one on the part with pads on one layer only (the
++        module side of a module-to-header bus), so escape vias go beside it."""
++        one = lambda p: len([L for L in self.rb.layers if p.IsOnLayer(L)]) == 1
++        return (c.a, c.b) if one(c.a) or not one(c.b) else (c.b, c.a)
++
++    @staticmethod
++    def _row_axis(points):
++        xs, ys = [p[0] for p in points], [p[1] for p in points]
++        return 1 if (max(ys) - min(ys)) >= (max(xs) - min(xs)) else 0  # 1: rows along y
++
++    @staticmethod
++    def _toward(pairs, axis):
++        across = 0 if axis == 1 else 1
++        d = sum(b[across] - a[across] for a, b in pairs)
++        u = [0.0, 0.0]
++        u[across] = 1.0 if d > 0 else -1.0
++        return tuple(u)
++
++    @staticmethod
++    def _half_across(pad, axis):
++        bb = pad.GetBoundingBox()
++        return T(bb.GetWidth() if axis == 1 else bb.GetHeight()) / 2
++
++    def _row_edge(self, pads, axis, key, L, w):
++        """How far a track centre stays from a row's centre line while it runs or bends in
++        the channel: off the pads (the widest pad's half width across the row plus half a
++        track). The exact clearance check decides the rest: a 45 degree bend may start just
++        past a pad's edge when it heads away from the neighbouring pad, as by hand."""
++        return max(self._half_across(p, axis) for p in pads) + w / 2 + 0.05
++
++    def _clear_on(self, members, L, w):
++        """clear(index, points) for bus.plan: the shape keeps its clearance on layer L."""
++        rb = self.rb
++
++        def clear(i, pts):
++            return all(rb.clear(members[i].net, L, p, q, w) for p, q in zip(pts, pts[1:]))
++        return clear
++
++    def _via_fits(self, net, v):
++        rb = self.rb
++        items = rb.add(net, [], [v])
++        bad = rb.violations(net, items)
++        rb.remove(items)
++        return not bad
++
++    def _place(self, members, shapes_, geo_of):
++        rb = self.rb
++        done = []
++        for i in sorted(shapes_, key=lambda i: members[i].bus_rank):
++            c = members[i]
++            geo = geo_of(i, shapes_[i])
++            items = rb.add(c.net, *geo)
++            if rb.violations(c.net, items):
++                rb.remove(items)
++                continue
++            rb.commit(c.net, items)
++            c.items, c.geo = items, geo
++            for it in items:
++                self.owner[_uuid(it)] = c
++            done.append(c)
++        return done
 +
 +    def _lanes(self, conn, cache):
 +        if conn.net not in cache:
@@ -2500,6 +2913,7 @@ index 0000000..addf917
 +        g = rb.grid
 +        self.hist = [np.zeros((g.ny, g.nx), np.uint8) for _ in rb.layers]  # rip-ups add to it
 +        self.lab = LabCosts(self)
++        self.tidy_stats = {"runs": 0, "replaced": 0, "no_cheaper_shape": 0, "all_blocked": 0, "dearer_or_not_clear": 0}
 +        self._q = None
 +        self._pour_setup()
 +        self.owner = {}  # copper uuid -> connection
@@ -2509,11 +2923,20 @@ index 0000000..addf917
 +        if self.order == "constrained":
 +            for c in pending:
 +                c.lanes = self._lanes(c, cache)
++        self._buses(conns)
++        for c in self._river_all(conns):
++            pending.remove(c)
++            if log:
++                log({"net": c.net, "connection": c.name(), "group": c.group, "ok": True,
++                     "event": f"routed as part of the bus {c.bus}"})
 +        while pending:
 +            group = min(c.group for c in pending)
 +            here = [c for c in pending if c.group == group]
 +            if self.order == "constrained":
 +                conn = min(here, key=lambda c: (c.lanes, not c.fine, c.length))
++            elif self.order == "bus":
++                # buses first, the biggest first, each in its pin-row order; then the rest by length
++                conn = min(here, key=lambda c: (c.bus is None, -c.bus_size, c.bus or "", c.bus_rank, c.length))
 +            else:
 +                conn = min(here, key=lambda c: c.length)
 +            pending.remove(conn)
@@ -2571,6 +2994,7 @@ index 0000000..addf917
 +            "connections_ripped": totals["ripped"],
 +            "exact_violations_left": totals["exact_left"],
 +            "pour_repair": repair,
++            "shapes": dict(self.tidy_stats),
 +            "finish": finish,
 +            "rules_not_understood": rb.rules.unsupported,
 +            "connections_list": conns,
@@ -2779,12 +3203,14 @@ index 0000000..addf917
 +                rb.remove(items)
 +                items = []
 +            blocked, via_ok = rb.obstacles(conn.net, extra)
++            penalty = self._penalty(conn, blocked)
 +            geo, info = rb.route(conn.net, conn.a, conn.b, blocked, via_ok, self.costs,
-+                                 penalty=self._penalty(conn, blocked), via_costs=self._via_costs(conn))
++                                 penalty=penalty, via_costs=self._via_costs(conn))
 +            totals["nodes"] += info["nodes"]
 +            totals["search_s"] += info["seconds"]
 +            if geo is None:
 +                return False, info
++            geo = self._tidy(conn, geo, blocked, penalty)
 +            items = rb.add(conn.net, *geo)
 +            if not rb.violations(conn.net, items):
 +                break
@@ -2799,6 +3225,94 @@ index 0000000..addf917
 +            self.owner[_uuid(it)] = conn
 +        self._q = None
 +        return True, info
++
++    # --- hand-drawn shapes ------------------------------------------------------------------
++    def _tidy(self, conn, geo, blocked, penalty):
++        """Redraw each run of the search's way (lane exit or via to via or lane exit) as the
++        simplest hand-drawn shape that fits: straight, one bend, or a Z of up to three 45
++        degree bends (patterns.py). Scored by length, the lab costs, BEND per bend and SHORT
++        per jog; the search's own run competes on the same score. Lanes and vias stay."""
++        rb, g = self.rb, self.rb.grid
++        pieces, vias = geo
++        w = rb.widths(conn.net)[0]
++        out = []
++        for k, (L, pts) in enumerate(pieces):
++            lo = 1 if k == 0 else 0
++            hi = len(pts) - 2 if k == len(pieces) - 1 else len(pts) - 1
++            if hi - lo < 1:
++                out.append((L, pts))
++                continue
++            a, b = pts[lo], pts[hi]
++            st = self.tidy_stats
++            st["runs"] += 1
++            da = _direction(pts[0], pts[1]) if k == 0 else None
++            db = _direction(pts[-2], pts[-1]) if k == len(pieces) - 1 else None
++            score = self._scorer(L, blocked, penalty)
++            best, best_score = pts[lo:hi + 1], score(pts[lo:hi + 1])
++            cands = []
++            for s in shapes(a, da, b, db, most=4, step=0.1 if math.dist(a, b) < 4 else 0.2):
++                rough = sum(math.dist(p, q) for p, q in zip(s, s[1:])) + BEND * (len(s) - 2)
++                if rough < best_score:
++                    cands.append((rough, s))
++            cands.sort(key=lambda c: c[0])
++            if not cands:
++                st["no_cheaper_shape"] += 1
++            scored = []
++            for _rough, s in cands:
++                if not self._grid_free(s, L, blocked):
++                    continue
++                scored.append((score(s), s))
++                if len(scored) >= SHAPE_TRIES:
++                    break
++            if cands and not scored:
++                st["all_blocked"] += 1
++            layer = rb.layers[L]
++            replaced = False
++            for sc, s in sorted(scored, key=lambda c: c[0]):
++                if sc >= best_score:
++                    break
++                if all(rb.clear(conn.net, layer, p, q, w) for p, q in zip(s, s[1:])):
++                    best, best_score = s, sc
++                    replaced = True
++                    break
++            if replaced:
++                st["replaced"] += 1
++            elif scored:
++                st["dearer_or_not_clear"] += 1
++            out.append((L, pts[:lo] + best + pts[hi + 1:]))
++        return out, vias
++
++    def _scorer(self, L, blocked, penalty):
++        g = self.rb.grid
++        pen = penalty[L] if penalty is not None else None
++        unit, factor = self.costs.unit, self.costs.layer_factor.get(L, 1.0)
++
++        def segment(p, q):
++            d = math.dist(p, q)
++            total = d * factor + (SHORT if d < SHORT_MM else 0.0)
++            if pen is not None and d > 1e-6:
++                n = max(1, int(d / (g.pitch / 2)))
++                for k in range(n):
++                    i, j = g.cell(p[0] + (q[0] - p[0]) * (k + 0.5) / n, p[1] + (q[1] - p[1]) * (k + 0.5) / n)
++                    if 0 <= i < g.nx and 0 <= j < g.ny:
++                        total += pen[j * g.nx + i] * unit * (d / n) / g.pitch
++            return total
++
++        def score(pts):
++            return sum(segment(p, q) for p, q in zip(pts, pts[1:])) + BEND * max(0, len(pts) - 2)
++        return score
++
++    def _grid_free(self, pts, L, blocked):
++        g = self.rb.grid
++        row = blocked[L]
++        for p, q in zip(pts, pts[1:]):
++            d = math.dist(p, q)
++            n = max(1, int(d / (g.pitch / 2)))
++            for k in range(1, n):  # the ends are a lane exit or a via: free by construction
++                i, j = g.cell(p[0] + (q[0] - p[0]) * k / n, p[1] + (q[1] - p[1]) * k / n)
++                if not (0 <= i < g.nx and 0 <= j < g.ny) or row[j * g.nx + i]:
++                    return False
++        return True
 +
 +    def _rip_up(self, conn, totals):
 +        """Find the way through the router's copper of the same or later groups, rip up the
@@ -3168,7 +3682,7 @@ index 0000000..17932d6
 +        return max(default, maybe)
 diff --git a/python/commands/powerlab_router/search.py b/python/commands/powerlab_router/search.py
 new file mode 100644
-index 0000000..36905f3
+index 0000000..c180123
 --- /dev/null
 +++ b/python/commands/powerlab_router/search.py
 @@ -0,0 +1,174 @@
@@ -3198,7 +3712,7 @@ index 0000000..36905f3
 +class Costs:
 +    """Costs in mm of track."""
 +
-+    def __init__(self, turn=0.4, via=4.0, layer_factor=None, min_run=2, unit=0.1, max_nodes=1_000_000,
++    def __init__(self, turn=1.5, via=4.0, layer_factor=None, min_run=2, unit=0.1, max_nodes=1_000_000,
 +                 nodes_per_mm=40_000, nodes_base=100_000, weight=1.0):
 +        self.turn = turn
 +        # per search: give up instead of combing the whole board. A short connection that

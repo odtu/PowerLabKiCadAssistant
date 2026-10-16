@@ -1,6 +1,6 @@
 # PowerLab router: design plan
 
-Status: milestones 0–3 done (results in §12–15). The router isn't a tool yet: its code is in the MCP patch (`python/commands/powerlab_router/`), and `tools/router_bench.py` runs it. Phase 1 (pad-centre entry and shortcuts in `clean_up_routing`) is on hold.
+Status: milestones 0–4 done (results in §12–16). The router isn't a tool yet: its code is in the MCP patch (`python/commands/powerlab_router/`), and `tools/router_bench.py` runs it. Phase 1 (pad-centre entry and shortcuts in `clean_up_routing`) is on hold.
 
 ## 1. Why
 
@@ -388,4 +388,73 @@ Milestone 2 left the top pour at 86% and the bottom at 83%; Freerouting leaves t
 - **More vias than by hand** (41 against 23), and 2 connections left (`J1.A5` in its pocket, `ESP_TXD0`).
 - **Speed:** several minutes per board, against a target of 1–2. The search dominates: the costs make it explore more.
 - **Open question for the maintainers:** §3.4 says to keep bottom-layer tracks short on 2-layer boards. The hand-routed example puts long runs on the bottom in bundles and keeps the top for short fan-outs, and that is what keeps the pours whole. Should §3.4 say that instead?
+
+## 16. Milestone 4: route like hand drawing (2026-10-16)
+
+**Why:** the maintainer's verdict on milestone 3 was that it looks like trash, and that the router should think the way a person draws a board.
+
+**What makes hand routing look right:** `tools/route_quality.py` doesn't show it, so the hand-routed TestPCB was taken apart connection by connection. Gaps are measured between parallel long runs.
+
+| | Hand-routed | Milestone 3 |
+|---|---|---|
+| Segments per net (median) | 6 | 10 |
+| Segments shorter than 0.5 mm (jogs, hooks) | 10 | 86 |
+| Gap to the neighbouring parallel track | 0.40 mm in 31 of 64 (one track pitch), else the pin pitch (1.27 / 2.54) | 0.6, 0.5, 0.49, 0.8, 0.42… (irregular) |
+
+So a person draws:
+- few, long, straight segments;
+- parallel tracks side by side at exactly one pitch;
+- a group of pins between two parts (a bus) as a group.
+
+The search did none of that. Measured: in 42 of 84 runs a clean shape fitted, but the search's own way scored cheaper. It wove through the lab costs to collect small savings, because a bend cost only 0.4 mm.
+
+**What was built:**
+- **Dearer bends:** a bend costs 1.5 mm in the search (`Costs.turn`; it was 0.4).
+- **Hand-drawn shapes** (`patterns.py`): every run of the search's way is redrawn as the simplest shape that fits:
+  - straight, one bend, or a Z of up to three 45° bends;
+  - scored by length, the lab costs, 1.5 mm per bend and 1.5 mm per jog under 0.5 mm.
+- **Slivers** (§3.3): next to other copper, a track either hugs it at the clearance or stands far enough off for the pour to fill the gap (two zone clearances plus its minimum width). In between costs the most, so tracks don't leave unpourable strips.
+- **Buses** (`router.py`): 3 or more connections between the same two parts are routed together, in the order of their pins along the row, before the other connections.
+- **River routing of a bus** (`bus.py`), for two parallel pin rows such as a module and a header:
+  - each track leaves its pin straight, bends 45°, runs in the channel between the rows, bends 45° and enters the other pin straight;
+  - tracks going down take their slots from the far row inward, one pitch apart, so no stub crosses another's run; tracks going up are the mirror image;
+  - a track whose slot is taken by copper steps along the channel until it fits;
+  - a bend may start just past a pad's edge, as long as the exact clearance check accepts it (as by hand).
+- **Fan-out with escape vias:** the pins that don't fit on the shared layer get:
+  - a straight stub to an escape via;
+  - all vias in one column beside the pin row. Both sides and four distances are tried, and the one that places the most wins.
+  - a river on the other layer from the via column into the far row.
+- **Round pads** have no axis: they can be entered straight to the centre in eight directions, not four. A bus track may end with a level run just beside the pin's row and a 45° step into the pin, to pass under copper on that row (as by hand at J2.9).
+
+**TestPCB, full board (same benchmark).** Pour cells: largest piece share, area in mm², pieces.
+
+| | Hand-routed | Milestone 3 | **Milestone 4** | Freerouting |
+|---|---|---|---|---|
+| Routed (of 52) / new DRC errors | 52 / — | 50 / 0 | **50 / 0** | 51 / 26 |
+| Segments | 248 | 409 | **304** | 231 |
+| Short jogs (< 0.5 mm) | 10 | 86 | **44** | 46 |
+| Corners | 174 | 297 | **201** | 168 |
+| Vias | 23 | 41 | **32** | 15 |
+| Parallel runs exactly 0.4 mm apart | 31 | under 5 | **18** | 4 |
+| Top GND pour | 91%, 808, 5 | 93%, 818, 7 | **98%, 843, 3** | 85%, 675, 14 |
+| Bottom GND pour | 94%, 949, 3 | 94%, 911, 4 | **98%, 976, 2** | 100%, 1110, 1 |
+| Time | — | about 7 min | **223 s** | 69 s |
+
+19 of the 52 connections go in as buses: the two module-to-header fan-outs. On the left side:
+- the four pins whose header pins are near go on top in one river, exactly where the hand routing has them;
+- the next four go through an escape-via column and a bottom bundle;
+- the rest go to the search.
+
+The 6 entries "at an angle" are 45° entries into round header pins, on purpose.
+
+**What's still worse than by hand:**
+- **Connections that aren't a bus** still come from the search with long diagonals and an occasional hook. Example: the USB-UART chip's lines to the module and the header.
+- **Bus pins that neither river fits** (`IO27`, `IO12`, `IO13` on the left) go to the search too.
+- **One segment is off by 1.6°**: `ESP_EN`, where a straight run joins two off-grid pins. A 0.05 mm skew.
+- **2 connections are still left**, as before.
+
+**Next:**
+- shapes for the non-bus connections: whole-connection patterns (L/Z between the two pins and their escape vias) before the search, the way the bus river works;
+- a "step-in" for rivers, where a track moves to the slot freed by the one before (the hand routing does that);
+- a tidiness measure in `route_quality.py`: parallel runs at pitch, bends aligned.
 
