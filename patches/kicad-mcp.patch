@@ -1236,10 +1236,10 @@ index 0000000..341e276
 +            out[k] = new
 diff --git a/python/commands/powerlab_router/costs.py b/python/commands/powerlab_router/costs.py
 new file mode 100644
-index 0000000..a2aef7b
+index 0000000..4cb4b43
 --- /dev/null
 +++ b/python/commands/powerlab_router/costs.py
-@@ -0,0 +1,331 @@
+@@ -0,0 +1,341 @@
 +"""The lab rules as search costs (plan §4.4, milestone 3).
 +
 +Per-cell penalties, in units of Costs.unit (0.1 mm of track), composed per connection:
@@ -1407,6 +1407,7 @@ index 0000000..a2aef7b
 +                      T(rb.netclass(z.GetNetname()).GetClearance()))
 +            width = T(z.GetMinThickness())
 +        self.sliver_cells = int(math.ceil((2 * gap + width) / g.pitch))
++        self.pour_gap = gap
 +
 +    # --- static maps -----------------------------------------------------------------
 +    def _zeros(self):
@@ -1570,13 +1571,22 @@ index 0000000..a2aef7b
 +                for di in range(-r, r + 1):
 +                    if di * di + dj * dj <= r * r:
 +                        near[(cj + dj) * g.nx + ci + di] = elsewhere * ESCAPE_VIA_FACTOR
-+        return near, elsewhere
++        return near, elsewhere, self.via_pour(conn.net)
++
++    def via_pour(self, net):
++        """A via cuts a disc out of the pour on every layer (its pad and the pour's gap
++        round it): the length of this net's track that cuts as much, in cells. The search
++        charges a via the pour costs of that many cells on each layer, so going down and
++        back up costs what the holes cost the pours, not only the via."""
++        _cls, w, vd, _n = self.rb.key(net)
++        d = vd + 2 * self.pour_gap
++        return math.pi * d * d / 4 / (w + 2 * self.pour_gap) / self.rb.grid.pitch
 diff --git a/python/commands/powerlab_router/finish.py b/python/commands/powerlab_router/finish.py
 new file mode 100644
-index 0000000..59f7527
+index 0000000..85e17c1
 --- /dev/null
 +++ b/python/commands/powerlab_router/finish.py
-@@ -0,0 +1,176 @@
+@@ -0,0 +1,180 @@
 +"""Shortcut pass after routing (plan §4.7; the method of track_opt.py in the lab's
 +InductiveEncoder project).
 +
@@ -1697,6 +1707,7 @@ index 0000000..59f7527
 +    for c in conns:
 +        pieces, vias = c.geo
 +        w = rb.widths(c.net)[0]
++        vd = rb.key(c.net)[2]
 +        blocked = rb.obstacles(c.net)[0]
 +        penalty = router._penalty(c, blocked)
 +        unit = router.costs.unit
@@ -1728,7 +1739,10 @@ index 0000000..59f7527
 +                new_pieces.append((L, pts))
 +                continue
 +            layer = rb.layers[L]
-+            new = _corners(_shorten(lambda a, b: rb.clear(c.net, layer, a, b, w), pts, lo, hi, cost_on(L)))
++            # the exact check sees copper and the board edge; the rule areas come from the grid
++            def ok(a, b, layer=layer, L=L):
++                return router._outside_keepouts([a, b], L, w, vd) and rb.clear(c.net, layer, a, b, w)
++            new = _corners(_shorten(ok, pts, lo, hi, cost_on(L)))
 +            saved += _length(pts) - _length(new)
 +            corners += len(pts) - len(new)
 +            new_pieces.append((L, new))
@@ -1890,10 +1904,10 @@ index 0000000..4d59b97
 +    return out
 diff --git a/python/commands/powerlab_router/model.py b/python/commands/powerlab_router/model.py
 new file mode 100644
-index 0000000..feca6b4
+index 0000000..8fa2f73
 --- /dev/null
 +++ b/python/commands/powerlab_router/model.py
-@@ -0,0 +1,684 @@
+@@ -0,0 +1,686 @@
 +"""Board side of the PowerLab router (pcbnew): obstacles, pad entry lanes, results as tracks.
 +
 +Clearances are KiCad's: the larger of the two net classes' clearances and the board
@@ -2191,10 +2205,12 @@ index 0000000..feca6b4
 +        return self._inside[k]
 +
 +    def keepouts(self, w, vd):
-+        """Rule areas that keep tracks out: per layer, for track centres and for vias."""
++        """Rule areas that keep tracks out: per layer, for track centres and for vias. The
++        board's own and the footprints' (a module's antenna keepout comes with its footprint)."""
 +        t = [np.zeros((self.grid.ny, self.grid.nx), bool) for _ in self.layers]
 +        v = [np.zeros((self.grid.ny, self.grid.nx), bool) for _ in self.layers]
-+        for z in self.board.Zones():
++        zones = list(self.board.Zones()) + [z for fp in self.board.GetFootprints() for z in fp.Zones()]
++        for z in zones:
 +            if not z.GetIsRuleArea():
 +                continue
 +            for i, L in enumerate(self.layers):
@@ -2580,10 +2596,10 @@ index 0000000..feca6b4
 +    return [exact, corner] + pts[2:]
 diff --git a/python/commands/powerlab_router/patterns.py b/python/commands/powerlab_router/patterns.py
 new file mode 100644
-index 0000000..d5193b9
+index 0000000..96e3f70
 --- /dev/null
 +++ b/python/commands/powerlab_router/patterns.py
-@@ -0,0 +1,103 @@
+@@ -0,0 +1,111 @@
 +"""Hand-drawn shapes for a run of track (plan §15 follow-up). No pcbnew.
 +
 +A person routes a run between two fixed points (a pin's stub, a via) with a few long
@@ -2686,13 +2702,21 @@ index 0000000..d5193b9
 +
 +
 +def bends(pts):
-+    return max(0, len(pts) - 2)
++    """Changes of direction along a point list; points on a straight line (a pad's lane
++    exit, the end of a stub) are not bends."""
++    n = 0
++    for a, b, c in zip(pts, pts[1:], pts[2:]):
++        ux, uy, vx, vy = b[0] - a[0], b[1] - a[1], c[0] - b[0], c[1] - b[1]
++        lu, lv = math.hypot(ux, uy), math.hypot(vx, vy)
++        if lu > EPS and lv > EPS and abs(ux * vy - uy * vx) > 1e-3 * lu * lv:
++            n += 1
++    return n
 diff --git a/python/commands/powerlab_router/router.py b/python/commands/powerlab_router/router.py
 new file mode 100644
-index 0000000..7eeb2f3
+index 0000000..67b38c8
 --- /dev/null
 +++ b/python/commands/powerlab_router/router.py
-@@ -0,0 +1,958 @@
+@@ -0,0 +1,1056 @@
 +"""The PowerLab router's main loop (plan §4.2-4.6).
 +
 +Connections are the edges of a minimum spanning tree over each net's pads. Groups are
@@ -2721,7 +2745,7 @@ index 0000000..7eeb2f3
 +from commands.powerlab_router.groups import GROUPS, classify, is_clock
 +from commands.powerlab_router.model import FINE_PITCH, MM, RouterBoard, _grown, _polys, is_round
 +from commands.powerlab_router import bus as river
-+from commands.powerlab_router.patterns import shapes
++from commands.powerlab_router.patterns import DIRS, bends, shapes
 +from commands.powerlab_router.search import Costs
 +
 +T = pcbnew.ToMM
@@ -2738,6 +2762,8 @@ index 0000000..7eeb2f3
 +SHAPE_TRIES = 40  # grid-free shapes scored per run, cheapest first
 +BUS_MIN = 3  # connections between two parts that make a bus
 +DRAW_VIA_FACTOR = 1.0  # times Costs.via, for each via of a whole-connection shape
++STRAIGHT_OFFSET = 0.6  # mm: pads at most this far off one line may get one straight track
++BEND_PER_VIA = 2  # a via counts as this many corners when bus plans are compared
 +VIA_COLUMN_EXTRA = (0.0, 0.5, 1.0, 1.5)  # mm beyond the closest via column that are tried
 +POUR_BLOCK = 1  # the pour grid already keeps the zone's minimum width
 +MAX_RIPPED = 3
@@ -2861,7 +2887,11 @@ index 0000000..7eeb2f3
 +            best, best_key = None, None
 +            for opt in options:
 +                done = self._place_option(members, opt)
-+                key = (self._pour_quality() if self.pour_net else (0, 0), -len(done))
++                # pours first, then how many it places; then, like a person, the plan with
++                # fewer corners and vias (the step-in jogs cost area and look worse)
++                drawn = sum(bends(pts) for c in done for _L, pts in c.geo[0]) + \
++                    BEND_PER_VIA * sum(len(c.geo[1]) for c in done)
++                key = (self._pour_quality() if self.pour_net else (0, 0), -len(done), drawn)
 +                for c in done:
 +                    self._unroute(c)
 +                if best_key is None or key < best_key:
@@ -3019,6 +3049,7 @@ index 0000000..7eeb2f3
 +        g = rb.grid
 +        self.hist = [np.zeros((g.ny, g.nx), np.uint8) for _ in rb.layers]  # rip-ups add to it
 +        self.lab = LabCosts(self)
++        self._keep = {}  # (width, via) -> keepout masks per layer
 +        self.tidy_stats = {"runs": 0, "replaced": 0, "no_cheaper_shape": 0, "all_blocked": 0, "dearer_or_not_clear": 0}
 +        self._q = None
 +        self._pour_setup()
@@ -3372,10 +3403,19 @@ index 0000000..7eeb2f3
 +            geo = self._draw(conn, blocked, via_ok, penalty) if self.draw else None
 +            if geo is not None:
 +                info = {"nodes": 0, "seconds": 0.0, "drawn": True}
++            if geo is None or geo[1]:
++                # a drawn shape with vias may only be the best of a few shapes: going round
++                # on one layer needs more bends than they have; the search decides
++                found, sinfo = rb.route(conn.net, conn.a, conn.b, blocked, via_ok, self.costs,
++                                        penalty=penalty, via_costs=self._via_costs(conn))
++                if found is not None and (geo is None or sinfo.get("cost_mm", 1e18) < self._drawn_cost):
++                    geo, info = found, sinfo
++                elif geo is None:
++                    info = sinfo
++                else:
++                    info["nodes"], info["seconds"] = sinfo["nodes"], sinfo["seconds"]
++            if info.get("drawn"):
 +                totals["drawn"] = totals.get("drawn", 0) + 1
-+            else:
-+                geo, info = rb.route(conn.net, conn.a, conn.b, blocked, via_ok, self.costs,
-+                                     penalty=penalty, via_costs=self._via_costs(conn))
 +            totals["nodes"] += info["nodes"]
 +            totals["search_s"] += info["seconds"]
 +            if geo is None:
@@ -3468,7 +3508,15 @@ index 0000000..7eeb2f3
 +        # a via costs in full here: weighed against a bend, a person draws the bend more often
 +        # (the hand-routed TestPCB has 23 vias, the router had 39)
 +        via_cost = self.costs.via * DRAW_VIA_FACTOR
++        pour_cells = self.lab.via_pour(net)
 +        scorers = {}
++
++        def via_price(v):
++            """The via, and the pour it cuts on every layer (LabCosts.via_pour)."""
++            i, j = g.cell(*v)
++            if penalty is None or not (0 <= i < g.nx and 0 <= j < g.ny):
++                return via_cost
++            return via_cost + pour_cells * self.costs.unit * sum(int(p[j * g.nx + i]) for p in penalty)
 +
 +        def score_of(L):
 +            if L not in scorers:
@@ -3485,11 +3533,31 @@ index 0000000..7eeb2f3
 +
 +        layers = range(len(rb.layers))
 +        cands = []  # (rough cost, pieces, vias)
++        # straight lines between nearly aligned pads, and one-layer shapes at a fine-pitch
++        # pin: right at the pin row the grid is more careful than the exact check, so the
++        # exact check decides (and the keepouts, which it doesn't see)
++        exact_only = set()
 +        for A in la:
 +            for B in lb:
 +                if A.layer == B.layer:  # one layer, pin to pin
 +                    for s in shapes(A.exit, A.direction, B.exit, (B.direction + 4) % 8, most=3, step=0.2):
-+                        cands.append((A.cost + B.cost, [(A.layer, [A.centre] + s + [B.centre])], []))
++                        pieces = [(A.layer, [A.centre] + s + [B.centre])]
++                        if conn.fine:  # a short jog right at a fine-pitch row, as by hand
++                            exact_only.add(id(pieces))
++                        cands.append((A.cost + B.cost, pieces, []))
++                    if conn.fine:
++                        # between a fine-pitch pin and a part right beside it the lanes can
++                        # use up the gap: bend just past the pad edges, as a person does
++                        ea, eb = self._edge_exit(conn.a, A, w), self._edge_exit(conn.b, B, w)
++                        if ea and eb:
++                            for s in shapes(ea, A.direction, eb, (B.direction + 4) % 8, most=3, step=0.05):
++                                pieces = [(A.layer, [A.centre] + s + [B.centre])]
++                                exact_only.add(id(pieces))
++                                cands.append((A.cost + B.cost, pieces, []))
++                    for line in self._straights(conn, A, B, w):
++                        pieces = [(A.layer, line)]
++                        exact_only.add(id(pieces))
++                        cands.append((A.cost + B.cost, pieces, []))
 +            va = via_at(A)
 +            if va is None:
 +                continue
@@ -3499,14 +3567,14 @@ index 0000000..7eeb2f3
 +                for B in lb:
 +                    if B.layer == L2:  # escape via at a, the far pin on the other layer
 +                        for s in shapes(va, None, B.exit, (B.direction + 4) % 8, most=3, step=0.2):
-+                            cands.append((A.cost + B.cost + via_cost,
++                            cands.append((A.cost + B.cost + via_price(va),
 +                                          [(A.layer, [A.centre, va]), (L2, s + [B.centre])], [va]))
 +                    elif B.layer != L2:  # escape vias at both pins
 +                        vb = via_at(B)
 +                        if vb is None:
 +                            continue
 +                        for s in shapes(va, None, vb, None, most=3, step=0.2):
-+                            cands.append((A.cost + B.cost + 2 * via_cost,
++                            cands.append((A.cost + B.cost + via_price(va) + via_price(vb),
 +                                          [(A.layer, [A.centre, va]), (L2, s), (B.layer, [vb, B.centre])], [va, vb]))
 +        if not cands:
 +            return None
@@ -3520,14 +3588,15 @@ index 0000000..7eeb2f3
 +        def rough(c):
 +            base, pieces, vias = c
 +            return base + sum(math.dist(p, q) for _L, pts in pieces for p, q in zip(pts, pts[1:])) + \
-+                BEND * sum(max(0, len(pts) - 2) for _L, pts in pieces)
++                BEND * sum(bends(pts) for _L, pts in pieces)
 +        cands.sort(key=rough)
 +        scored = []
 +        for c in cands:
 +            if rough(c) > limit:
 +                break
 +            base, pieces, vias = c
-+            if all(self._grid_free(pts, L, blocked) for L, pts in pieces):
++            if (all(self._outside_keepouts(pts, L, w, vd) for L, pts in pieces) if id(pieces) in exact_only
++                    else all(self._grid_free(pts, L, blocked) for L, pts in pieces)):
 +                cost = base + sum(score_of(L)(pts) for L, pts in pieces)
 +                if cost <= limit:
 +                    scored.append((cost, pieces, vias))
@@ -3536,6 +3605,7 @@ index 0000000..7eeb2f3
 +        for cost, pieces, vias in sorted(scored, key=lambda c: c[0]):
 +            if all(rb.clear(net, rb.layers[L], p, q, w) for L, pts in pieces for p, q in zip(pts, pts[1:])) and \
 +                    all(self._via_fits(net, v) for v in vias):
++                self._drawn_cost = cost
 +                return pieces, vias
 +        return None
 +
@@ -3559,8 +3629,60 @@ index 0000000..7eeb2f3
 +            return total
 +
 +        def score(pts):
-+            return sum(segment(p, q) for p, q in zip(pts, pts[1:])) + BEND * max(0, len(pts) - 2)
++            return sum(segment(p, q) for p, q in zip(pts, pts[1:])) + BEND * bends(pts)
 +        return score
++
++    def _straights(self, conn, A, B, w):
++        """Straight tracks between two pads that face each other along one axis but are a
++        little off it (a resistor below a transistor's pin, a CC resistor above a USB-C
++        pin): a person draws one line that lands inside both pads, not two jogs to hit both
++        centres exactly. Tried: the line through either pad's centre (a narrow connector
++        pin stays centred) and the one halfway; each must end with its whole width on
++        both pads."""
++        if A.direction != (B.direction + 4) % 8:
++            return []
++        ux, uy = DIRS[A.direction]
++        rx, ry = B.centre[0] - A.centre[0], B.centre[1] - A.centre[1]
++        along, off = ux * rx + uy * ry, ux * ry - uy * rx
++        if along <= 0 or abs(off) < 1e-6 or abs(off) > STRAIGHT_OFFSET:
++            return []
++        nx_, ny_ = -uy, ux  # across the line
++
++        def on_pad(pad, p):
++            return all(pad.HitTest(pcbnew.VECTOR2I(MM(p[0] + nx_ * s), MM(p[1] + ny_ * s)), 0)
++                       for s in (0.0, -(w / 2 - 0.02), w / 2 - 0.02))  # a track as wide as the pin fits it
++        out = []
++        for share in (0.0, 0.5, 1.0):  # of the offset taken at A's end
++            pa = (A.centre[0] + nx_ * off * share, A.centre[1] + ny_ * off * share)
++            pb = (B.centre[0] - nx_ * off * (1 - share), B.centre[1] - ny_ * off * (1 - share))
++            if on_pad(conn.a, pa) and on_pad(conn.b, pb):
++                out.append([pa, pb])
++        return out
++
++    @staticmethod
++    def _edge_exit(pad, lane, w):
++        """Half a track width past the pad's edge, straight out along the lane; None for a
++        45 degree lane (a round pad has no edge on that axis)."""
++        if lane.direction % 2:
++            return None
++        bb = pad.GetBoundingBox()
++        half = T(bb.GetWidth()) / 2 if lane.direction % 4 == 0 else T(bb.GetHeight()) / 2
++        ux, uy = DIRS[lane.direction]
++        return (lane.centre[0] + ux * (half + w / 2), lane.centre[1] + uy * (half + w / 2))
++
++    def _outside_keepouts(self, pts, L, w, vd):
++        """Whether a run's track centres stay out of the rule areas (grid, like the search)."""
++        g = self.rb.grid
++        if (w, vd) not in self._keep:
++            self._keep[(w, vd)] = self.rb.keepouts(w, vd)[0]
++        mask = self._keep[(w, vd)][L]
++        for p, q in zip(pts, pts[1:]):
++            n = max(1, int(math.dist(p, q) / (g.pitch / 2)))
++            for k in range(n + 1):
++                i, j = g.cell(p[0] + (q[0] - p[0]) * k / n, p[1] + (q[1] - p[1]) * k / n)
++                if not (0 <= i < g.nx and 0 <= j < g.ny) or mask[j, i]:
++                    return False
++        return True
 +
 +    def _grid_free(self, pts, L, blocked):
 +        g = self.rb.grid
@@ -3957,10 +4079,10 @@ index 0000000..2c99089
 +        return max(default, maybe)
 diff --git a/python/commands/powerlab_router/search.py b/python/commands/powerlab_router/search.py
 new file mode 100644
-index 0000000..50055d5
+index 0000000..2c85359
 --- /dev/null
 +++ b/python/commands/powerlab_router/search.py
-@@ -0,0 +1,183 @@
+@@ -0,0 +1,188 @@
 +"""Octilinear A* for the PowerLab router. No pcbnew, so it can be tested and timed anywhere.
 +
 +A state is (i, j, layer, direction, run): the cell, the direction it was entered in (0-7,
@@ -4018,7 +4140,9 @@ index 0000000..50055d5
 +    goals: {(i, j, layer): (direction to arrive in, cost of that lane)}.
 +    window: (i0, j0, i1, j1), inclusive.
 +    penalty: per layer, flat nx*ny bytes (cost per cell entered, in `costs.unit`), or None.
-+    via_cost: ({cell index: cost}, cost elsewhere), or None for costs.via everywhere.
++    via_cost: ({cell index: cost}, cost elsewhere[, pour cells]), or None for costs.via
++    everywhere; with pour cells, a via also pays that many cells of `penalty` on every layer
++    (the pour it cuts).
 +    Returns (states from start to goal, stats); states is None when there's no path.
 +    """
 +    i0, j0, i1, j1 = window
@@ -4054,7 +4178,8 @@ index 0000000..50055d5
 +    limit = False
 +    found = None
 +    min_run, turn, unit = costs.min_run, costs.turn, costs.unit
-+    via_near, via_else = via_cost if via_cost is not None else ({}, costs.via)
++    via_near, via_else = via_cost[:2] if via_cost is not None else ({}, costs.via)
++    via_pour = via_cost[2] if via_cost is not None and len(via_cost) > 2 and penalty is not None else 0.0
 +    while openq:
 +        _f, c, s = heapq.heappop(openq)
 +        if s in done:
@@ -4103,6 +4228,8 @@ index 0000000..50055d5
 +                    continue
 +                ns = (i, j, L2, FREE, 0)
 +                nc = c + via_near.get(j * nx + i, via_else)
++                if via_pour:
++                    nc += via_pour * unit * sum(penalty[x][j * nx + i] for x in range(layers))
 +                if nc < best.get(ns, 1e18):
 +                    best[ns] = nc
 +                    parent[ns] = s

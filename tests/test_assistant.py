@@ -1098,6 +1098,8 @@ class McpPatchTests(unittest.TestCase):
                 self.assertTrue(angle < 0.01 or angle > 44.99)
         self.assertEqual(module.shapes((0, 0), 0, (3, 0), 0)[0], [(0, 0), (3, 0)])  # straight
         self.assertEqual(module.shapes((0, 0), 0, (-3, 0), 4, most=4), [])  # a U-turn: left to the search
+        # a pad centre, its lane exit on the same line, one bend: one corner, not two
+        self.assertEqual(module.bends([(0, 0), (0.5, 0), (2, 0), (3, 1), (4, 2)]), 1)
 
     def test_powerlab_router_shortcut(self):
         """Milestone 2: the shortcut pass straightens a staircase, keeps the pad lanes and
@@ -1137,6 +1139,66 @@ class McpPatchTests(unittest.TestCase):
         via_loop = [(3, 5, 0, 0, 2), (4, 5, 0, 0, 2), (4, 5, 1, 8, 0), (5, 6, 1, 1, 1), (4, 7, 1, 3, 1),
                     (3, 6, 1, 5, 1), (4, 5, 1, 7, 1), (4, 5, 0, 8, 0), (5, 5, 0, 0, 1)]
         self.assertEqual(_loops(via_loop), [(4, 5)])
+
+    def test_powerlab_router_keeps_out_of_footprint_keepouts(self):
+        """A module's antenna keepout comes with its footprint, not the board: the router
+        reads the footprints' rule areas too."""
+        try:
+            import pcbnew
+        except ImportError:
+            self.skipTest("needs KiCad's Python")
+        sys.path.insert(0, self.router_package())
+        try:
+            for m in [m for m in sys.modules if m == "commands" or m.startswith("commands.")]:
+                del sys.modules[m]
+            from commands.powerlab_router.router import Router
+        finally:
+            sys.path.pop(0)
+        mm, P = pcbnew.FromMM, lambda x, y: pcbnew.VECTOR2I(pcbnew.FromMM(x), pcbnew.FromMM(y))
+        board = pcbnew.BOARD()
+        for a, b in (((0, 0), (30, 0)), ((30, 0), (30, 20)), ((30, 20), (0, 20)), ((0, 20), (0, 0))):
+            edge = pcbnew.PCB_SHAPE(board, pcbnew.SHAPE_T_SEGMENT)
+            edge.SetStart(P(*a)); edge.SetEnd(P(*b)); edge.SetLayer(pcbnew.Edge_Cuts); edge.SetWidth(mm(0.1))
+            board.Add(edge)
+        net = pcbnew.NETINFO_ITEM(board, "SIG")
+        board.Add(net)
+        for ref, x in (("R1", 5), ("R2", 25)):
+            fp = pcbnew.FOOTPRINT(board)
+            fp.SetReference(ref)
+            fp.SetPosition(P(x, 10))
+            pad = pcbnew.PAD(fp)
+            pad.SetShape(pcbnew.PAD_SHAPE_RECTANGLE)
+            pad.SetAttribute(pcbnew.PAD_ATTRIB_SMD)
+            pad.SetLayerSet(pcbnew.PAD.SMDMask())
+            pad.SetSize(pcbnew.F_Cu, P(1, 1))
+            pad.SetPosition(P(x, 10))
+            pad.SetNumber("1")
+            pad.SetNet(net)
+            fp.Add(pad)
+            board.Add(fp)
+        module = pcbnew.FOOTPRINT(board)
+        module.SetReference("U1")
+        module.SetPosition(P(15, 7))
+        keepout = pcbnew.ZONE(module)
+        keepout.SetIsRuleArea(True)
+        keepout.SetDoNotAllowTracks(True)
+        keepout.SetDoNotAllowVias(True)
+        layers = pcbnew.LSET()
+        layers.AddLayer(pcbnew.F_Cu)
+        layers.AddLayer(pcbnew.B_Cu)
+        keepout.SetLayerSet(layers)
+        for x, y in ((12, 0), (18, 0), (18, 14), (12, 14)):
+            keepout.AppendCorner(P(x, y), -1)
+        module.Add(keepout)
+        board.Add(module)
+        report = Router(board).run(["SIG"])
+        self.assertEqual(report["routed"], 1, report["left"])
+        for t in board.GetTracks():
+            a, e = t.GetStart(), t.GetEnd()
+            for k in range(51):
+                x = pcbnew.ToMM(a.x + (e.x - a.x) * k / 50)
+                y = pcbnew.ToMM(a.y + (e.y - a.y) * k / 50)
+                self.assertFalse(12 < x < 18 and y < 14, "a track in the footprint's keepout")
 
     def test_powerlab_router_routes_a_board(self):
         """Milestone 2, end to end: two pads with another net's pad between them. The track
@@ -1379,6 +1441,18 @@ class McpPatchTests(unittest.TestCase):
         changes = [k for k, (a, b) in enumerate(zip(hop, hop[1:])) if a[2] != b[2]]
         for first, second in zip(changes, changes[1:]):
             self.assertGreaterEqual(second - first, 3)  # at least a 3-cell run between two vias
+
+        # a via pays for the pour it cuts on every layer: with both layers poured, a via
+        # pair under a short wall is cheap as a via alone, but dearer than going round
+        # once the holes count
+        wall = [(20, j) for j in range(5, ny)]
+        pour = [bytes([3]) * (nx * ny)] * 2
+        args = ([grid(wall), grid()], bytes([1]) * (nx * ny), nx, ny, 0.1, [(2, 30, 0, 0, 0.0)],
+                {(35, 30, 0): (0, 0.0)}, (0, 0, nx - 1, ny - 1), costs)
+        under, _ = module.search(*args, penalty=pour, via_cost=({}, 2.0))
+        self.assertEqual({s[2] for s in under}, {0, 1})
+        round_, _ = module.search(*args, penalty=pour, via_cost=({}, 2.0, 30.0))
+        self.assertEqual({s[2] for s in round_}, {0})
 
         # a penalty steers the path away from cells without blocking them
         band = bytearray(nx * ny)

@@ -569,3 +569,52 @@ By eye: the long diagonal from the module to the middle of the board and the bot
 - **R1.2-J1.A5:** hits the node limit at the USB-C connector, as in every milestone so far.
 - **Vias:** 39 against 23. Most come from escape vias in the bus fan-outs. The next step is to choose between the river on one layer and the via column by vias as well as by pours.
 - **Diagonal bundle:** the bundle from the module's bottom right to the right header still runs diagonally for several mm.
+
+## 20. Milestone 8: fewer vias, straight where it can be, keepouts kept (2026-10-16)
+
+**Feedback on M7:**
+- too many corners that serve nothing, which cost board area;
+- too many vias;
+- going down to the bottom and back up for a connection that could run straight on the top.
+
+**What was found:**
+- **Q2.2-R8.1, a 4 mm vertical run 0.1 mm off a straight line:** no top-layer shape existed for it at all. A straight track had to line up exactly, and a 45° jog needs at least 0.3 mm. So the router took two vias.
+- **Vias were too cheap against tracks in the pour:** a flat 4 mm each, while a top track between parts pays the sliver cost (about 9 mm per mm). A via pays nothing for the two holes it cuts in the pours.
+- **Phantom bends:** a pin-to-pin shape was charged for its lane exits as bends (about 3 mm), while via shapes weren't.
+- **Not enough bends to go round:** going round something on one layer and coming back needs five segments; the shapes have at most three, so a two-via shape won before the search was asked.
+- **Footprint keepouts were ignored:** the router read only the board's own rule areas, so the ESP module's antenna keepout (in its footprint) was open. The shortcut pass checked only copper, so it straightened tracks through keepouts too.
+- **CC pins of the USB-C connector:** the lanes leave each pad straight for 0.3–0.4 mm before a bend, which used up the gap between the fine-pitch pin and its resistor (R1.2-J1.A5 never routed). R2.2-J1.B5 circled a pad to enter along its axis.
+
+**What was built:**
+- **A via pays for the pour it cuts** (`LabCosts.via_pour`): the length of this net's track that cuts the same area, charged at the pour costs of each layer. Used in the search and in the drawn shapes.
+- **Straight tracks between nearly aligned pads** (`Router._straights`): one line that lands with its whole width inside both pads, through either centre or halfway, up to 0.6 mm off.
+- **At fine-pitch pins:** one-layer shapes are decided by the exact check and the keepout grid, not the pessimistic grid. Shapes may bend just past the pad edge, as by hand.
+- **Real bends only** (`patterns.bends`).
+- **Shapes with vias must beat the search:** a drawn shape with vias is kept only if the search finds nothing cheaper.
+- **Keepouts:** the board's and the footprints' rule areas are read, and the shortcut pass keeps out of them.
+- **Bus plans:** when the pours come out the same, fewer corners and vias win.
+- **Tests:** a via's pour cost, real bends, footprint keepouts.
+
+**TestPCB, full board** (pours: largest-piece share, pieces, in KiCad's fill):
+
+| | Hand-routed | M7 | **M8** (turn 1.5) | M8, turn 3.0 |
+|---|---|---|---|---|
+| Routed (of 52) / new DRC errors | 52 / — | 50 / 0 | **52 / 0** | 51 / 1 (starved thermal) |
+| Top GND pour | 91%, 5 | 97%, 4 | **98%, 3** | 97%, 4 |
+| Bottom GND pour | 94%, 3 | 98%, 3 | **99%, 2** | 98%, 2 |
+| Vias | 23 | 39 | **30** | 32 |
+| Corners / segments | 174 / 248 | 224 / 341 | 235 / 336 | 195 / 301 |
+| Diagonal share / longest | 0.13 / 3.4 mm | 0.25 / 5.4 mm | 0.27 / 7.1 mm | 0.31 / 7.1 mm |
+| Time | — | 585 s | 889 s* | 1296 s* |
+
+\* Both M8 settings ran side by side.
+
+Every connection routes for the first time. KiCad's DRC on the routed TestPCB finds no errors; the hand-routed board has 8 (track widths and edge clearance). TestPCB now carries the M8 routing, with the hand routing kept in `hand-routed-backup/` next to it.
+
+**What's still worse than by hand, by eye:**
+- long diagonals: from the module to the right header, and across the middle;
+- a bottom-layer loop round the left header;
+- zigzags along the right edge;
+- more corners overall (235 against 174).
+
+A corner cost of 3.0 brings the corners near the hand count (195) but loses a connection. The corners need planning, not a higher price.
