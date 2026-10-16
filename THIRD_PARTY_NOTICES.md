@@ -33,7 +33,7 @@ The installer downloads these from their official sources into `%LOCALAPPDATA%\P
 
 | Software | License |
 |---|---|
-| [KiCad 10](https://www.kicad.org/) (the panel runs inside it and uses its Python, `pcbnew` and the bundled wxPython) | GPL-3.0; wxPython: wxWindows Library Licence |
+| [KiCad 10](https://www.kicad.org/) (the panel runs inside it and uses its Python, `pcbnew` and the bundled wxPython and [NumPy](https://numpy.org/); the PowerLab router uses NumPy) | GPL-3.0; wxPython: wxWindows Library Licence; NumPy: BSD-3-Clause |
 | [Claude Code](https://docs.claude.com/claude-code) | Anthropic proprietary; used under your own Claude account and Anthropic's terms |
 | [Node.js](https://nodejs.org/), [Git](https://git-scm.com/), [GitHub CLI](https://cli.github.com/) (optional) | MIT; GPL-2.0 (Git); MIT |
 

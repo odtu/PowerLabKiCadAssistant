@@ -1021,7 +1021,10 @@ class McpPatchTests(unittest.TestCase):
         self.assertIn("via_drills = _repair_via_drills(self.board)", self.patch())
 
     def router_package(self):
-        """The router's files from the patch, as an importable package in a temp folder."""
+        """The router's files from the patch, as an importable package in a temp folder.
+        They need KiCad's own pcbnew, not the stand-in these tests use outside KiCad."""
+        if not hasattr(sys.modules.get("pcbnew"), "BOARD"):
+            self.skipTest("needs KiCad's Python")
         root = tempfile.mkdtemp()
         pkg = os.path.join(root, "commands", "powerlab_router")
         os.makedirs(pkg)
