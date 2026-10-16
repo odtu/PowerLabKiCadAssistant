@@ -1233,6 +1233,29 @@ class McpPatchTests(unittest.TestCase):
         self.assertEqual(rules.clearance(gnd, track, "F.Cu", 0.3), 0.5)  # B side may match
         self.assertEqual(rules.clearance(gnd, dict(gnd), "F.Cu", 0.3), 0.3)  # !(GND): can't match
 
+    def test_powerlab_router_zone_connection(self):
+        """zone_connection rules: how a pad joins a pour, which decides whether the pour
+        flows across it (solid) or leaves it a hole reached only by spokes."""
+        module = types.ModuleType("rules")
+        exec(self.new_file("python/commands/powerlab_router/rules.py"), module.__dict__)
+        rules = module.Rules.parse('''(version 1)
+(rule "Module and USB-C GND pads connect solid"
+	(condition "A.Type == 'Pad' && (A.memberOfFootprint('U1') || A.memberOfFootprint('J1'))")
+	(constraint zone_connection solid))
+(rule "Test points off the pour"
+	(condition "A.Type == 'Pad' && A.memberOfFootprint('TP*')")
+	(constraint zone_connection none))
+''')
+        zone = {"Type": "Zone", "NetName": "GND", "NetClass": "GND", "Footprint": None}
+        pad = lambda ref: {"Type": "Pad", "NetName": "GND", "NetClass": "GND", "Footprint": ref}
+        self.assertEqual(rules.zone_connection(pad("U1"), zone, "F.Cu"), "solid")
+        self.assertEqual(rules.zone_connection(pad("TP3"), zone, "B.Cu"), "none")
+        self.assertIsNone(rules.zone_connection(pad("C4"), zone, "F.Cu"))  # the zone decides
+        self.assertEqual(rules.unsupported, [])
+        # rules without a clearance don't change clearances
+        track = {"Type": "Track", "NetClass": "Default", "NetName": "IO2", "Width": 0.2, "Footprint": None}
+        self.assertEqual(rules.clearance(track, pad("U1"), "F.Cu", 0.3), 0.3)
+
     def test_powerlab_router_groups(self):
         """Milestone 1: nets sorted into the lab's routing order (§3.4)."""
         module = types.ModuleType("groups")

@@ -1,6 +1,6 @@
 # PowerLab router: design plan
 
-Status: milestones 0–5 done (results in §12–17). The router isn't a tool yet: its code is in the MCP patch (`python/commands/powerlab_router/`), and `tools/router_bench.py` runs it. Phase 1 (pad-centre entry and shortcuts in `clean_up_routing`) is on hold.
+Status: milestones 0–6 done (results in §12–18). The router isn't a tool yet: its code is in the MCP patch (`python/commands/powerlab_router/`), and `tools/router_bench.py` runs it. Phase 1 (pad-centre entry and shortcuts in `clean_up_routing`) is on hold.
 
 ## 1. Why
 
@@ -493,4 +493,41 @@ By eye, around the USB-UART chip the QFN's left pins now leave as a tidy paralle
   - Next: count thermal-relief pour-net pads as breaks in the pour measure, reading which pads connect solid from the custom rules (`zone_connection`). Then the pour checks and the bus chooser see the real split.
 - **The shapes don't lower the counts yet:** a few more vias, because escape-via topologies are cheap. They make the non-bus areas tidier by eye. Next: weigh vias against bends for these shapes.
 - **Pour integrity is still the fragile part.** Small changes flip a pour between whole and two pieces, because the last connections close walls that earlier choices left open. The fix belongs in planning (keeping corridors open), not in checks afterwards.
+
+## 18. Milestone 6: the pour measured as KiCad fills it (2026-10-16)
+
+**Problem:** in milestone 5, the router's own measure said both GND pours were whole (98% / 98%), while KiCad's fill had the top pour in two pieces (58%). So the pour checks and the bus chooser never reacted.
+
+**What was found:**
+- **Thermal pads:** a pour-net pad joined with thermal reliefs is a hole in KiCad's fill (grown by the thermal gap; TestPCB's GND zones use a gap of 0). The pour reaches the pad only through spokes, so pieces that meet only at such a pad stay separate polygons. The grid measure let the pour flow across those pads.
+- **Necks:** that was not the cause of TestPCB's split. Overlaying the grid measure on KiCad's fill showed a single 0.1 mm cell at the module's corner, a neck exactly at the pour's minimum width, that the grid let through and KiCad's fill didn't. Making the grid stricter overshot: 44% where KiCad has 98%. On a 0.1 mm grid, no rule gets such necks right everywhere.
+
+**What was built:**
+- **The pour measure is KiCad's own fill:** the router refills the pour-net zones on the board it routes and reads the pieces from there. On TestPCB that takes 0.11 s, faster than the grid estimate (0.27 s). It drives the per-connection pour check, the bus chooser and the repair pass.
+- **`zone_connection` rules** (`rules.py`): solid, thermal_reliefs or none. A pad's connection comes from the pad, then its footprint, then the custom rules, then the zone.
+- **Thermal and unconnected pour-net pads are breaks** in the grid estimate, which still finds the walls for the repair pass.
+- **Test:** zone_connection rules.
+
+**TestPCB, full board.** Pour cells: largest-piece share, area in mm², pieces, in KiCad's fill.
+
+| | Hand-routed | M4 | M5 | **M6 default** (step-in) | M6 without step-in |
+|---|---|---|---|---|---|
+| Routed (of 52) / new DRC errors | 52 / — | 50 / 0 | 51 / 0 | **51 / 0** | 50 / 0 |
+| Top GND pour | 91%, 808, 5 | 98%, 843, 3 | 58%, 864, 4 | **98%, 843, 3** | 98%, 860, 3 |
+| Bottom GND pour | 94%, 949, 3 | 98%, 976, 2 | 98%, 933, 2 | **100%, 963, 1** | 99%, 982, 2 |
+| Vias | 23 | 32 | 35 | 39 | 35 |
+| Segments / short jogs | 248 / 10 | 304 / 44 | 344 / 56 | 350 / 54 | 312 / 54 |
+| Time | — | 223 s | 234 s | 269 s | 194 s |
+
+The repair pass now does real work: it moved one connection, and the top pour went from 6 pieces to 4 in its own count.
+
+**What's still worse than by hand, by eye:**
+- **Long 45° runs:** the router draws long diagonals across open areas (to the right header, bottom left). The hand routing runs tracks horizontal and vertical, with diagonals only as short corners: 93 of its 248 segments are 45°, mostly short chamfers.
+- **A loop on the bottom** around the left header.
+- **More crossings** between the module's bottom right and the QFN.
+- **More vias:** 39 against 23.
+
+**Next:**
+- make a long 45° run cost more than a horizontal or vertical one, so diagonals become corners;
+- count vias against bends in the whole-connection shapes.
 

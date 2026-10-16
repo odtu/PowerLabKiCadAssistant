@@ -2644,10 +2644,10 @@ index 0000000..d5193b9
 +    return max(0, len(pts) - 2)
 diff --git a/python/commands/powerlab_router/router.py b/python/commands/powerlab_router/router.py
 new file mode 100644
-index 0000000..61faf09
+index 0000000..1571cdd
 --- /dev/null
 +++ b/python/commands/powerlab_router/router.py
-@@ -0,0 +1,894 @@
+@@ -0,0 +1,952 @@
 +"""The PowerLab router's main loop (plan §4.2-4.6).
 +
 +Connections are the edges of a minimum spanning tree over each net's pads. Groups are
@@ -3083,12 +3083,60 @@ index 0000000..61faf09
 +            _cls, _w, vd, name = rb.key(self.pour_net)
 +            self.pour_key = (rb.netclass(self.pour_net).GetName(), round(T(z.GetMinThickness()), 4), vd, name)
 +            rb.occupancy(self.pour_key)  # built now, so commits keep it current
++        self.pour_breaks = self._pour_breaks(zones)
++        self.pour_zones = zones
 +
 +    def _pour_free(self, i):
 +        g = self.rb.grid
 +        blocked = self.rb.occupancy(self.pour_key).blocked(self.pour_net)[0]
 +        hard = np.frombuffer(blocked[i], np.uint8).reshape((g.ny, g.nx)).astype(bool)
-+        return self.pour_area[i] & ~hard
++        return self.pour_area[i] & ~hard & ~self.pour_breaks[i]
++
++    def _pour_breaks(self, zones):
++        """Per layer, the pour-net pads the pour can't flow across. A pad that joins the pour
++        with thermal reliefs (or not at all) is a hole in KiCad's fill, grown by the thermal
++        gap; the pour reaches it only through spokes, so pieces that meet only at such a pad
++        are separate polygons. A pad that joins solid is part of the pour. The connection
++        comes from the pad, then its footprint, then the custom rules (zone_connection),
++        then the zone."""
++        rb = self.rb
++        g = rb.grid
++        out = []
++        names = {pcbnew.ZONE_CONNECTION_FULL: "solid", pcbnew.ZONE_CONNECTION_THERMAL: "thermal_reliefs",
++                 pcbnew.ZONE_CONNECTION_NONE: "none"}
++        for L in rb.layers:
++            polys = []
++            for z in zones:
++                if not z.IsOnLayer(L):
++                    continue
++                for pad in rb.pads:
++                    if pad.GetNetname() != z.GetNetname() or not pad.IsOnLayer(L):
++                        continue
++                    how = self._connection(pad, z, L, names)
++                    if how == "solid":
++                        continue
++                    gap = T(pad.GetLocalThermalGapOverride() or 0) if how == "thermal_reliefs" else 0.0
++                    gap = gap or T(z.GetThermalReliefGap())
++                    if how == "none":
++                        gap = max(gap, T(z.GetLocalClearance() or 0) if hasattr(z, "GetLocalClearance") else 0.0)
++                    polys += _polys(_grown(pad, L, gap))
++            out.append(g.raster(polys) if polys else np.zeros((g.ny, g.nx), bool))
++        return out
++
++    def _connection(self, pad, zone, L, names):
++        inherited = pcbnew.ZONE_CONNECTION_INHERITED
++        own = pad.GetLocalZoneConnection()
++        if own == inherited:
++            own = pad.GetParentFootprint().GetLocalZoneConnection()
++        if own != inherited and own in names:
++            return names[own]
++        rule = self.rb.rules.zone_connection(self.rb.props(pad), self.rb.props(zone), self.rb.layer_names[L])
++        if rule:
++            return rule
++        z = zone.GetPadConnection()
++        if z == pcbnew.ZONE_CONNECTION_THT_THERMAL:
++            return "thermal_reliefs" if pad.GetAttribute() == pcbnew.PAD_ATTRIB_PTH else "solid"
++        return names.get(z, "thermal_reliefs")
 +
 +    def _route_whole(self, conn, totals):
 +        """Route `conn`; if it cuts a pour into more pieces, try once more with the cut cells
@@ -3119,17 +3167,27 @@ index 0000000..61faf09
 +
 +    def _pour_quality(self):
 +        """Smaller is better: (minus the summed share of each pour layer's largest piece,
-+        rounded to 0.02 so a sliver doesn't count, then the number of pieces). Cached until
-+        the copper changes."""
++        rounded to 0.02 so a sliver doesn't count, then the number of pieces of 2 mm2 or
++        more). Measured on KiCad's own fill of the pour zones (about 0.1 s on TestPCB): a
++        grid estimate can't tell whether a neck right at the pour's minimum width fills,
++        and KiCad's fill also leaves thermal pads as holes. Cached until the copper
++        changes."""
 +        if self._q is not None:
 +            return self._q
++        if not self.pour_zones:
++            self._q = (0.0, 0)
++            return self._q
++        pcbnew.ZONE_FILLER(self.rb.board).Fill(self.pour_zones)
 +        count, share = 0, 0.0
-+        for i, area in enumerate(self.pour_area):
-+            if area is None:
-+                continue
-+            sizes = pieces(self._pour_free(i), self.min_piece, block=POUR_BLOCK, sizes=True)
-+            count += len(sizes)
-+            share += sizes[0] / sum(sizes) if sizes else 1.0
++        for z in self.pour_zones:
++            for L in z.GetLayerSet().CuStack():
++                if L not in self.rb.layers:
++                    continue
++                f = z.GetFilledPolysList(L)
++                areas = [f.Outline(i).Area() / 1e12 for i in range(f.OutlineCount())]
++                big = [a for a in areas if a >= POUR_PIECE_MM2]
++                count += len(big)
++                share += max(areas) / sum(areas) if areas else 1.0
 +        self._q = (-round(share / 0.02) * 0.02, count)
 +        return self._q
 +
@@ -3544,11 +3602,12 @@ index 0000000..61faf09
 +                self.hist[i] = np.minimum(self.hist[i].astype(np.int32) + cells * amount, 200).astype(np.uint8)
 diff --git a/python/commands/powerlab_router/rules.py b/python/commands/powerlab_router/rules.py
 new file mode 100644
-index 0000000..17932d6
+index 0000000..2c99089
 --- /dev/null
 +++ b/python/commands/powerlab_router/rules.py
-@@ -0,0 +1,283 @@
-+"""Custom design rules (.kicad_dru) for the PowerLab router: the clearance rules.
+@@ -0,0 +1,298 @@
++"""Custom design rules (.kicad_dru) for the PowerLab router: the clearance rules, and
++the zone_connection rules (how pads join a pour: solid, thermal reliefs or none).
 +
 +KiCad's rule engine isn't available from Python, so this reads the forms the lab's boards
 +use: Type, NetName, NetClass, Width, Reference and Layer comparisons, memberOfFootprint(),
@@ -3748,7 +3807,8 @@ index 0000000..17932d6
 +
 +# --- rules ---------------------------------------------------------------------------
 +class Rule:
-+    def __init__(self, name, condition, clearance, layer):
++    def __init__(self, name, condition, clearance, layer, zone_connection=None):
++        self.zone_connection = zone_connection  # "solid", "thermal_reliefs", "none" or None
 +        self.name, self.clearance, self.layer, self.text = name, clearance, layer, condition or ""
 +        self.condition, self.unknown, self.error = None, set(), None
 +        if condition:
@@ -3792,7 +3852,7 @@ index 0000000..17932d6
 +            if not isinstance(node, list) or not node or node[0] != "rule":
 +                continue
 +            name = node[1] if len(node) > 1 else ""
-+            condition, layer, clearance, severity = None, None, None, None
++            condition, layer, clearance, severity, connection = None, None, None, None, None
 +            for part in node[2:]:
 +                if not isinstance(part, list) or not part:
 +                    continue
@@ -3806,24 +3866,37 @@ index 0000000..17932d6
 +                    for sub in part[2:]:
 +                        if isinstance(sub, list) and sub and sub[0] == "min":
 +                            clearance = _length(sub[1])
-+            if clearance is not None and severity != "ignore":
-+                rules.append(Rule(name, condition, clearance, layer))
++                elif part[0] == "constraint" and len(part) > 2 and part[1] == "zone_connection":
++                    connection = part[2]
++            if (clearance is not None or connection is not None) and severity != "ignore":
++                rules.append(Rule(name, condition, clearance, layer, connection))
 +        return cls(rules)
 +
 +    @property
 +    def unsupported(self):
-+        return [r.name for r in self.rules if r.error or r.unknown]
++        return [r.name for r in self.rules if (r.error or r.unknown) and r.clearance is not None]
 +
 +    @property
 +    def uses_net_names(self):
 +        return any("NetName" in r.text for r in self.rules)
++
++    def zone_connection(self, pad, zone, layer):
++        """How the pad joins the zone by the custom rules: "solid", "thermal_reliefs",
++        "none", or None when no rule says. The last matching rule wins; a rule that only
++        may match (a term this can't read) doesn't count here."""
++        for rule in reversed(self.rules):
++            if rule.zone_connection is None or not rule.layer_matches(layer):
++                continue
++            if rule.matches(pad, zone, layer) is True:
++                return rule.zone_connection
++        return None
 +
 +    def clearance(self, a, b, layer, default):
 +        """Clearance between items a and b (property dicts) on `layer`: the last rule that
 +        matches wins; rules that may match only count where they ask for more."""
 +        maybe = 0.0
 +        for rule in reversed(self.rules):
-+            if not rule.layer_matches(layer):
++            if rule.clearance is None or not rule.layer_matches(layer):
 +                continue
 +            m = rule.matches(a, b, layer)
 +            if m is True:
