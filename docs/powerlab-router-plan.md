@@ -531,3 +531,41 @@ The repair pass now does real work: it moved one connection, and the top pour we
 - make a long 45° run cost more than a horizontal or vertical one, so diagonals become corners;
 - count vias against bends in the whole-connection shapes.
 
+
+## 19. Milestone 7: diagonals as corners, vias weighed against bends (2026-10-16)
+
+**Problem:** the router drew long 45° runs across open areas. Hand routing runs horizontal and vertical, with diagonals as short corners (13% of its track length).
+
+**What was built:**
+- **Diagonals cost more** (`search.Costs`): a 45° step costs `diagonal` (1.3) times its length, and a diagonal run must be at least `min_run_diag` (3) cells before it turns again. The shape scorer (`router._scorer`) and the shortcut pass (`finish.py`) use the same factor, so neither puts long diagonals back.
+- **Cell penalties per mm,** not per cell: a diagonal cell is √2 longer, and charging it like a straight one made diagonals about 30% cheaper through every lab cost.
+- **Vias against bends:** in the whole-connection shapes a via now costs the full search via cost (it was half), so a shape with an escape via has to save more than a bend or two to win. In the search, a via only comes after a straight run, so two vias can't stand in for a sharp turn.
+- **No loops:** a path that comes back to a cell, or changes layer twice at one spot (a loop on the other layer through two vias, to turn where the corner rules don't allow it), is searched again without a via there (`model._loops`). In the first M7 run that loop caused both sharp corners and both off-centre pad entries.
+- **Fallback for tight spots:** where no way fits under the diagonal rules (the USB-C connector's CC pins), the search runs again with plain 45° costs. A short diagonal is better than no connection.
+- **Bigger node budget** after a window whose way is much dearer than its length (a way under an inductor), so the wider window can find the way round.
+- **Tests:** diagonal cost and minimum corner, the via hop, loop rejection.
+
+**TestPCB, full board** (pours: largest-piece share, pieces, in KiCad's fill):
+
+| | Hand-routed | M6 | M7, diagonals 1.0, min 2 | **M7 default** (1.3, min 3, fallback) |
+|---|---|---|---|---|
+| Routed (of 52) / new DRC errors | 52 / — | 51 / 0 | 51 / 1 (starved thermal) | **50 / 0** |
+| Top GND pour | 91%, 5 | 98%, 3 | 54%, 6 | **97%, 4** |
+| Bottom GND pour | 94%, 3 | 100%, 1 | 98%, 3 | **98%, 3** |
+| Diagonal share / longest diagonal | 0.13 / 3.4 mm | 0.31 / 6.7 mm | 0.26 / 8.5 mm | **0.25 / 5.4 mm** |
+| Sharp corners / off-centre pad entries | 2 / 12 | 0 / 0 | 0 / 0 | **0 / 0** |
+| Vias | 23 | 39 | 36 | 39 |
+| Segments / corners | 248 / 174 | 350 / 237 | 344 / 231 | 341 / 224 |
+| Time | — | 269 s | 415 s* | 585 s |
+
+\* Both M7 settings ran side by side, so their times are not comparable with the others.
+
+By eye: the long diagonal from the module to the middle of the board and the bottom-layer loop around the left header are gone.
+
+**Tried and dropped:** after a rip-up, placing the rip-up search's own way when the normal search finds no entry lane. On TestPCB, ESP_TXD0 (U3.20) and RTS (U3.19) leave the QFN from neighbouring pins and want the same exit. They ripped each other up six times, TXD0 still ended unrouted, the run took 1400 s and the diagonal share went back to 0.30.
+
+**Left:**
+- **U3.20-J3.4:** loses the exit it shares with U3.19. The fix is planning the QFN's fan-out as a group (like the bus planner does for pin rows), not more rip-ups.
+- **R1.2-J1.A5:** hits the node limit at the USB-C connector, as in every milestone so far.
+- **Vias:** 39 against 23. Most come from escape vias in the bus fan-outs. The next step is to choose between the river on one layer and the via column by vias as well as by pours.
+- **Diagonal bundle:** the bundle from the module's bottom right to the right header still runs diagonally for several mm.

@@ -12,7 +12,8 @@ DRC use the same custom rules. Costs can be set with the environment variables T
 (min straight cells between turns), VIA, NODES (node limit per search), ORDER
 ("bus", "length" or "constrained"), RIPUP, FINISH (the shortcut pass), STEPIN (river
 step-in), DRAW (whole-connection shapes before the search; all 1/0) and LAYERS
-(cost factor per copper layer, top first, e.g. "1.3,1.0").
+(cost factor per copper layer, top first, e.g. "1.3,1.0"), DIAG (cost factor of a 45
+degree cell) and RUND (shortest 45 degree corner, in cells).
 """
 import json
 import os
@@ -52,7 +53,8 @@ def main(src, out, only=None, pitch=0.1):
     env = os.environ.get
     costs = Costs(turn=float(env("TURN", "1.5")), via=float(env("VIA", "4.0")), min_run=int(env("RUN", "2")),
                   layer_factor=dict(enumerate(float(f) for f in env("LAYERS", "1.0,1.2").split(","))),
-                  max_nodes=int(env("NODES", "1000000")), weight=float(env("WEIGHT", "1.0")))
+                  max_nodes=int(env("NODES", "2000000")), weight=float(env("WEIGHT", "1.0")),
+                  diagonal=float(env("DIAG", "1.3")), min_run_diag=int(env("RUND", "3")))
     router = Router(b, pitch=pitch, costs=costs, order=env("ORDER", "bus"), ripup=env("RIPUP", "1") == "1",
                     finish=env("FINISH", "1") == "1", step_in=env("STEPIN", "1") == "1",
                     draw=env("DRAW", "1") == "1")

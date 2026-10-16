@@ -1118,6 +1118,26 @@ class McpPatchTests(unittest.TestCase):
         # nothing is clear: nothing changes
         self.assertEqual(module._shorten(lambda a, b: False, pts, 1, len(pts) - 2), pts)
 
+    def test_powerlab_router_rejects_loops(self):
+        """A grid path that comes back to a cell it has been on, or changes layer twice at
+        one spot (a loop through two vias, to turn where the corner rules don't allow it)."""
+        try:
+            import pcbnew  # noqa: F401
+        except ImportError:
+            self.skipTest("needs KiCad's Python")
+        sys.path.insert(0, self.router_package())
+        try:
+            for m in [m for m in sys.modules if m == "commands" or m.startswith("commands.")]:
+                del sys.modules[m]
+            from commands.powerlab_router.model import _loops
+        finally:
+            sys.path.pop(0)
+        straight = [(i, 5, 0, 0, 2) for i in range(10)]
+        self.assertEqual(_loops(straight), [])
+        via_loop = [(3, 5, 0, 0, 2), (4, 5, 0, 0, 2), (4, 5, 1, 8, 0), (5, 6, 1, 1, 1), (4, 7, 1, 3, 1),
+                    (3, 6, 1, 5, 1), (4, 5, 1, 7, 1), (4, 5, 0, 8, 0), (5, 5, 0, 0, 1)]
+        self.assertEqual(_loops(via_loop), [(4, 5)])
+
     def test_powerlab_router_routes_a_board(self):
         """Milestone 2, end to end: two pads with another net's pad between them. The track
         goes around it, starts and ends at the pad centres, and turns by 45 degrees at most."""
@@ -1330,6 +1350,35 @@ class McpPatchTests(unittest.TestCase):
                                         {(35, 20, 1): (0, 0.0)}))
         self.assertFalse(module.enclosed([grid(wall), grid()], vias_ok, nx, ny, [(2, 20, 0, 0, 0.0)],
                                          {(35, 20, 1): (0, 0.0)}))
+
+        # dearer diagonals: horizontal and vertical runs, 45 degrees only as corners
+        def diagonal_cells(path):
+            return sum(1 for s in path if s[3] != module.FREE and s[3] % 2)
+        cheap = module.Costs(turn=0.4, via=2.0, min_run=2, diagonal=1.0, min_run_diag=1)
+        dear = module.Costs(turn=0.4, via=2.0, min_run=2, diagonal=1.6, min_run_diag=3)
+        to = {(30, 20, 0): (2, 0.0)}  # arrive heading south
+        p1, _ = module.search([grid()], grid(), nx, ny, 0.1, [(2, 2, 0, 0, 0.0)], to, (0, 0, nx - 1, ny - 1), cheap)
+        p2, _ = module.search([grid()], grid(), nx, ny, 0.1, [(2, 2, 0, 0, 0.0)], to, (0, 0, nx - 1, ny - 1), dear)
+        self.assertLess(diagonal_cells(p2), diagonal_cells(p1))
+        runs, run = [], 0
+        for a, b in zip(p2, p2[1:]):
+            if b[3] == a[3]:
+                run += 1
+            else:
+                if a[3] % 2:
+                    runs.append(run + 1)
+                run = 0
+        self.assertTrue(all(r >= 3 for r in runs), runs)  # no 45 degree corner shorter than 3 cells
+
+        # no via hop: two layers, a wall on layer 0 that a via down and straight back up
+        # would get round with a sharp turn; vias only after a straight run
+        wall = [(i, 20) for i in range(0, 25)]
+        hop, _ = module.search([grid(wall), grid()], bytes([1]) * (nx * ny), nx, ny, 0.1, [(10, 15, 0, 2, 0.0)],
+                               {(10, 25, 0): (2, 0.0)}, (0, 0, nx - 1, ny - 1), dear)
+        self.assertIsNotNone(hop)
+        changes = [k for k, (a, b) in enumerate(zip(hop, hop[1:])) if a[2] != b[2]]
+        for first, second in zip(changes, changes[1:]):
+            self.assertGreaterEqual(second - first, 3)  # at least a 3-cell run between two vias
 
         # a penalty steers the path away from cells without blocking them
         band = bytearray(nx * ny)

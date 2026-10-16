@@ -1573,10 +1573,10 @@ index 0000000..a2aef7b
 +        return near, elsewhere
 diff --git a/python/commands/powerlab_router/finish.py b/python/commands/powerlab_router/finish.py
 new file mode 100644
-index 0000000..cc77d17
+index 0000000..59f7527
 --- /dev/null
 +++ b/python/commands/powerlab_router/finish.py
-@@ -0,0 +1,175 @@
+@@ -0,0 +1,176 @@
 +"""Shortcut pass after routing (plan §4.7; the method of track_opt.py in the lab's
 +InductiveEncoder project).
 +
@@ -1707,7 +1707,8 @@ index 0000000..cc77d17
 +
 +            def cost(a, b):
 +                d = math.dist(a, b)
-+                total = d * factor.get(L, 1.0)
++                diag = abs(abs(b[0] - a[0]) - abs(b[1] - a[1])) < 1e-6 and abs(b[0] - a[0]) > 1e-6
++                total = d * factor.get(L, 1.0) * (router.costs.diagonal if diag else 1.0)
 +                if pen is None or d < EPS:
 +                    return total
 +                n = max(1, int(d / (g.pitch / 2)))
@@ -1889,10 +1890,10 @@ index 0000000..4d59b97
 +    return out
 diff --git a/python/commands/powerlab_router/model.py b/python/commands/powerlab_router/model.py
 new file mode 100644
-index 0000000..0964daf
+index 0000000..feca6b4
 --- /dev/null
 +++ b/python/commands/powerlab_router/model.py
-@@ -0,0 +1,640 @@
+@@ -0,0 +1,684 @@
 +"""Board side of the PowerLab router (pcbnew): obstacles, pad entry lanes, results as tracks.
 +
 +Clearances are KiCad's: the larger of the two net classes' clearances and the board
@@ -1907,6 +1908,7 @@ index 0000000..0964daf
 +the router's copper of some nets can be "soft" for a rip-up search: passable at a cost.
 +"""
 +
++import copy
 +import math
 +import os
 +import time
@@ -2331,6 +2333,7 @@ index 0000000..0964daf
 +        t0 = time.time()
 +        path = None
 +        vc = via_costs(la + lb) if via_costs else None
++        budget = costs.node_limit(math.dist(la[0].centre, lb[0].centre))
 +        for margin in margins:
 +            if margin is None:
 +                window = (0, 0, g.nx - 1, g.ny - 1)
@@ -2339,9 +2342,22 @@ index 0000000..0964daf
 +                window = (max(0, min(c[0] for c in cells) - m), max(0, min(c[1] for c in cells) - m),
 +                          min(g.nx - 1, max(c[0] for c in cells) + m), min(g.ny - 1, max(c[1] for c in cells) + m))
 +            found, stats = search.search(blocked, via_ok, g.nx, g.ny, g.pitch, starts, goals, window, costs,
-+                                         max_nodes=costs.node_limit(math.dist(la[0].centre, lb[0].centre)),
-+                                         penalty=penalty, via_cost=vc)
++                                         max_nodes=budget, penalty=penalty, via_cost=vc)
 +            info["nodes"] += stats["nodes"]
++            # a path that comes back to a cell it has been on (a loop through two vias at one
++            # spot, to turn where the corner rules don't allow it): no via there, search again
++            for _retry in range(3):
++                spots = _loops(found)
++                if not spots:
++                    break
++                via_ok = bytearray(via_ok)
++                for i, j in spots:
++                    via_ok[j * g.nx + i] = 0
++                found, stats = search.search(blocked, bytes(via_ok), g.nx, g.ny, g.pitch, starts, goals, window,
++                                             costs, max_nodes=budget, penalty=penalty, via_cost=vc)
++                info["nodes"] += stats["nodes"]
++            if found and _loops(found):
++                found = None
 +            if found and (path is None or stats["cost_mm"] < info["cost_mm"]):
 +                path = found
 +                info["window_mm"] = margin
@@ -2350,10 +2366,22 @@ index 0000000..0964daf
 +            # rip-up): a bigger window may have one around it
 +            if path and info["cost_mm"] <= 2.0 * lower + 3.0 * costs.via:
 +                break
++            if path:
++                budget *= 3  # a dear way inside: the way round, if any, needs a wider search
 +            if stats.get("limit"):
 +                info["limit"] = not path  # gave up: a bigger window won't be cheaper
 +                break
 +        info["seconds"] = round(time.time() - t0, 3)
++        if not path and (costs.diagonal > 1.0 or costs.min_run_diag > costs.min_run):
++            # by hand, diagonals are short corners; where it's too tight for that (a fine-pitch
++            # connector), any 45 degree way is better than none
++            plain = copy.copy(costs)
++            plain.diagonal, plain.min_run_diag = 1.0, costs.min_run
++            again, more = self.route(net, pad_a, pad_b, blocked, via_ok, plain, margins, penalty, ignore, via_costs)
++            more["nodes"] += info["nodes"]
++            more["seconds"] = round(more["seconds"] + info["seconds"], 3)
++            more["plain_diagonals"] = True
++            return again, more
 +        if not path:
 +            info["fail"] = "node limit" if info.get("limit") else "no path"
 +            return None, info
@@ -2489,6 +2517,23 @@ index 0000000..0964daf
 +        grown = _grown(item, L, self.edge_clearance - 0.001)
 +        grown.BooleanSubtract(self.outline)
 +        return grown.OutlineCount() > 0 and grown.Area() > MM(0.001) ** 2
++
++
++def _loops(path):
++    """Cells where a grid path changes layer more than once, or that it visits twice on a layer."""
++    if not path:
++        return []
++    seen, vias, out = set(), {}, set()
++    for a, b in zip(path, path[1:]):
++        if a[2] != b[2]:
++            vias[(a[0], a[1])] = vias.get((a[0], a[1]), 0) + 1
++    out |= {c for c, n in vias.items() if n > 1}
++    for s in path:
++        key = (s[0], s[1], s[2])
++        if key in seen:
++            out.add((s[0], s[1]))
++        seen.add(key)
++    return sorted(out)
 +
 +
 +def _corners(pts):
@@ -2644,10 +2689,10 @@ index 0000000..d5193b9
 +    return max(0, len(pts) - 2)
 diff --git a/python/commands/powerlab_router/router.py b/python/commands/powerlab_router/router.py
 new file mode 100644
-index 0000000..1571cdd
+index 0000000..7eeb2f3
 --- /dev/null
 +++ b/python/commands/powerlab_router/router.py
-@@ -0,0 +1,952 @@
+@@ -0,0 +1,958 @@
 +"""The PowerLab router's main loop (plan §4.2-4.6).
 +
 +Connections are the edges of a minimum spanning tree over each net's pads. Groups are
@@ -2692,6 +2737,7 @@ index 0000000..1571cdd
 +SHORT_MM = 0.5
 +SHAPE_TRIES = 40  # grid-free shapes scored per run, cheapest first
 +BUS_MIN = 3  # connections between two parts that make a bus
++DRAW_VIA_FACTOR = 1.0  # times Costs.via, for each via of a whole-connection shape
 +VIA_COLUMN_EXTRA = (0.0, 0.5, 1.0, 1.5)  # mm beyond the closest via column that are tried
 +POUR_BLOCK = 1  # the pour grid already keeps the zone's minimum width
 +MAX_RIPPED = 3
@@ -3419,7 +3465,9 @@ index 0000000..1571cdd
 +        if not la or not lb:
 +            return None
 +        _cls, w, vd, _n = rb.key(net)
-+        via_cost = self.costs.via * 0.5  # escape vias at the pins (costs.ESCAPE_VIA_FACTOR)
++        # a via costs in full here: weighed against a bend, a person draws the bend more often
++        # (the hand-routed TestPCB has 23 vias, the router had 39)
++        via_cost = self.costs.via * DRAW_VIA_FACTOR
 +        scorers = {}
 +
 +        def score_of(L):
@@ -3496,9 +3544,12 @@ index 0000000..1571cdd
 +        pen = penalty[L] if penalty is not None else None
 +        unit, factor = self.costs.unit, self.costs.layer_factor.get(L, 1.0)
 +
++        diagonal = self.costs.diagonal
++
 +        def segment(p, q):
 +            d = math.dist(p, q)
-+            total = d * factor + (SHORT if d < SHORT_MM else 0.0)
++            diag = abs(abs(q[0] - p[0]) - abs(q[1] - p[1])) < 1e-6 and abs(q[0] - p[0]) > 1e-6
++            total = d * factor * (diagonal if diag else 1.0) + (SHORT if d < SHORT_MM else 0.0)
 +            if pen is not None and d > 1e-6:
 +                n = max(1, int(d / (g.pitch / 2)))
 +                for k in range(n):
@@ -3906,17 +3957,19 @@ index 0000000..2c99089
 +        return max(default, maybe)
 diff --git a/python/commands/powerlab_router/search.py b/python/commands/powerlab_router/search.py
 new file mode 100644
-index 0000000..c180123
+index 0000000..50055d5
 --- /dev/null
 +++ b/python/commands/powerlab_router/search.py
-@@ -0,0 +1,174 @@
+@@ -0,0 +1,183 @@
 +"""Octilinear A* for the PowerLab router. No pcbnew, so it can be tested and timed anywhere.
 +
 +A state is (i, j, layer, direction, run): the cell, the direction it was entered in (0-7,
 +45 degrees apart; 8 = free, right after a via) and how many cells it has gone straight.
 +- A step turns by 45 degrees at most, so a 90 degree corner can't be made (design rules §3.4).
 +- A turn needs `min_run` straight cells before it, so two 45 degree bends never sit close
-+  enough to read as one sharp corner.
++  enough to read as one sharp corner; a diagonal needs `min_run_diag`.
++- A diagonal cell costs `diagonal` times its length: as by hand, tracks run horizontal and
++  vertical and use 45 degrees for the corners, not for long runs across the board.
 +- Starts and goals are pad entry lanes: the track leaves a pad straight along its axis and
 +  arrives at the other pad's lane heading straight into it (§3.4, "enter a pad straight").
 +- An optional per-cell penalty (0-255, in units of `Costs.unit` mm) makes cells dearer
@@ -3936,9 +3989,11 @@ index 0000000..c180123
 +class Costs:
 +    """Costs in mm of track."""
 +
-+    def __init__(self, turn=1.5, via=4.0, layer_factor=None, min_run=2, unit=0.1, max_nodes=1_000_000,
-+                 nodes_per_mm=40_000, nodes_base=100_000, weight=1.0):
++    def __init__(self, turn=1.5, via=4.0, layer_factor=None, min_run=2, unit=0.1, max_nodes=2_000_000,
++                 nodes_per_mm=60_000, nodes_base=100_000, weight=1.0, diagonal=1.3, min_run_diag=3):
 +        self.turn = turn
++        self.diagonal = diagonal  # a 45 degree cell costs this times its length
++        self.min_run_diag = min_run_diag  # cells: the shortest 45 degree corner
 +        # per search: give up instead of combing the whole board. A short connection that
 +        # needs many nodes won't find a way, so the limit grows with the distance.
 +        self.max_nodes = max_nodes
@@ -3969,7 +4024,7 @@ index 0000000..c180123
 +    i0, j0, i1, j1 = window
 +    layers = len(blocked)
 +    factor = [costs.layer_factor.get(L, 1.0) for L in range(layers)]
-+    step = [pitch, pitch * SQ2] * 4
++    step = [pitch, pitch * SQ2 * costs.diagonal] * 4
 +    # the heuristic for the whole window at once: octilinear distance to the nearest goal
 +    # (times costs.weight: above 1 the search is greedier, faster, and at most that much
 +    # dearer than the best way)
@@ -3987,8 +4042,9 @@ index 0000000..c180123
 +    openq = []
 +    best = {}
 +    parent = {}
++    cap = max(costs.min_run, costs.min_run_diag)
 +    for i, j, L, d, c in starts:
-+        s = (i, j, L, d, costs.min_run)
++        s = (i, j, L, d, cap)
 +        if c < best.get(s, 1e18):
 +            best[s] = c
 +            parent[s] = None
@@ -4015,10 +4071,10 @@ index 0000000..c180123
 +            break
 +        if d == FREE:
 +            options = [(k, 1) for k in range(8)]
-+        elif r >= min_run:
-+            options = [(d, min(r + 1, min_run)), ((d + 1) % 8, 1), ((d - 1) % 8, 1)]
++        elif r >= (costs.min_run_diag if d % 2 else min_run):
++            options = [(d, min(r + 1, cap)), ((d + 1) % 8, 1), ((d - 1) % 8, 1)]
 +        else:
-+            options = [(d, r + 1)]
++            options = [(d, min(r + 1, cap))]
 +        row = blocked[L]
 +        pen = penalty[L] if penalty is not None else None
 +        for k, nr in options:
@@ -4028,7 +4084,9 @@ index 0000000..c180123
 +                continue
 +            nc = c + step[k] * factor[L] + (turn if (d != FREE and k != d) else 0.0)
 +            if pen is not None:
-+                nc += pen[nj * nx + ni] * unit
++                # per mm travelled: a 45 degree step covers 1.41 times the ground, and charging
++                # it per cell made diagonals 30% cheaper through costly ground than a straight run
++                nc += pen[nj * nx + ni] * unit * (SQ2 if k % 2 else 1.0)
 +            goal = goals.get((ni, nj, L))
 +            if goal is not None and goal[0] == k:
 +                nc += goal[1]  # the goal lane's own cost
@@ -4037,7 +4095,9 @@ index 0000000..c180123
 +                best[ns] = nc
 +                parent[ns] = s
 +                heapq.heappush(openq, (nc + h(ni, nj), nc, ns))
-+        if layers > 1 and via_ok[j * nx + i] and d != FREE:
++        # a via only at the end of a straight run: right after another via (where any
++        # direction is allowed) a via pair would make the sharp turn the corner rules forbid
++        if layers > 1 and via_ok[j * nx + i] and d != FREE and r >= cap:
 +            for L2 in range(layers):
 +                if L2 == L or blocked[L2][j * nx + i]:
 +                    continue

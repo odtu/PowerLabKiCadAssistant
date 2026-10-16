@@ -6,6 +6,8 @@ routing (docs/powerlab-router-plan.md, milestone 3).
 For the signal nets (net class Default unless --class says otherwise):
 - length per layer and the bottom-layer share, vias, segments, vias per connection;
 - detour: track length / straight-line (octilinear) length, for two-pad nets;
+- diagonals: the share of track length that runs at 45 degrees, and the longest 45 degree
+  segment (hand routing runs horizontal and vertical, with diagonals as short corners);
 - corners: changes of direction between two joined segments; "sharp" means a turn of more
   than 45 degrees (a 90 degree corner or worse, design rules §3.4);
 - pad entries: track ends on a pad that are off its centre, or come in at an angle to the
@@ -39,8 +41,13 @@ def report(path, netclass="Default"):
     segs = [t for t in tracks if t.Type() == pcbnew.PCB_TRACE_T]
     vias = [t for t in tracks if t.Type() == pcbnew.PCB_VIA_T]
     length = defaultdict(float)
+    diagonal, longest_diagonal = 0.0, 0.0
     for s in segs:
         length[b.GetLayerName(s.GetLayer())] += T(s.GetLength())
+        dx, dy = abs(T(s.GetEnd().x - s.GetStart().x)), abs(T(s.GetEnd().y - s.GetStart().y))
+        if min(dx, dy) > 0.01 and abs(dx - dy) < 0.02:
+            diagonal += T(s.GetLength())
+            longest_diagonal = max(longest_diagonal, T(s.GetLength()))
     total = sum(length.values())
 
     # corners: points where exactly two segments of one net and layer meet, not on a pad
@@ -121,6 +128,8 @@ def report(path, netclass="Default"):
         "vias": len(vias),
         "vias_per_connection": round(len(vias) / connections, 2) if connections else 0,
         "segments": len(segs),
+        "diagonal_share": round(diagonal / total, 2) if total else 0,
+        "longest_diagonal_mm": round(longest_diagonal, 2),
         "corners": corners,
         "sharp_corners": sharp,
         "detour_median": round(sorted(detours)[len(detours) // 2], 2) if detours else None,
