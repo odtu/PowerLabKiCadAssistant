@@ -49,6 +49,7 @@ Problem reports contain versions, the error and the panel's own stack trace. The
 - your Claude login and your GitHub login (if you use one)
 - the panel's settings (`%APPDATA%\PowerLabKiCadAssistant`)
 - your conversation history (`%USERPROFILE%\.claude`, and the panel's copy in `%APPDATA%\PowerLabKiCadAssistant\chats`)
+- design reviews and their PDFs (`design-review\` in your project; Microsoft Edge prints the PDF on your computer, offline)
 
 The repository contains no API keys or tokens. Each user signs in with their own accounts.
 
@@ -133,15 +134,12 @@ Skills teach Claude how the lab does specific jobs. The installer copies them to
 | Skill | What it does | Try |
 |---|---|---|
 | `powerlab-board-requirements` | Before a new board is started, Claude asks for its requirements in a few short rounds of answer buttons (every question also has **Other…**, a box for your own answer): what it does, size, layers and layout, working temperature, cost and quantity, mounting and mechanics, and, if you need them, special conditions like altitude, EMI/EMC targets, humidity, vibration or a safety standard. You can attach a hand sketch, an enclosure drawing or a block diagram, add notes in your own words, or answer "use the lab defaults". The answers go into `design-requirements.md` in your project, with what they mean for the design (clearances, layers, part ratings, outline), and Claude keeps to them in later steps. | *Start a new board from scratch* |
-| `powerlab-pcb-design-rules` | The lab's [PCB design rules](https://github.com/odtu/Powerlab/blob/master/KiCAD/PCB_DESIGN_RULES.md) (without the lab's drawing sheet, logo and QR code: boards get a small "Designed with PowerLab KiCad Assistant and Claude" silkscreen text instead). It covers the PCBWay standard-price spec, DRC constraints, net classes, schematic rules, and placement, routing, via and pour rules. Claude follows it for any schematic or PCB design work. | *Set up the design rules for this board* |
-| `powerlab-visual-review` | Claude renders the board (2D layer views in colour, plus 3D) after every placement or routing step. It looks at each view against the design rules, fixes what it sees, and shows you the views in the panel. Renders go to `%TEMP%\PowerLabAssistantiews` and are cleaned after a week. | *Show me the routing* |
-| `powerlab-autoroute` | Autoroutes with **Freerouting 2.4.1** (on Java 25). It first sets the lab design rules and net classes (power tracks sized for their current) and expects hand-routed, locked power and gate-drive nets. It then routes and cleans up the result: router stubs and dead ends go, tracks are widened to their net-class width and 90° corners are chamfered, wherever DRC allows. Finally it refills zones, runs DRC against a baseline, checks corners, widths and vias against the rules, and reports what's left. | *Autoroute the remaining nets* |
+| `powerlab-pcb-design-rules` | The lab's [PCB design rules](https://github.com/odtu/Powerlab/blob/master/KiCAD/PCB_DESIGN_RULES.md) (without the lab's drawing sheet, logo and QR code: boards get a small "Designed with PowerLab KiCad Assistant and Claude" silkscreen text instead). It covers the PCBWay standard-price spec, DRC constraints, net classes, schematic rules, and placement, routing, via and pour rules. It also carries a **review handbook** of 233 layout rules, collected from manufacturer application notes, fab capability pages and expert reviews of real boards, each with a severity, what it looks like on a board, the fix and its sources. Claude follows it for any schematic or PCB design work. | *Set up the design rules for this board* |
+| `powerlab-visual-review` | Claude renders the board (2D layer views in colour, plus 3D) after every placement or routing step. It looks at each view against the design rules, fixes what it sees, and shows you the views in the panel. Renders go to `%TEMP%\PowerLabAssistant\views` and are cleaned after a week. | *Show me the routing* |
+| `powerlab-design-review` | When Claude finishes placing or routing a board, it reviews its own work: DRC (zones refilled, every track error, schematic parity), rendered views, the lab rules and the review handbook. It fixes what it can on its own, checks again, and repeats until nothing it can fix is left (at most 5 rounds). What needs your decision or information (a connector to move, a current it doesn't know, a track only you can delete in KiCad) goes on a *Needs you* list. The final review shows in the panel: the verdict, open findings by severity, what was fixed, and the board views. Click any place in it (marked ⌖) and KiCad selects those parts or that net in the PCB editor and zooms there; the schematic editor follows, on the right sheet. It is also saved as `design-review\design-review.pdf` in your project (**Open PDF**). | *Review the board* |
+| `powerlab-autoroute` | Routes the board. Claude first asks how: with the **PowerLab router** (recommended), or by hand. Either way it first sets the lab design rules and net classes (power tracks sized for their current) and keeps hand-routed, locked copper. The PowerLab router runs on your computer in KiCad's Python and applies the lab rules while it routes: power rails first, then a copper pour round each rail; GND pours kept whole, with thermal reliefs; no tracks under inductors; escape room at fine-pitch pins; buses as parallel runs; few corners and vias; pads entered at their centres; a net's later tracks join its earlier ones instead of running beside them; and GND stitching vias at the end. With the board open in KiCad, you watch the tracks appear while it routes. Claude then routes whatever the router left by hand, fixes the DRC errors, and runs the design review without asking. | *Route the board* |
 
-Freerouting 2.4.1 needs Java 25. The installer puts a private copy of Java 25 (Eclipse Temurin) and the Freerouting jar in `%LOCALAPPDATA%\PowerLabKiCadAssistant`, checking both downloads against their published SHA-256 checksums. Any Java already on your computer is left alone; the panel uses this copy only for its own Claude sessions.
-
-Freerouting works best on boards whose signal nets are mostly unrouted: a 2-layer board with 29 nets routes in seconds. GND (and any power net you want as a copper pour) is never routed as tracks. Claude creates the pours first, Freerouting routes the other nets on all layers, and the pours are then refilled around the new tracks. Power pours on the outer layers (bus, phase, switch node) become keepouts that Freerouting routes around, so it doesn't cut them up. Freerouting 2.4.1 can route over hand-routed, locked copper, so on boards that are mostly routed by hand Claude suggests KiCad's interactive router instead, and checks every result for shorts.
-
-Autorouted power-electronics boards always need a human review: loop areas, return paths, and track widths on high-current nets.
+A run takes about 10–15 minutes on a 2-layer board with ~50 connections; it runs in the background and the panel stays usable. Each run keeps the board from before it, so Claude can undo it. Routed power-electronics boards always need a human review: loop areas, return paths, and track widths on high-current nets.
 
 ## The METU Power Lab library
 
@@ -170,7 +168,7 @@ Reports are public, so don't add confidential details to the description.
 
 - **KiCad 10's schematic API is limited.** It can't report the selection, save or reload. The panel works around this by using the editor's own **Edit → Copy**, **File → Save** and **File → Revert**. Your clipboard is restored afterwards. This needs KiCad's menus in **English**.
 - **Claude's permissions are limited.** Inside the panel, Claude can only use the KiCad tools, read and write files, search the web, run `kicad-cli`, and zip outputs with `tar -a -cf`. Other shell commands are blocked, because the panel can't ask you for permission mid-run. Use the terminal button to continue a conversation in a full Claude Code session.
-- **The KiCad tools get small fixes from this repository.** `patches/kicad-mcp.patch` keeps 3D models when parts are rotated (kipy 0.8 drops them), and adds pour-aware autorouting. The installer applies it on top of the pinned KiCad MCP server.
+- **The KiCad tools get small fixes from this repository.** `patches/kicad-mcp.patch` keeps 3D models when parts are rotated (kipy 0.8 drops them), and adds the PowerLab router. The installer applies it on top of the pinned KiCad MCP server.
 - **Windows only, KiCad 10 only.**
 
 ## Contributing
@@ -185,7 +183,6 @@ Claude and Claude Code are products of Anthropic. This project is not affiliated
 
 It builds on other open-source projects, which keep their own licenses:
 - **KiCad tools:** KiCAD-MCP-Server (MIT), with a small MIT-licensed patch from this repository.
-- **Autorouting:** Freerouting (GPL-3.0), running on Eclipse Temurin Java (GPL-2.0 with Classpath Exception).
 - **Board views:** PyMuPDF (AGPL-3.0).
 - **KiCad** itself (GPL-3.0).
 

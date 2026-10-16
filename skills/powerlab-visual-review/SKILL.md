@@ -14,14 +14,14 @@ A rendered view shows all of these at a glance. On the lab's ESC3Phase board, re
 
 ## When
 - **Before you start:** one baseline view, so you know what's there.
-- **After every meaningful step:** a functional block placed, a group of nets routed, pours added or refilled, an autoroute run, stitching vias added. Don't batch ten changes and look once at the end.
+- **After every meaningful step:** a functional block placed, a group of nets routed, pours added or refilled, a PowerLab router run, stitching vias added. Don't batch ten changes and look once at the end.
 - **Before you say a placement or routing task is done:** final views, after `refill_zones`.
 - **When the user asks for a review:** at least three views: placement, top copper alone, bottom copper alone. Add the 3D top view when parts or silkscreen matter. One combined view isn't enough, because pours hide the tracks.
 
 ## How
 1. **Save first.** The views are rendered from the saved `.kicad_pcb`, not KiCad's live copy. After live edits call `save_board` (or ask for Ctrl+S).
 2. **Render** into the views folder named in the panel instructions. Use numbered names so the series stays in order (`01-placement.png`, `02-route-top.png`, …).
-   - **2D:** `get_board_2d_view` with `responseMode: "file"`, `outputPath: <views>/NN-name.png` and a `layers` list. The default is layer colours on a dark background; keep it.
+   - **2D:** `get_board_2d_view` with `pcbPath: <board>.kicad_pcb` (the panel's "Board file" path), `responseMode: "file"`, `outputPath: <views>/NN-name.png` and a `layers` list. The default is layer colours on a dark background; keep it.
      - Placement: `["F.Cu", "F.SilkS", "F.Fab", "F.CrtYd", "Edge.Cuts"]` (and the `B.` layers if parts are on the bottom).
      - Top routing: `["F.Cu", "Edge.Cuts"]`.
      - Bottom routing: `["B.Cu", "Edge.Cuts"]`. Copper pours hide tracks in combined views, so check layers one at a time.
@@ -52,3 +52,5 @@ A rendered view shows all of these at a glance. On the lab's ESC3Phase board, re
 
 ## Report
 End with the final views open (Read), plus a short list: what you checked, what you changed after looking, and what the user should still review by eye.
+
+At the end of a placement or routing task, go on with `powerlab-design-review`: it reviews the whole board against the lab rules and the review handbook, fixes what it can in rounds, and writes the final review that the panel shows and saves as a PDF.

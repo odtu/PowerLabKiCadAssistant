@@ -81,6 +81,14 @@ def find_editor(kind="Schematic Editor", pid=0):
     return None
 
 
+def bring_to_front(hwnd):
+    """Restore the window if minimized and put it in front. Windows allows this because
+    the panel, the foreground window when the user clicks in it, asks."""
+    if user32.IsIconic(hwnd):
+        user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+    user32.SetForegroundWindow(hwnd)
+
+
 def foreground_title(pid=0):
     """Title of the window the user is working in; "" if it isn't one of that KiCad's."""
     hwnd = user32.GetForegroundWindow()

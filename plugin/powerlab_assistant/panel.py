@@ -16,7 +16,7 @@ import time
 import wx
 import wx.html2
 
-from . import attachments, config, history, library, report, updates, usage
+from . import attachments, config, history, library, report, review, updates, usage
 from .common import find_gh, open_console, open_terminal, clean_env
 
 # Tools Claude may use without asking. Headless runs can't show permission
@@ -28,6 +28,13 @@ ALLOWED_TOOLS = [
     # doesn't work: Claude Code blocks it as a file write unless all edits are auto-accepted,
     # which would also allow Remove-Item.
     "PowerShell(tar -a -cf:*)",
+]
+# Tools Claude may not use: AskUserQuestion has no one to answer it (see <choices>), and
+# routing is the PowerLab router's or by hand: the kicad MCP server's Freerouting tools
+# are left out of the panel.
+DISALLOWED_TOOLS = [
+    "AskUserQuestion", "mcp__kicad__autoroute", "mcp__kicad__check_freerouting",
+    "mcp__kicad__export_dsn", "mcp__kicad__import_ses",
 ]
 
 IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
@@ -78,11 +85,18 @@ PANEL_NOTE = (
     "Never ask the user to close the PCB or schematic editor or KiCad. Board tools "
     "edit the open board live; after you change a file on disk, ask the user to use "
     "File > Revert instead.\n"
-    "Some board tools (e.g. get_design_rules) only work on the saved board file. If one "
-    "says \"No board is loaded\" while KiCad has the board open, call open_board with the "
-    "'Board file' path above, then retry the tool once.\n"
+    "Some board tools (e.g. get_design_rules) only work on the saved board file. "
+    "Before the first get_design_rules call in a chat, call open_board with the 'Board file' "
+    "path above. If a tool still says \"No board is loaded\" while KiCad has the board open, "
+    "call open_board with the 'Board file' path above, then retry the tool once. For tools "
+    "that render the saved board, such as get_board_2d_view, always pass pcbPath: the "
+    "'Board file' path.\n"
     "Images you open with the Read tool are shown to the user in the panel automatically, "
     "so never try to open them in another program.\n"
+    "When you name parts, nets or places on the board, make them links the user can click "
+    "to see them in KiCad: [U6 and Q2](kicad:refs=U6,Q2), [the GLC track](kicad:net=GLC), "
+    "or a spot in mm, [here](kicad:at=120.5,80.2). The panel selects them in the PCB editor "
+    "and zooms there; the schematic editor follows.\n"
     "kicad-cli is already on PATH. Run it by name as a single plain command, e.g. "
     "`kicad-cli sch export pdf -o out.pdf design.kicad_sch` - never locate it first, and never "
     "use variables, `&`, `;`, pipes or its full path: the panel only allows a plain "
@@ -111,6 +125,18 @@ PANEL_NOTE = (
     "For any placement or routing work, also load the powerlab-visual-review skill: render the "
     "board and look at it after every step, fix what you see, and show the user the views. "
     "Save renders in the views folder named below (kicad-cli may write there too).\n"
+    "Routing: when the user asks to route the board or some nets, load the powerlab-autoroute "
+    "skill. Its first step is one question with <choices>: by hand, or with the PowerLab "
+    "router (recommended: it routes the board, then you fix its DRC errors and what it left by "
+    "hand). Freerouting isn't available in the panel; never offer it. Routing by hand means "
+    "you draw the tracks and vias with the kicad tools (route_trace, route_pad_to_pad, "
+    "add_via), following the lab rules.\n"
+    "When you finish a placement or routing task, or the user asks for a review, load the "
+    "powerlab-design-review skill and follow it: review the board, fix what you can and check "
+    "again until nothing you can fix is left, then write the final review to "
+    "design-review\\design-review.md in the project folder. The panel shows it to the user "
+    "and saves it as a PDF. After routing, do this right away without asking first; only "
+    "then ask the user to look at the board and the review.\n"
     "You can make mistakes: for anything that ends up in hardware (footprints, pinouts, "
     "ratings, design rules), say what the user should double-check against the datasheet."
 )
@@ -247,6 +273,8 @@ class ClaudePanel(wx.Frame):
         self.pending = []
         self.context_items = None
         self.image_reads = {}
+        self.review_writes = {}  # tool id -> design-review.md being written in this run
+        self.review_md = None  # the review written in this run, shown when the run ends
         self.activity, self.activity_sent = ("waiting", ""), 0.0
         self.thinking_tokens = 0
         self.thought, self.thought_started = "", 0.0
@@ -329,6 +357,8 @@ class ClaudePanel(wx.Frame):
         for event in self.events:
             if event["kind"] == "image":
                 self.show_image(event.get("path", ""), record=False)
+            elif event["kind"] == "review":
+                self.emit(**dict(event, **review.card(event.get("path", ""))))
             else:
                 self.emit(**event)
         if self.events:
@@ -425,6 +455,28 @@ class ClaudePanel(wx.Frame):
     def msg_open(self, msg):
         if os.path.isfile(msg.get("path", "")):
             os.startfile(msg["path"])
+
+    def msg_locate(self, msg):
+        """A `kicad:` link was clicked: show that place in the PCB editor (and, through
+        KiCad's cross-probing, in the schematic editor)."""
+        target = str(msg.get("target", ""))[:2000]
+        locate = getattr(self.source, "locate", None)
+        if not target or not locate:
+            return
+
+        def done(result):
+            if isinstance(result, Exception):
+                self.emit("note", level="warn", text="Couldn't show it in KiCad. Open the board in "
+                          "the PCB editor (with the KiCad API on) and click again.")
+                return
+            count, missing = result
+            if count:
+                self.source.show_pcb_editor()
+            if missing:
+                self.emit("note", level="warn" if not count else "info",
+                          text="Not found on the board: " + ", ".join(missing))
+
+        self.in_background(lambda: locate(target), done)
 
     def msg_reload(self, msg):
         self.reload_editor()
@@ -785,7 +837,7 @@ class ClaudePanel(wx.Frame):
             args += ["--model", self.model]
         args += ["--effort", self.effort]
         args += ["--allowedTools", ",".join(ALLOWED_TOOLS)]
-        args += ["--disallowedTools", "AskUserQuestion"]  # no one to answer it; see <choices>
+        args += ["--disallowedTools", ",".join(DISALLOWED_TOOLS)]
 
         if not resend:
             self.say("user", text=text, files=[os.path.basename(p) for p in files])
@@ -885,6 +937,8 @@ class ClaudePanel(wx.Frame):
                     self.image_reads[block.get("id")] = (
                         tool_kind(block.get("name", "")),
                         args.get("file_path", "") if block.get("name") == "Read" else "")
+                    if block.get("name") in ("Write", "Edit") and review.is_review(args.get("file_path")):
+                        self.review_writes[block.get("id")] = args["file_path"]
         elif kind == "user":
             content = msg.get("message", {}).get("content", [])
             for block in content if isinstance(content, list) else []:
@@ -899,6 +953,9 @@ class ClaudePanel(wx.Frame):
                     detail = str(detail)[:200]
                 self.say("tool_done", id=block.get("tool_use_id"), error=failed, text=detail)
                 name, image = self.image_reads.pop(block.get("tool_use_id"), ("tool", ""))
+                written = self.review_writes.pop(block.get("tool_use_id"), None)
+                if written and not failed:
+                    self.review_md = written
                 report.note_event("tool", f"{name} {'error' if failed else 'ok'}")
                 if image and not failed and os.path.splitext(image)[1].lower() in IMAGE_TYPES:
                     self.show_image(image)
@@ -963,6 +1020,21 @@ class ClaudePanel(wx.Frame):
         (self.say if record else self.emit)("image", src=f"data:{mime};base64,{data}",
                                             name=os.path.basename(path), path=path)
 
+    def show_review(self, md_path):
+        """The final design review (powerlab-design-review) in the chat, and as a PDF."""
+        if not os.path.isabs(md_path) and self.chat_cwd:
+            md_path = os.path.join(self.chat_cwd, md_path)
+
+        def done(data):
+            if isinstance(data, Exception):
+                self.problem("error", "The design review couldn't be shown.", "review failed",
+                             type(data).__name__)
+                return
+            self.say("review", **data)
+            self.save_chat()
+
+        self.in_background(lambda: review.build(md_path), done)
+
     def finished(self, returncode):
         self.proc = None
         if self.stale_session and self.retry:
@@ -975,6 +1047,9 @@ class ClaudePanel(wx.Frame):
                 return
         self.emit("busy", value=False)
         self.save_chat()
+        if self.review_md:
+            self.show_review(self.review_md)
+            self.review_md = None
         if not self.got_result and returncode not in (0, None, 1, 15, -15):
             self.problem("error", f"Claude Code stopped unexpectedly (exit code {returncode}).",
                          "claude exited without a result", f"exit code {returncode}")

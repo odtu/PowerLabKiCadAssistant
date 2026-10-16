@@ -4,7 +4,9 @@
 """
 
 import base64
+import math
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -116,26 +118,29 @@ class UnreachableHintTests(unittest.TestCase):
 
 
 class SkillToolsEnvTests(unittest.TestCase):
-    """The panel's Claude sessions must find the private Java 25 before any system Java,
-    and the Freerouting jar, so the kicad MCP server's autoroute tool works."""
+    """The tools the panel's Claude sessions get, and the ones they don't."""
 
-    def test_java_first_on_path_and_jar_exported(self):
-        from powerlab_assistant import common
-        with tempfile.TemporaryDirectory() as tmp:
-            java_home = os.path.join(tmp, "jdk-25-jre")
-            os.makedirs(os.path.join(java_home, "bin"))
-            open(os.path.join(java_home, "bin", "java.exe"), "w").close()
-            jar = os.path.join(tmp, "freerouting-2.4.1.jar")
-            open(jar, "w").close()
-            saved = config.config
-            config.config = lambda: {"java_home": java_home, "freerouting_jar": jar}
-            try:
-                env = common.clean_env()
-            finally:
-                config.config = saved
-        self.assertEqual(env["PATH"].split(os.pathsep)[0], os.path.join(java_home, "bin"))
-        self.assertEqual(env["JAVA_HOME"], java_home)
-        self.assertEqual(env["FREEROUTING_JAR"], jar)
+    def test_freerouting_is_gone(self):
+        # Since 1.0 routing is the PowerLab router's or by hand: no Java or Freerouting
+        # downloads, no Freerouting environment, and the MCP's Freerouting tools are blocked
+        from powerlab_assistant import common, panel
+        saved = config.config
+        config.config = lambda: {"java_home": "C:/nowhere", "freerouting_jar": "C:/nowhere.jar"}
+        try:
+            env = common.clean_env()
+        finally:
+            config.config = saved
+        self.assertNotIn("FREEROUTING_JAR", env)
+        for tool in ("mcp__kicad__autoroute", "mcp__kicad__check_freerouting", "mcp__kicad__import_ses",
+                     "AskUserQuestion"):
+            self.assertIn(tool, panel.DISALLOWED_TOOLS)
+        with open(os.path.join(ROOT, "install.ps1"), encoding="utf-8") as f:
+            install = f.read()
+        self.assertNotIn("freerouting-2.4.1.jar", install)
+        self.assertNotIn("temurin", install.lower())
+        self.assertIn('$_.Name -eq "freerouting"', install)  # old copies are removed
+        self.assertIn("PowerLab router", panel.PANEL_NOTE)
+        self.assertIn("never offer it", panel.PANEL_NOTE)
 
     def test_windows_tar_before_git_tar(self):
         # Issue #24: Git's GNU tar can't write zips; Windows' own tar in System32 can.
@@ -183,7 +188,16 @@ class SkillToolsEnvTests(unittest.TestCase):
         self.assertIn("Shortest path, fewest corners", rules)
         with open(os.path.join(skills, "powerlab-autoroute", "SKILL.md"), encoding="utf-8") as f:
             route = f.read()
-        self.assertIn("Freerouting 2.4.1 ignores the net-class width", route)
+        # the first question, then the review without asking; no Freerouting
+        self.assertIn("## 0. Ask first: by hand or the PowerLab router", route)
+        self.assertIn("PowerLab router, then I fix its DRC errors by hand (Recommended)", route)
+        self.assertIn("Always run the design review next, without asking", route)
+        self.assertIn("Never offer it.", route)
+        self.assertNotIn("autoroute`", route.replace("undo_autoroute`", ""))
+        # GND pours with thermal reliefs; solid only for high-current pours; power rails as pours
+        self.assertIn("GND pours connect pads with thermal reliefs", route)
+        self.assertIn("powerPours", route)
+        self.assertIn("No duplicate tracks", rules)
         # No GND fan-out vias up front: pads reach the pour, vias only after routing
         self.assertIn("No GND fan-out before routing", route)
         self.assertIn("Never fan out GND pads with vias up front", rules)
@@ -258,7 +272,8 @@ class ChatHistoryTests(unittest.TestCase):
             from powerlab_assistant.panel import ClaudePanel
         except ImportError as exc:
             self.skipTest(f"panel needs wx.html2: {exc}")
-        names = ("say", "save_chat", "open_chat", "handle", "finished", "show_image", "set_activity")
+        names = ("say", "save_chat", "open_chat", "handle", "finished", "show_image", "set_activity",
+                 "show_review")
 
         class Fake:
             pass
@@ -270,6 +285,7 @@ class ChatHistoryTests(unittest.TestCase):
         panel.session_id, panel.chat_cwd, panel.events = None, None, []
         panel.retry, panel.stale_session, panel.proc = None, False, None
         panel.got_result, panel.watched, panel.image_reads = False, {}, {}
+        panel.review_writes, panel.review_md = {}, None
         panel.last_text, panel.limits, panel.started, panel.effort = "", [], 0.0, "high"
         panel.activity, panel.activity_sent = ("waiting", ""), time.time()
         panel.thinking_tokens = 0
@@ -455,6 +471,244 @@ class ChatHistoryTests(unittest.TestCase):
         panel.finished(0)
         self.assertEqual(sent, [("Run DRC", [], None)])
         self.assertFalse(any(e["kind"] == "meta" or e.get("level") == "error" for e in panel.emitted))
+
+    def test_design_review_is_shown_with_its_pdf(self):
+        # The design-review skill writes design-review.md; when the run ends, the panel
+        # shows the review in the chat and saves it as a PDF next to it.
+        from powerlab_assistant import review
+        panel = self.fake_panel()
+        panel.in_background = lambda work, done: done(work())
+        panel.chat_cwd = self.project
+        md = os.path.join(self.project, "design-review", "design-review.md")
+        os.makedirs(os.path.dirname(md))
+        with open(md, "w", encoding="utf-8") as f:
+            f.write("# Design review: board\n\n- **Verdict:** Ready to order\n")
+        built = []
+        saved = review.build
+        review.build = lambda path: built.append(path) or dict(saved(path, edge=""), pdf=path[:-3] + ".pdf")
+        self.addCleanup(setattr, review, "build", saved)
+        panel.handle({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "w1", "name": "Write", "input": {"file_path": md, "content": "x"}},
+            {"type": "tool_use", "id": "w2", "name": "Write", "input": {"file_path": md + ".txt"}}]}})
+        panel.handle({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "w1"}, {"type": "tool_result", "tool_use_id": "w2"}]}})
+        self.assertEqual(built, [])  # shown once the run ends, after Claude's last reply
+        panel.finished(0)
+        self.assertEqual(built, [md])
+        card = panel.emitted[-1]
+        self.assertEqual((card["kind"], card["title"], card["verdict"]), ("review", "Design review: board", "Ready to order"))
+        self.assertTrue(card["pdf"].endswith("design-review.pdf"))
+        self.assertIn("<strong>Verdict:</strong>", card["body"])
+        self.assertNotIn("body", panel.events[-1])  # the chat keeps the path, not the HTML
+        # Reopened later, the card is built again from the file.
+        again = self.fake_panel()
+        again.open_chat(self.project)
+        shown = [e for e in again.emitted if e["kind"] == "review"]
+        self.assertEqual(len(shown), 1)
+        self.assertIn("<strong>Verdict:</strong>", shown[0]["body"])
+        self.assertTrue(shown[0]["pdf"].endswith(".pdf"))
+        # A failed write, or a run that wrote no review, shows nothing.
+        panel.emitted.clear()
+        panel.handle({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "w3", "name": "Edit", "input": {"file_path": md}}]}})
+        panel.handle({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "w3", "is_error": True, "content": "no"}]}})
+        panel.finished(0)
+        self.assertFalse(any(e["kind"] == "review" for e in panel.emitted))
+
+    def test_clicked_location_is_shown_in_kicad(self):
+        from powerlab_assistant.panel import ClaudePanel
+        panel = self.fake_panel()
+        calls = []
+        results =[(3, []), (1, ["U9"]), (0, ["net NOPE"]), ConnectionError("no board")]
+
+        def locate(target):
+            calls.append(target)
+            result = results.pop(0)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        panel.source = types.SimpleNamespace(locate=locate, show_pcb_editor=lambda: calls.append("front"))
+        panel.in_background = lambda work, done: done(_run(work))
+
+        def _run(work):
+            try:
+                return work()
+            except Exception as exc:
+                return exc
+
+        for target in ("refs=U6", "refs=U6,U9", "net=NOPE", "refs=U1"):
+            ClaudePanel.msg_locate(panel, {"type": "locate", "target": target})
+        self.assertEqual(calls, ["refs=U6", "front", "refs=U6,U9", "front", "net=NOPE", "refs=U1"])
+        notes = [(e["level"], e["text"]) for e in panel.emitted]
+        self.assertEqual(notes[0], ("info", "Not found on the board: U9"))
+        self.assertEqual(notes[1], ("warn", "Not found on the board: net NOPE"))
+        self.assertIn("Open the board in the PCB editor", notes[2][1])
+        self.assertEqual(len(notes), 3)
+
+
+class DesignReviewTests(unittest.TestCase):
+    """The review handbook, the design-review skill, and the review's HTML and PDF."""
+
+    def setUp(self):
+        from powerlab_assistant import review
+        self.review = review
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.folder = os.path.join(self.tmp.name, "design-review")
+        os.makedirs(os.path.join(self.folder, "images"))
+        png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==")
+        with open(os.path.join(self.folder, "images", "01-top.png"), "wb") as f:
+            f.write(png)
+        self.md = os.path.join(self.folder, "design-review.md")
+
+    def skill(self, name):
+        with open(os.path.join(ROOT, "skills", name, "SKILL.md"), encoding="utf-8") as f:
+            return f.read()
+
+    def test_handbook_ships_with_the_design_rules(self):
+        import re
+        folder = os.path.join(ROOT, "skills", "powerlab-pcb-design-rules", "handbook")
+        names = os.listdir(folder)
+        ids = []
+        for name in names:
+            with open(os.path.join(folder, name), encoding="utf-8") as f:
+                text = f.read()
+            if re.match(r"\d\d-", name) and name != "91-checklist.md":
+                ids += re.findall(r"^### \[([A-Z]+-\d{3})\]", text, re.M)
+            self.assertNotIn("_calisma/", text if name != "DECISIONS.md" else "")  # Turkish work notes stay out
+        self.assertEqual(len(ids), 233)
+        self.assertEqual(len(set(ids)), 233)
+        with open(os.path.join(folder, "91-checklist.md"), encoding="utf-8") as f:
+            checklist = f.read()
+        for rule in ids:
+            self.assertIn(f"**{rule}**", checklist)
+        rules = self.skill("powerlab-pcb-design-rules")
+        # Lab rules brought in line with the handbook (also in odtu/Powerlab's file)
+        for rule in ("**0.5 A per 0.3 mm via**", "**Ø 8 mm keepout**", "place the hot loop first",
+                     "TVS and ESD diodes go at the connector", "Power input protection sits at the input connector",
+                     "Gate return is Kelvin", "Current-sense shunts use Kelvin connections",
+                     "No copper on any layer under the antenna", "within about 2.5 mm of its pin"):
+            self.assertIn(rule, rules)
+        self.assertNotIn("0.4 mm via ≈ 1.5 A", rules)
+        self.assertIn("## 4. Layout review handbook", rules)
+        self.assertIn("handbook/91-checklist.md", rules)
+        for name in re.findall(r"`(\d\d-[a-z0-9-]+\.md)`", rules):
+            self.assertIn(name, names)
+
+    def test_review_skill_loops_and_writes_the_report(self):
+        import ast
+        with open(os.path.join(ROOT, "plugin", "powerlab_assistant", "panel.py"), encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        note = next(ast.literal_eval(n.value) for n in tree.body
+                    if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "PANEL_NOTE")
+        self.assertIn("powerlab-design-review", note)
+        self.assertIn(r"design-review\design-review.md", note)
+        skill = self.skill("powerlab-design-review")
+        for part in ("## When to stop", "Five rounds", "Needs the user", "--all-track-errors",
+                     "handbook/91-checklist.md", r"design-review\design-review.md"):
+            self.assertIn(part, skill)
+        self.assertIn("powerlab-design-review", self.skill("powerlab-visual-review"))
+        # The report template in the skill turns into the card the panel shows.
+        import re
+        template = re.search(r"```markdown\n(.*?)\n```", skill, re.S).group(1)
+        with open(self.md, "w", encoding="utf-8") as f:
+            f.write(template.replace("images/02-top.png", "images/01-top.png"))
+        card = self.review.card(self.md)
+        self.assertTrue(card["title"].startswith("Design review: "))
+        self.assertTrue(card["verdict"].startswith("Ready to order after"))
+        for heading in ("Summary", "Needs you", "Open findings", "Fixed during the review",
+                        "Checked and fine", "Not checked", "Views"):
+            self.assertIn(f"<h2>{heading}</h2>", card["body"])
+        self.assertIn('<h3 class="sev sev-high">High</h3>', card["body"])
+        self.assertIn("<td>N1</td><td>RF-006</td>", card["body"])
+        self.assertIn('src="data:image/png;base64,', card["body"])
+        self.assertIn("data-path=", card["body"])  # click opens the image
+        self.assertIn("Image not found: images/01-placement.png", card["body"])
+
+    def test_review_text_is_escaped(self):
+        body = self.review.body_html(
+            "# T\n\n<script>alert(1)</script> **b** [x](javascript:alert(1)) [ok](https://e.com)\n"
+            "![a\" onerror=\"x](images/01-top.png)\n", self.folder)
+        self.assertNotIn("<script>", body)
+        self.assertNotIn('href="javascript', body)
+        self.assertIn('<a href="https://e.com">ok</a>', body)
+        self.assertNotIn('" onerror="', body)
+        self.assertIn("&lt;script&gt;", body)
+        self.assertFalse(self.review.is_review(os.path.join(self.folder, "notes.md")))
+        self.assertTrue(self.review.is_review(self.md.upper()))
+
+    def test_locations_are_parsed(self):
+        parse = self.review.parse_location
+        self.assertEqual(parse("refs=U6,Q2&net=GLC"), {"refs": ["U6", "Q2"], "nets": ["GLC"], "areas": []})
+        self.assertEqual(parse("U1")["refs"], ["U1"])
+        self.assertEqual(parse("net=Net-%28U1-Pad3%29&net=A%2CB")["nets"], ["Net-(U1-Pad3)", "A,B"])
+        self.assertEqual(parse("area=20,30,10,5")["areas"], [(10, 5, 20, 30)])
+        self.assertEqual(parse("at=100,50")["areas"], [(97.5, 47.5, 102.5, 52.5)])
+        self.assertEqual(parse("at=x,1&area=1,2&bogus=3"), {"refs": [], "nets": [], "areas": []})
+
+    def test_location_picks_board_items(self):
+        from types import SimpleNamespace as NS
+
+        def at(x, y):
+            return NS(x=int(x * 1e6), y=int(y * 1e6))
+
+        u6 = NS(reference_field=NS(text=NS(value="U6")), position=at(100, 50))
+        q2 = NS(reference_field=NS(text=NS(value="Q2")), position=at(104, 52))
+        track = NS(net=NS(name="GLC"), start=at(100, 50), end=at(160, 50))
+        via = NS(net=NS(name="GLC"), position=at(160, 50))
+        pad = NS(net=NS(name="GLC"), position=at(100, 50))
+        other = NS(net=NS(name="GND"), start=at(0, 0), end=at(1, 1))
+        board = ([u6, q2], [track, other], [via], [pad])
+        pick = lambda target: self.review.pick_items(self.review.parse_location(target), *board)
+        items, missing, small = pick("refs=u6,Q2,U9")
+        self.assertEqual((items, missing, small), ([u6, q2], ["U9"], True))  # small: zoomed out once
+        items, missing, small = pick("net=GLC")
+        self.assertEqual((items, missing, small), ([track, via, pad], [], False))
+        items, missing, _ = pick("at=160,50&net=NOPE")
+        self.assertEqual((items, missing), ([track, via], ["net NOPE"]))
+        self.assertEqual(pick("area=0,0,1,1")[0], [other])
+        self.assertEqual(pick("at=500,500")[:2], ([], ["anything at (497.5, 497.5)–(502.5, 502.5) mm"]))
+
+    def test_location_links_are_clickable_in_the_panel_only(self):
+        body = self.review.body_html(
+            '| F1 | [under L1](kicad:refs=L1&net=BUCK_PG) |\n|---|---|\n| x | [a"b](kicad:refs="><script>) |\n',
+            self.folder)
+        self.assertIn('<a class="loc" data-loc="refs=L1&amp;net=BUCK_PG" title="Show in KiCad">under L1</a>', body)
+        self.assertNotIn("<script>", body)
+        self.assertIn("a.loc { color: inherit;", self.review.CSS)  # plain text in the PDF
+        with open(os.path.join(ROOT, "plugin", "powerlab_assistant", "panel.html"), encoding="utf-8") as f:
+            page = f.read()
+        self.assertIn("kicad:([^)\\s]+)", page)  # Claude's replies get the links too
+        self.assertIn("post({ type: 'locate', target: loc.dataset.loc })", page)
+        skill = self.skill("powerlab-design-review")
+        self.assertIn("(kicad:refs=U6,Q2)", skill)
+        self.assertIn("kicad:net=Net-%28U1-Pad3%29", skill)
+
+    def test_without_edge_the_html_is_saved_instead(self):
+        with open(self.md, "w", encoding="utf-8") as f:
+            f.write("# Design review: b\n\n![Top](images/01-top.png)\n")
+        data = self.review.build(self.md, edge="")
+        self.assertNotIn("pdf", data)
+        self.assertIn("Edge", data["error"])
+        with open(data["html"], encoding="utf-8") as f:
+            page = f.read()
+        self.assertIn("data:image/png;base64,", page)  # works on its own
+        self.assertNotIn("data-path", page)
+
+    @unittest.skipUnless(sys.platform == "win32", "needs Microsoft Edge")
+    def test_pdf_is_printed_with_edge(self):
+        if not self.review.find_edge():
+            self.skipTest("Microsoft Edge not found")
+        with open(self.md, "w", encoding="utf-8") as f:
+            f.write("# Design review: b\n\n## Summary\n- **Verdict:** Ready to order\n\n"
+                    "| # | Rule |\n|---|---|\n| F1 | PWR-006 |\n\n![Top](images/01-top.png)\n")
+        data = self.review.build(self.md)
+        self.assertEqual(data.get("error"), None)
+        with open(data["pdf"], "rb") as f:
+            self.assertEqual(f.read(5), b"%PDF-")
+        self.assertFalse(os.path.exists(os.path.join(self.folder, "design-review.html")))
 
 
 class OnePanelTests(unittest.TestCase):
@@ -701,8 +955,885 @@ class McpPatchTests(unittest.TestCase):
         self.assertIn('(keepout "" (polygon F.Cu 0 0 0 10 0 10 10 0 10))', out)
         self.assertEqual(out.count("("), out.count(")"))
 
+    def test_live_autoroute_copper(self):
+        """Live autoroute: partial results replace each other in KiCad; locked copper stays."""
+        try:
+            import pcbnew
+            from kipy.board_types import Track, Via
+            from kipy.geometry import Vector2
+            from kipy.proto.board.board_types_pb2 import BoardLayer
+        except ImportError:
+            self.skipTest("needs KiCad's Python with kipy")
+        patch = self.patch()
+        self.assertIn('"autoroute": self._handle_autoroute,', patch)
+        self.assertIn("for idx in range(0 if live else attempts):", patch)
+        self.assertIn("--api_server.authentication.enabled=false", patch)
+        module = types.ModuleType("freerouting_live")
+        exec(self.new_file("python/commands/freerouting_live.py"), module.__dict__)
+
+        # The same track has the same key on both sides, whichever way round it's drawn
+        board = pcbnew.BOARD()
+        net = pcbnew.NETINFO_ITEM(board, "SIG")
+        board.Add(net)
+        t = pcbnew.PCB_TRACK(board)
+        t.SetStart(pcbnew.VECTOR2I(3000000, 1000000)); t.SetEnd(pcbnew.VECTOR2I(1000000, 1000000))
+        t.SetWidth(200000); t.SetLayer(pcbnew.B_Cu); t.SetNet(net)
+        board.Add(t)
+        (key, spec), = module.pcbnew_copper(board).items()
+        k = Track()
+        k.start, k.end = Vector2.from_xy(1000000, 1000000), Vector2.from_xy(3000000, 1000000)
+        k.width, k.layer = 200000, BoardLayer.BL_B_Cu
+        self.assertEqual(module.kipy_key(k)[:-1], key[:-1])  # the kipy track has no net
+        self.assertEqual(key[-1], "SIG")
+        self.assertEqual(module.pcbnew_copper(board, ["SIG"]), {})
+
+        class FakeBoard:
+            def __init__(self):
+                self.items, self.commits = [], 0
+            def get_nets(self):
+                return []
+            def begin_commit(self):
+                return object()
+            def push_commit(self, commit, message):
+                self.commits += 1
+            def create_items(self, items):
+                self.items += items
+                return items
+            def remove_items(self, items):
+                self.items = [i for i in self.items if all(i is not r for r in items)]
+            def get_tracks(self):
+                return [i for i in self.items if isinstance(i, Track)]
+            def get_vias(self):
+                return [i for i in self.items if isinstance(i, Via)]
+
+        def track(x):
+            spec = {"kind": "track", "layer": "F.Cu", "start": (x, 0), "end": (x, 1000), "width": 200, "net": ""}
+            return ("t", "F.Cu", x, 0, x, 1000, 200, ""), spec
+        via = (("v", 5, 5, 600, 300, ""), {"kind": "via", "pos": (5, 5), "dia": 600, "drill": 300, "net": ""})
+        fake = FakeBoard()
+        locked = Track()
+        locked.start, locked.end = Vector2.from_xy(9, 0), Vector2.from_xy(9, 1000)
+        locked.width, locked.layer, locked.locked = 200, BoardLayer.BL_F_Cu, True
+        fake.items.append(locked)
+        copper = module.LiveCopper(fake)
+        copper.show(dict([track(1), track(2)]))
+        copper.show(dict([track(2), track(3), via]))
+        self.assertEqual(sorted(copper.shown), sorted([track(2)[0], track(3)[0], via[0]]))
+        self.assertEqual(len(fake.items), 4)  # the locked track and this run's three items
+        copper.show(dict([track(2), track(3), via]))  # nothing new: no commit
+        self.assertEqual(fake.commits, 2)
+        result = copper.finish(dict([track(3), track(4)]))  # final result
+        self.assertEqual(result, {"added": 1, "removed": 2, "locked_kept": 1})
+        self.assertEqual(sorted(module.kipy_key(i) for i in fake.items),
+                         sorted([track(3)[0], track(4)[0], track(9)[0]]))
+        copper.clear()  # after finish there's nothing left to take back
+        self.assertEqual(len(fake.items), 3)
+
+    def test_live_deletes_reach_kicads_board(self):
+        # Issue #56: with KiCad open, delete_trace changed only the tool's own copy and
+        # said it worked; nothing could delete board-outline lines live
+        patch = self.patch()
+        self.assertNotIn("+        return self.routing_commands.delete_trace(params)", patch)
+        self.assertIn('+        """IPC handler for delete_trace (PowerLab patch, #56).', patch)
+        for handler in ("_ipc_delete_graphic", "_ipc_list_graphics", "_ipc_clear_board_outline"):
+            self.assertIn(f"+    def {handler}(self, params", patch)
+        for name in ("list_graphics", "delete_graphic", "clear_board_outline"):
+            self.assertIn(f'+        "{name}": "_ipc_{name}",  # PowerLab patch (#56)', patch)
+        self.assertIn("board.remove_items(found)", patch)
+
+    def test_no_board_loaded_loads_kicads_board(self):
+        # Issue #57: run_drc said "No board is loaded" while KiCad had the board open
+        patch = self.patch()
+        self.assertIn("+    def _board_path_to_load(self, params", patch)
+        self.assertIn('and result.get("message") == "No board is loaded"', patch)
+
     def test_session_vias_keep_their_annular_ring(self):
         self.assertIn("via_drills = _repair_via_drills(self.board)", self.patch())
+
+    def router_package(self):
+        """The router's files from the patch, as an importable package in a temp folder.
+        They need KiCad's own pcbnew, not the stand-in these tests use outside KiCad."""
+        if not hasattr(sys.modules.get("pcbnew"), "BOARD"):
+            self.skipTest("needs KiCad's Python")
+        root = tempfile.mkdtemp()
+        pkg = os.path.join(root, "commands", "powerlab_router")
+        os.makedirs(pkg)
+        open(os.path.join(root, "commands", "__init__.py"), "w").close()
+        for name in re.findall(r"\+\+\+ b/python/commands/powerlab_router/(\w+\.py)", self.patch()):
+            with open(os.path.join(pkg, name), "w", encoding="utf-8") as f:
+                f.write(self.new_file(f"python/commands/powerlab_router/{name}") + "\n")
+        return root
+
+    def test_powerlab_router_river(self):
+        """A bus between two parallel pin rows, drawn as by hand: every bend 45 degrees, the
+        runs in the channel exactly one pitch apart, no two tracks crossing, and a track
+        that doesn't fit its slot moves along the channel."""
+        module = types.ModuleType("bus")
+        exec(self.new_file("python/commands/powerlab_router/bus.py"), module.__dict__)
+        # module row at x = 106.25 (1.27 mm pitch), header row at x = 101.3 (2.54 mm), header left
+        pairs = [((106.25, 110 + 1.27 * i), (101.3, 108 + 2.54 * i)) for i in range(6)]
+        shapes = module.plan(pairs, 0.4, 0.9, 1.0)
+        self.assertEqual(sorted(shapes), list(range(6)))
+        for i, pts in shapes.items():
+            self.assertEqual((pts[0], pts[-1]), pairs[i])
+            for a, b in zip(pts, pts[1:]):
+                angle = math.degrees(math.atan2(b[1] - a[1], b[0] - a[0])) % 45
+                self.assertTrue(angle < 0.01 or angle > 44.99, (i, a, b))
+        runs = sorted(round(pts[2][0], 3) for i, pts in shapes.items() if pairs[i][1][1] > pairs[i][0][1] + 0.05)
+        self.assertTrue(all(abs((b - a) - 0.4) < 1e-6 for a, b in zip(runs, runs[1:])), runs)
+
+        def crosses(p, q):
+            def side(a, b, c):
+                return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+            for a, b in zip(p, p[1:]):
+                for c, d in zip(q, q[1:]):
+                    if side(a, b, c) * side(a, b, d) < -1e-9 and side(c, d, a) * side(c, d, b) < -1e-9:
+                        return True
+            return False
+        for i in shapes:
+            for j in shapes:
+                if i < j:
+                    self.assertFalse(crosses(shapes[i], shapes[j]), (i, j))
+
+        # copper on the first downward track's slot: it steps past it, the next one a pitch beyond
+        first = min(i for i in shapes if pairs[i][1][1] > pairs[i][0][1] + 0.05)
+        x0 = shapes[first][2][0]
+        blocked = lambda i, pts: not any(x0 - 0.05 <= p[0] <= x0 + 0.25 for p in pts[2:-2]) if i == first else True
+        moved = module.plan(pairs, 0.4, 0.9, 1.0, clear=blocked)
+        self.assertGreater(moved[first][2][0], x0 + 0.25)
+        self.assertGreaterEqual(moved[first + 1][2][0], moved[first][2][0] + 0.4 - 1e-9)
+
+        # step-in: once a track has turned off into its pin, the next moves into its slot
+        down = sorted((i for i in shapes if pairs[i][1][1] > pairs[i][0][1] + 0.05), key=lambda i: pairs[i][0][1])
+        def last_run(pts):
+            return [u[0] for u, v in zip(pts[2:-1], pts[3:-1]) if abs(u[0] - v[0]) < 1e-9][-1]
+        stepped = [(prev, i) for prev, i in zip(down, down[1:]) if len(shapes[i]) > 6]
+        self.assertTrue(stepped)
+        for prev, i in stepped:
+            self.assertAlmostEqual(last_run(shapes[i]), last_run(shapes[prev]), places=6)
+
+        # pins in a different order on the two rows would cross: no plan
+        crossed = [pairs[1], (pairs[0][0], pairs[2][1]), (pairs[2][0], pairs[0][1])]
+        self.assertEqual(module.plan(crossed, 0.4, 0.9, 1.0), {})
+
+    def test_powerlab_router_shapes(self):
+        """Hand-drawn shapes between two points: straight, one bend, Z; 45 degree bends only."""
+        module = types.ModuleType("patterns")
+        exec(self.new_file("python/commands/powerlab_router/patterns.py"), module.__dict__)
+        found = module.shapes((0, 0), 0, (3, 1), 0, step=0.1)
+        self.assertTrue(found)
+        self.assertEqual(min(module.bends(s) for s in found), 1)
+        for s in found:
+            self.assertEqual(s[0], (0, 0))
+            self.assertEqual(s[-1], (3, 1))
+            for a, b in zip(s, s[1:]):
+                angle = math.degrees(math.atan2(b[1] - a[1], b[0] - a[0])) % 45
+                self.assertTrue(angle < 0.01 or angle > 44.99)
+        self.assertEqual(module.shapes((0, 0), 0, (3, 0), 0)[0], [(0, 0), (3, 0)])  # straight
+        self.assertEqual(module.shapes((0, 0), 0, (-3, 0), 4, most=4), [])  # a U-turn: left to the search
+        # a pad centre, its lane exit on the same line, one bend: one corner, not two
+        self.assertEqual(module.bends([(0, 0), (0.5, 0), (2, 0), (3, 1), (4, 2)]), 1)
+
+    def test_powerlab_router_shortcut(self):
+        """Milestone 2: the shortcut pass straightens a staircase, keeps the pad lanes and
+        never turns by more than 45 degrees."""
+        module = types.ModuleType("finish")
+        exec(self.new_file("python/commands/powerlab_router/finish.py"), module.__dict__)
+        # pad centre, lane exit, a staircase, then the far lane exit and pad centre
+        pts = [(0, 0), (1, 0), (1.5, 0.5), (2, 0.5), (2.5, 1), (3, 1), (3.5, 1.5), (5, 1.5), (6, 1.5)]
+        out = module._shorten(lambda a, b: True, pts, 1, len(pts) - 2)
+        self.assertEqual(out[:2], pts[:2])
+        self.assertEqual(out[-2:], pts[-2:])
+        self.assertLess(len(out), len(pts))
+        self.assertLess(module._length(out), module._length(pts))
+        dirs = [module._unit(a, b) for a, b in zip(out, out[1:])]
+        self.assertTrue(all(module._turn_ok(u, v) for u, v in zip(dirs, dirs[1:])))
+        for a, b in zip(out, out[1:]):
+            self.assertTrue(module._octilinear(b[0] - a[0], b[1] - a[1]))
+        # nothing is clear: nothing changes
+        self.assertEqual(module._shorten(lambda a, b: False, pts, 1, len(pts) - 2), pts)
+
+    def test_powerlab_router_shortcut_corners_and_pad_entry(self):
+        """Corners cost something in the finishing pass, a pad that isn't fine pitch may be
+        entered at 45 degrees instead of bending just before it, and a T-junction end never
+        turns to run along the track it joins."""
+        module = types.ModuleType("finish")
+        exec(self.new_file("python/commands/powerlab_router/finish.py"), module.__dict__)
+        # pad centre, lane exit to the left, a 45 degree corner, then down (the bend before the pad)
+        pts = [(0, 0), (-1, 0), (-2, 1), (-2, 4)]
+        kept = module._shorten(lambda a, b: True, pts, 1, len(pts) - 1, bend=module.BEND)
+        self.assertEqual(kept[:2], pts[:2])  # lane kept: fine pitch
+        free = module._shorten(lambda a, b: True, pts, 0, len(pts) - 1, bend=module.BEND)
+        self.assertNotEqual(free[1], (-1, 0))  # straight from the pad centre, no lane bend
+        self.assertLess(module._turns(free), module._turns(pts))
+        for a, b in zip(free, free[1:]):
+            self.assertTrue(module._octilinear(b[0] - a[0], b[1] - a[1]))
+        # equal length, but a wiggle: only the corner cost straightens it
+        wiggle = [(0, 0), (1, 0), (2, 0), (2.5, 0.5), (3.5, 0.5), (4, 0), (6, 0), (7, 0)]
+        cost = lambda a, b: math.dist(a, b) + (0.6 * math.dist(a, b) if abs(a[1]) < 1e-9 and abs(b[1]) < 1e-9 else 0)
+        self.assertGreater(module._turns(module._shorten(lambda a, b: True, wiggle, 1, len(wiggle) - 2, cost)), 0)
+        straight = module._shorten(lambda a, b: True, wiggle, 1, len(wiggle) - 2, cost, bend=module.BEND)
+        self.assertEqual(module._turns(module._corners(straight)), 0)
+        # a T-junction end on a horizontal track: the last segment doesn't run along it
+        tee = [(0, 3), (0, 2), (1, 1), (3, 1), (4, 0)]
+        out = module._shorten(lambda a, b: True, tee, 1, len(tee) - 1, bend=module.BEND, forbid_end=(1.0, 0.0))
+        u = module._unit(out[-2], out[-1])
+        self.assertGreater(abs(u[1]), 1e-3)
+        self.assertEqual(out[-1], tee[-1])
+
+    def test_powerlab_router_search_joins_a_track(self):
+        """The search may end on the net's own track (a set of directions), at an angle."""
+        module = types.ModuleType("search")
+        exec(self.new_file("python/commands/powerlab_router/search.py"), module.__dict__)
+        nx, ny = 40, 20
+        blocked = [bytes(nx * ny)]
+        via_ok = bytes(nx * ny)
+        starts = [(2, 10, 0, 0, 0.0)]
+        goals = {(38, 10, 0): (0, 0.0)}  # the far pad, straight on
+        along = frozenset(k for k in range(8) if k % 4 != 2)  # a vertical track at i = 15
+        for j in range(ny):
+            goals.setdefault((15, j, 0), (along, 0.0))
+        path, stats = module.search(blocked, via_ok, nx, ny, 0.1, starts, goals, (0, 0, nx - 1, ny - 1),
+                                    module.Costs(layer_factor=None))
+        self.assertIsNotNone(path)
+        self.assertEqual(path[-1][:2], (15, 10))  # joined the track, not the far pad
+        self.assertIn(path[-1][3], along)
+
+    def test_powerlab_router_rejects_loops(self):
+        """A grid path that comes back to a cell it has been on, or changes layer twice at
+        one spot (a loop through two vias, to turn where the corner rules don't allow it)."""
+        try:
+            import pcbnew  # noqa: F401
+        except ImportError:
+            self.skipTest("needs KiCad's Python")
+        sys.path.insert(0, self.router_package())
+        try:
+            for m in [m for m in sys.modules if m == "commands" or m.startswith("commands.")]:
+                del sys.modules[m]
+            from commands.powerlab_router.model import _loops
+        finally:
+            sys.path.pop(0)
+        straight = [(i, 5, 0, 0, 2) for i in range(10)]
+        self.assertEqual(_loops(straight), [])
+        via_loop = [(3, 5, 0, 0, 2), (4, 5, 0, 0, 2), (4, 5, 1, 8, 0), (5, 6, 1, 1, 1), (4, 7, 1, 3, 1),
+                    (3, 6, 1, 5, 1), (4, 5, 1, 7, 1), (4, 5, 0, 8, 0), (5, 5, 0, 0, 1)]
+        self.assertEqual(_loops(via_loop), [(4, 5)])
+
+    def test_powerlab_router_keeps_out_of_footprint_keepouts(self):
+        """A module's antenna keepout comes with its footprint, not the board: the router
+        reads the footprints' rule areas too."""
+        try:
+            import pcbnew
+        except ImportError:
+            self.skipTest("needs KiCad's Python")
+        sys.path.insert(0, self.router_package())
+        try:
+            for m in [m for m in sys.modules if m == "commands" or m.startswith("commands.")]:
+                del sys.modules[m]
+            from commands.powerlab_router.router import Router
+        finally:
+            sys.path.pop(0)
+        mm, P = pcbnew.FromMM, lambda x, y: pcbnew.VECTOR2I(pcbnew.FromMM(x), pcbnew.FromMM(y))
+        board = pcbnew.BOARD()
+        for a, b in (((0, 0), (30, 0)), ((30, 0), (30, 20)), ((30, 20), (0, 20)), ((0, 20), (0, 0))):
+            edge = pcbnew.PCB_SHAPE(board, pcbnew.SHAPE_T_SEGMENT)
+            edge.SetStart(P(*a)); edge.SetEnd(P(*b)); edge.SetLayer(pcbnew.Edge_Cuts); edge.SetWidth(mm(0.1))
+            board.Add(edge)
+        net = pcbnew.NETINFO_ITEM(board, "SIG")
+        board.Add(net)
+        for ref, x in (("R1", 5), ("R2", 25)):
+            fp = pcbnew.FOOTPRINT(board)
+            fp.SetReference(ref)
+            fp.SetPosition(P(x, 10))
+            pad = pcbnew.PAD(fp)
+            pad.SetShape(pcbnew.PAD_SHAPE_RECTANGLE)
+            pad.SetAttribute(pcbnew.PAD_ATTRIB_SMD)
+            pad.SetLayerSet(pcbnew.PAD.SMDMask())
+            pad.SetSize(pcbnew.F_Cu, P(1, 1))
+            pad.SetPosition(P(x, 10))
+            pad.SetNumber("1")
+            pad.SetNet(net)
+            fp.Add(pad)
+            board.Add(fp)
+        module = pcbnew.FOOTPRINT(board)
+        module.SetReference("U1")
+        module.SetPosition(P(15, 7))
+        keepout = pcbnew.ZONE(module)
+        keepout.SetIsRuleArea(True)
+        keepout.SetDoNotAllowTracks(True)
+        keepout.SetDoNotAllowVias(True)
+        layers = pcbnew.LSET()
+        layers.AddLayer(pcbnew.F_Cu)
+        layers.AddLayer(pcbnew.B_Cu)
+        keepout.SetLayerSet(layers)
+        for x, y in ((12, 0), (18, 0), (18, 14), (12, 14)):
+            keepout.AppendCorner(P(x, y), -1)
+        module.Add(keepout)
+        board.Add(module)
+        report = Router(board).run(["SIG"])
+        self.assertEqual(report["routed"], 1, report["left"])
+        for t in board.GetTracks():
+            a, e = t.GetStart(), t.GetEnd()
+            for k in range(51):
+                x = pcbnew.ToMM(a.x + (e.x - a.x) * k / 50)
+                y = pcbnew.ToMM(a.y + (e.y - a.y) * k / 50)
+                self.assertFalse(12 < x < 18 and y < 14, "a track in the footprint's keepout")
+
+    def test_powerlab_router_routes_a_board(self):
+        """Milestone 2, end to end: two pads with another net's pad between them. The track
+        goes around it, starts and ends at the pad centres, and turns by 45 degrees at most."""
+        try:
+            import pcbnew
+        except ImportError:
+            self.skipTest("needs KiCad's Python")
+        sys.path.insert(0, self.router_package())
+        try:
+            for m in [m for m in sys.modules if m == "commands" or m.startswith("commands.")]:
+                del sys.modules[m]
+            from commands.powerlab_router.router import Router
+        finally:
+            sys.path.pop(0)
+        mm, P = pcbnew.FromMM, lambda x, y: pcbnew.VECTOR2I(pcbnew.FromMM(x), pcbnew.FromMM(y))
+        board = pcbnew.BOARD()
+        for a, b in (((0, 0), (30, 0)), ((30, 0), (30, 20)), ((30, 20), (0, 20)), ((0, 20), (0, 0))):
+            edge = pcbnew.PCB_SHAPE(board, pcbnew.SHAPE_T_SEGMENT)
+            edge.SetStart(P(*a)); edge.SetEnd(P(*b)); edge.SetLayer(pcbnew.Edge_Cuts); edge.SetWidth(mm(0.1))
+            board.Add(edge)
+        nets = {}
+        for name in ("SIG", "OTHER"):
+            nets[name] = pcbnew.NETINFO_ITEM(board, name)
+            board.Add(nets[name])
+        for ref, (x, y), size, net in (("R1", (5, 10), (1, 1), "SIG"), ("R2", (25, 10), (1, 1), "SIG"),
+                                       ("U1", (15, 10), (2, 8), "OTHER")):
+            fp = pcbnew.FOOTPRINT(board)
+            fp.SetReference(ref)
+            fp.SetPosition(P(x, y))
+            pad = pcbnew.PAD(fp)
+            pad.SetShape(pcbnew.PAD_SHAPE_RECTANGLE)
+            pad.SetAttribute(pcbnew.PAD_ATTRIB_SMD)
+            pad.SetLayerSet(pcbnew.PAD.SMDMask())
+            pad.SetSize(pcbnew.F_Cu, P(*size))
+            pad.SetPosition(P(x, y))
+            pad.SetNumber("1")
+            pad.SetNet(nets[net])
+            fp.Add(pad)
+            board.Add(fp)
+        # an inductor between them, off the straight line: no track under it (§3.4)
+        coil = pcbnew.FOOTPRINT(board)
+        coil.SetReference("L1")
+        coil.SetPosition(P(10, 10))
+        box = pcbnew.PCB_SHAPE(coil, pcbnew.SHAPE_T_RECTANGLE)
+        box.SetStart(P(8, 4))
+        box.SetEnd(P(12, 16))
+        box.SetLayer(pcbnew.F_CrtYd)
+        box.SetWidth(mm(0.05))
+        coil.Add(box)
+        board.Add(coil)
+        report = Router(board).run(["SIG"])
+        self.assertEqual(report["routed"], 1, report["left"])
+        for t in board.GetTracks():
+            a, e = t.GetStart(), t.GetEnd()
+            for k in range(51):  # points along the track
+                x = pcbnew.ToMM(a.x + (e.x - a.x) * k / 50)
+                y = pcbnew.ToMM(a.y + (e.y - a.y) * k / 50)
+                self.assertFalse(7.9 < x < 12.1 and 3.9 < y < 16.1, "a track under the inductor")
+        tracks = [t for t in board.GetTracks() if t.Type() == pcbnew.PCB_TRACE_T]
+        ends = {(round(pcbnew.ToMM(p.x), 3), round(pcbnew.ToMM(p.y), 3)) for t in tracks for p in (t.GetStart(), t.GetEnd())}
+        self.assertIn((5.0, 10.0), ends)  # pad centres
+        self.assertIn((25.0, 10.0), ends)
+        for t in tracks:
+            dx, dy = pcbnew.ToMM(t.GetEnd().x - t.GetStart().x), pcbnew.ToMM(t.GetEnd().y - t.GetStart().y)
+            angle = math.degrees(math.atan2(dy, dx)) % 45
+            self.assertTrue(angle < 0.5 or angle > 44.5, (dx, dy))
+            # around U1's pad, never through it
+            self.assertFalse(13.8 < pcbnew.ToMM(t.GetStart().x) < 16.2 and 5.8 < pcbnew.ToMM(t.GetStart().y) < 14.2)
+
+    def _router_board(self, pads, nets):
+        """A 30 x 20 mm board with 1 x 1 mm SMD pads: pads = [(ref, (x, y), net)]."""
+        import pcbnew
+        mm, P = pcbnew.FromMM, lambda x, y: pcbnew.VECTOR2I(pcbnew.FromMM(x), pcbnew.FromMM(y))
+        board = pcbnew.BOARD()
+        for a, b in (((0, 0), (30, 0)), ((30, 0), (30, 20)), ((30, 20), (0, 20)), ((0, 20), (0, 0))):
+            edge = pcbnew.PCB_SHAPE(board, pcbnew.SHAPE_T_SEGMENT)
+            edge.SetStart(P(*a)); edge.SetEnd(P(*b)); edge.SetLayer(pcbnew.Edge_Cuts); edge.SetWidth(mm(0.1))
+            board.Add(edge)
+        info = {}
+        for name in nets:
+            info[name] = pcbnew.NETINFO_ITEM(board, name)
+            board.Add(info[name])
+        for ref, (x, y), net in pads:
+            fp = pcbnew.FOOTPRINT(board)
+            fp.SetReference(ref)
+            fp.SetPosition(P(x, y))
+            pad = pcbnew.PAD(fp)
+            pad.SetShape(pcbnew.PAD_SHAPE_RECTANGLE)
+            pad.SetAttribute(pcbnew.PAD_ATTRIB_SMD)
+            pad.SetLayerSet(pcbnew.PAD.SMDMask())
+            pad.SetSize(pcbnew.F_Cu, P(1, 1))
+            pad.SetPosition(P(x, y))
+            pad.SetNumber("1")
+            pad.SetNet(info[net])
+            fp.Add(pad)
+            board.Add(fp)
+        return board
+
+    def _import_router(self):
+        sys.path.insert(0, self.router_package())
+        try:
+            for m in [m for m in sys.modules if m == "commands" or m.startswith("commands.")]:
+                del sys.modules[m]
+            from commands.powerlab_router import router, pours
+        finally:
+            sys.path.pop(0)
+        return router, pours
+
+    def test_powerlab_router_squares_a_run_between_vias(self):
+        """pad -> via -> other layer -> via -> pad, each piece one run, both pads off the
+        grid: the vias slide along their runs so the middle run is a 45 degree multiple."""
+        try:
+            import pcbnew  # noqa: F401
+        except ImportError:
+            self.skipTest("needs KiCad's Python")
+        sys.path.insert(0, self.router_package())
+        try:
+            for m in [m for m in sys.modules if m == "commands" or m.startswith("commands.")]:
+                del sys.modules[m]
+            from commands.powerlab_router.model import _square_middles
+        finally:
+            sys.path.pop(0)
+        pieces = [(0, [(0.0, 0.0), (1.0, 0.0)]), (1, [(1.0, 0.0), (4.0, 3.05)]), (0, [(4.0, 3.05), (5.0, 3.05)])]
+        vias = [(1.0, 0.0), (4.0, 3.05)]
+        _square_middles(pieces, vias)
+        (a, b) = pieces[1][1]
+        self.assertAlmostEqual(abs(b[0] - a[0]), abs(b[1] - a[1]), places=6)  # 45 degrees
+        self.assertEqual(pieces[0][1][-1], a)
+        self.assertEqual(pieces[2][1][0], b)
+        self.assertEqual(vias, [a, b])
+        self.assertAlmostEqual(a[1], 0.0)  # each via stays on its own run
+        self.assertAlmostEqual(b[1], 3.05)
+
+    def test_powerlab_router_joins_a_nets_tracks(self):
+        """Two connections of one net leave the same pad toward the same side: the second
+        joins the first's track (or leaves by another lane) instead of running a second
+        track beside or on top of it."""
+        try:
+            import pcbnew
+        except ImportError:
+            self.skipTest("needs KiCad's Python")
+        router, _pours = self._import_router()
+        board = self._router_board([("R1", (5, 10), "SIG"), ("R2", (16, 4), "SIG"), ("R3", (16, 16), "SIG")], ["SIG"])
+        report = router.Router(board).run(["SIG"])
+        self.assertEqual(report["routed"], 2, report["left"])
+        T = pcbnew.ToMM
+        segs = [((T(t.GetStart().x), T(t.GetStart().y)), (T(t.GetEnd().x), T(t.GetEnd().y)))
+                for t in board.GetTracks() if t.Type() == pcbnew.PCB_TRACE_T]
+        for i, (a, b) in enumerate(segs):
+            for c, d in segs[i + 1:]:
+                u = (b[0] - a[0], b[1] - a[1])
+                v = (d[0] - c[0], d[1] - c[1])
+                if abs(u[0] * v[1] - u[1] * v[0]) > 1e-6:
+                    continue  # not parallel
+                gap = abs(u[0] * (c[1] - a[1]) - u[1] * (c[0] - a[0])) / math.hypot(*u)
+                if gap > 1.0:
+                    continue
+                n = math.hypot(*u)
+                s = sorted(((c[0] - a[0]) * u[0] + (c[1] - a[1]) * u[1], (d[0] - a[0]) * u[0] + (d[1] - a[1]) * u[1]))
+                overlap = min(n * n, s[1]) - max(0.0, s[0])
+                self.assertLess(overlap / n, 0.3, f"two tracks side by side: {(a, b)} {(c, d)}")
+
+    def test_powerlab_router_power_pours_and_stitching(self):
+        """After routing: a pour round a power rail's track (thermal reliefs, above the GND
+        pour), and GND stitching vias where both GND pours are filled."""
+        try:
+            import pcbnew
+        except ImportError:
+            self.skipTest("needs KiCad's Python")
+        router, pours = self._import_router()
+        board = self._router_board([("C1", (5, 10), "+3V3"), ("C2", (25, 10), "+3V3")], ["+3V3", "GND"])
+        P = lambda x, y: pcbnew.VECTOR2I(pcbnew.FromMM(x), pcbnew.FromMM(y))
+        gnd = board.FindNet("GND")
+        for layer in (pcbnew.F_Cu, pcbnew.B_Cu):
+            z = pcbnew.ZONE(board)
+            z.SetLayer(layer)
+            z.SetNet(gnd)
+            z.SetPadConnection(pcbnew.ZONE_CONNECTION_THERMAL)
+            for x, y in ((0, 0), (30, 0), (30, 20), (0, 20)):
+                z.AppendCorner(P(x, y), -1)
+            board.Add(z)
+        pcbnew.ZONE_FILLER(board).Fill(board.Zones())
+        r = router.Router(board)
+        self.assertTrue(r.is_power("+3V3"))
+        report = r.run(["+3V3"])
+        self.assertEqual(report["routed"], 1, report["left"])
+        made = pours.power_pours(r, ["+3V3"])
+        self.assertEqual(made["added"], {"+3V3": ["F.Cu"]})
+        rail = [z for z in board.Zones() if z.GetNetname() == "+3V3"]
+        self.assertEqual(len(rail), 1)
+        self.assertEqual(rail[0].GetPadConnection(), pcbnew.ZONE_CONNECTION_THERMAL)
+        self.assertGreater(rail[0].GetAssignedPriority(), 0)
+        stitched = pours.stitching_vias(r, 5.0)
+        self.assertGreater(stitched["added"], 4)
+        vias = [t for t in board.GetTracks() if t.Type() == pcbnew.PCB_VIA_T]
+        self.assertTrue(all(v.GetNetname() == "GND" for v in vias))
+        self.assertTrue(all(not r.rb.violations("GND", [v]) for v in vias))
+
+    def test_powerlab_router_rules(self):
+        """Milestone 1: clearance rules from .kicad_dru, last match wins, unknown terms only
+        ever make the clearance larger."""
+        module = types.ModuleType("rules")
+        exec(self.new_file("python/commands/powerlab_router/rules.py"), module.__dict__)
+        rules = module.Rules.parse('''(version 1)
+(rule "Fine-pitch pads"
+	(condition "A.Type == 'Pad' && (A.memberOfFootprint('U3') || A.memberOfFootprint('J*'))")
+	(constraint clearance (min 0.15mm)))
+(rule "Thin power tracks"
+	(condition "A.Type == 'Track' && A.Width <= 0.25mm && A.hasNetclass('Power')")
+	(constraint clearance (min 0.2mm)))
+(rule "Pads of one part"
+	(condition "A.Type == 'Pad' && B.Type == 'Pad'")
+	(constraint clearance (min 0.1mm)))
+(rule "HV inner" (layer inner)
+	(condition "A.hasNetclass('HV') || B.hasNetclass('HV')")
+	(constraint clearance (min 0.4mm)))
+(rule "Fan-out areas"
+	(condition "A.intersectsArea('FANOUT') && !(A.NetName == 'GND')")
+	(constraint clearance (min 0.5mm)))
+(rule "Ignored" (severity ignore)
+	(condition "A.Type == 'Via'")
+	(constraint clearance (min 3mm)))
+''')
+        track = {"Type": "Track", "NetClass": "Default", "NetName": "IO2", "Width": 0.2, "Footprint": None}
+        u3 = {"Type": "Pad", "NetClass": "Power", "NetName": "+3V3", "Footprint": "U3"}
+        j1 = {"Type": "Pad", "NetClass": "Default", "NetName": "CC1", "Footprint": "J1"}
+        u1 = {"Type": "Pad", "NetClass": "Power", "NetName": "+3V3", "Footprint": "U1"}
+        thin = {"Type": "Track", "NetClass": "Power", "NetName": "+3V3", "Width": 0.25, "Footprint": None}
+        hv = {"Type": "Track", "NetClass": "HV", "NetName": "VBUS", "Width": 0.5, "Footprint": None}
+        gnd = {"Type": "Track", "NetClass": "GND", "NetName": "GND", "Width": 0.3, "Footprint": None}
+        self.assertEqual(rules.unsupported, ["Fan-out areas"])
+        # the fan-out rule might match anything but GND, so it raises other clearances to 0.5
+        self.assertEqual(rules.clearance(track, u3, "F.Cu", 0.3), 0.5)
+        drop = module.Rules(r for r in rules.rules if r.name != "Fan-out areas")
+        self.assertEqual(drop.clearance(track, u3, "F.Cu", 0.3), 0.15)  # wildcard and ||
+        self.assertEqual(drop.clearance(track, j1, "F.Cu", 0.3), 0.15)
+        self.assertEqual(drop.clearance(track, u1, "F.Cu", 0.3), 0.3)  # no rule: net classes
+        self.assertEqual(drop.clearance(track, thin, "F.Cu", 0.3), 0.2)
+        self.assertEqual(drop.clearance(u3, j1, "F.Cu", 0.3), 0.1)  # pad-pad, the later rule
+        self.assertEqual(drop.clearance(track, hv, "F.Cu", 0.3), 0.3)  # layer clause
+        self.assertEqual(drop.clearance(track, hv, "In1.Cu", 0.3), 0.4)
+        self.assertEqual(rules.clearance(gnd, track, "F.Cu", 0.3), 0.5)  # B side may match
+        self.assertEqual(rules.clearance(gnd, dict(gnd), "F.Cu", 0.3), 0.3)  # !(GND): can't match
+
+    def test_powerlab_router_zone_connection(self):
+        """zone_connection rules: how a pad joins a pour, which decides whether the pour
+        flows across it (solid) or leaves it a hole reached only by spokes."""
+        module = types.ModuleType("rules")
+        exec(self.new_file("python/commands/powerlab_router/rules.py"), module.__dict__)
+        rules = module.Rules.parse('''(version 1)
+(rule "Module and USB-C GND pads connect solid"
+	(condition "A.Type == 'Pad' && (A.memberOfFootprint('U1') || A.memberOfFootprint('J1'))")
+	(constraint zone_connection solid))
+(rule "Test points off the pour"
+	(condition "A.Type == 'Pad' && A.memberOfFootprint('TP*')")
+	(constraint zone_connection none))
+''')
+        zone = {"Type": "Zone", "NetName": "GND", "NetClass": "GND", "Footprint": None}
+        pad = lambda ref: {"Type": "Pad", "NetName": "GND", "NetClass": "GND", "Footprint": ref}
+        self.assertEqual(rules.zone_connection(pad("U1"), zone, "F.Cu"), "solid")
+        self.assertEqual(rules.zone_connection(pad("TP3"), zone, "B.Cu"), "none")
+        self.assertIsNone(rules.zone_connection(pad("C4"), zone, "F.Cu"))  # the zone decides
+        self.assertEqual(rules.unsupported, [])
+        # rules without a clearance don't change clearances
+        track = {"Type": "Track", "NetClass": "Default", "NetName": "IO2", "Width": 0.2, "Footprint": None}
+        self.assertEqual(rules.clearance(track, pad("U1"), "F.Cu", 0.3), 0.3)
+
+    def test_powerlab_router_groups(self):
+        """Milestone 1: nets sorted into the lab's routing order (§3.4)."""
+        module = types.ModuleType("groups")
+        exec(self.new_file("python/commands/powerlab_router/groups.py"), module.__dict__)
+        classes = {"+3V3": "Power", "GND": "GND", "USB_DP": "USB", "USB_DN": "USB"}
+        nets = ["+3V3", "GND", "VBUS", "/Gate Drive/GHA", "SPI_SCK", "CAN_H", "CAN_L", "USB_DP", "USB_DN",
+                "/Sense/IBUS_SNS_P", "SENSOR_VP", "SENSOR_VN", "IO12", "Net-(SW1-Pad2)", "Net-(R5-Pad1)"]
+        got = module.classify(nets, lambda n: classes.get(n, "Default"), {"IO12": "sensitive analog"})
+        names = {n: module.GROUPS[g] for n, g in got.items()}
+        self.assertEqual(names["+3V3"], "power")
+        self.assertEqual(names["GND"], "power")
+        self.assertEqual(names["VBUS"], "power")
+        self.assertEqual(names["/Gate Drive/GHA"], "switching and clocks")
+        self.assertEqual(names["SPI_SCK"], "switching and clocks")
+        self.assertEqual(names["CAN_H"], "differential pairs")
+        self.assertEqual(names["USB_DN"], "differential pairs")
+        self.assertEqual(names["SENSOR_VP"], "sensitive analog")  # not a pair: VP/VN
+        self.assertEqual(names["IO12"], "sensitive analog")  # the user's choice
+        self.assertEqual(names["Net-(SW1-Pad2)"], "other")  # automatic names go by class only
+
+    def test_powerlab_router_search(self):
+        """docs/powerlab-router-plan.md milestone 0: 45 degree turns only, spaced apart,
+        arrival straight along the goal pad's lane, and a via when one layer is walled off."""
+        module = types.ModuleType("search")
+        exec(self.new_file("python/commands/powerlab_router/search.py"), module.__dict__)
+        nx = ny = 40
+
+        def grid(wall=None):
+            cells = bytearray(nx * ny)
+            for i, j in wall or ():
+                cells[j * nx + i] = 1
+            return cells
+
+        def check_turns(path, min_run):
+            run = min_run
+            for a, b in zip(path, path[1:]):
+                if a[2] != b[2] or a[3] == module.FREE or b[3] == module.FREE:
+                    run = min_run
+                    continue
+                turn = (b[3] - a[3]) % 8
+                self.assertIn(turn, (0, 1, 7))  # never more than 45 degrees in one step
+                if turn:
+                    self.assertGreaterEqual(run, min_run)  # two bends never sit together
+                    run = 1
+                else:
+                    run += 1
+
+        costs = module.Costs(turn=0.4, via=2.0, min_run=2)
+        # start heading east at (2, 2); the goal pad is entered heading south at (30, 30)
+        wall = [(10, j) for j in range(0, 30)]  # a wall forces the path around
+        path, stats = module.search([grid(wall)], grid(), nx, ny, 0.1, [(2, 2, 0, 0, 0.0)],
+                                    {(30, 30, 0): (2, 0.0)}, (0, 0, nx - 1, ny - 1), costs)
+        self.assertIsNotNone(path)
+        self.assertEqual(path[-1][:4], (30, 30, 0, 2))
+        check_turns(path, 2)
+        self.assertTrue(all(i != 10 or j >= 30 for i, j, *_ in path))
+
+        # layer 0 walled off completely: the path takes a via to layer 1 and arrives there
+        wall = [(20, j) for j in range(ny)]
+        vias_ok = bytes([1]) * (nx * ny)
+        path, _ = module.search([grid(wall), grid()], vias_ok, nx, ny, 0.1, [(2, 20, 0, 0, 0.0)],
+                                {(35, 20, 1): (0, 0.0)}, (0, 0, nx - 1, ny - 1), costs)
+        self.assertIsNotNone(path)
+        self.assertEqual({s[2] for s in path}, {0, 1})
+        check_turns(path, 2)
+
+        # no via allowed: no path, and the pocket check sees it without a search
+        path, _ = module.search([grid(wall), grid()], bytes(nx * ny), nx, ny, 0.1, [(2, 20, 0, 0, 0.0)],
+                                {(35, 20, 1): (0, 0.0)}, (0, 0, nx - 1, ny - 1), costs)
+        self.assertIsNone(path)
+        self.assertTrue(module.enclosed([grid(wall), grid()], bytes(nx * ny), nx, ny, [(2, 20, 0, 0, 0.0)],
+                                        {(35, 20, 1): (0, 0.0)}))
+        self.assertFalse(module.enclosed([grid(wall), grid()], vias_ok, nx, ny, [(2, 20, 0, 0, 0.0)],
+                                         {(35, 20, 1): (0, 0.0)}))
+
+        # dearer diagonals: horizontal and vertical runs, 45 degrees only as corners
+        def diagonal_cells(path):
+            return sum(1 for s in path if s[3] != module.FREE and s[3] % 2)
+        cheap = module.Costs(turn=0.4, via=2.0, min_run=2, diagonal=1.0, min_run_diag=1)
+        dear = module.Costs(turn=0.4, via=2.0, min_run=2, diagonal=1.6, min_run_diag=3)
+        to = {(30, 20, 0): (2, 0.0)}  # arrive heading south
+        p1, _ = module.search([grid()], grid(), nx, ny, 0.1, [(2, 2, 0, 0, 0.0)], to, (0, 0, nx - 1, ny - 1), cheap)
+        p2, _ = module.search([grid()], grid(), nx, ny, 0.1, [(2, 2, 0, 0, 0.0)], to, (0, 0, nx - 1, ny - 1), dear)
+        self.assertLess(diagonal_cells(p2), diagonal_cells(p1))
+        runs, run = [], 0
+        for a, b in zip(p2, p2[1:]):
+            if b[3] == a[3]:
+                run += 1
+            else:
+                if a[3] % 2:
+                    runs.append(run + 1)
+                run = 0
+        self.assertTrue(all(r >= 3 for r in runs), runs)  # no 45 degree corner shorter than 3 cells
+
+        # no via hop: two layers, a wall on layer 0 that a via down and straight back up
+        # would get round with a sharp turn; vias only after a straight run
+        wall = [(i, 20) for i in range(0, 25)]
+        hop, _ = module.search([grid(wall), grid()], bytes([1]) * (nx * ny), nx, ny, 0.1, [(10, 15, 0, 2, 0.0)],
+                               {(10, 25, 0): (2, 0.0)}, (0, 0, nx - 1, ny - 1), dear)
+        self.assertIsNotNone(hop)
+        changes = [k for k, (a, b) in enumerate(zip(hop, hop[1:])) if a[2] != b[2]]
+        for first, second in zip(changes, changes[1:]):
+            self.assertGreaterEqual(second - first, 3)  # at least a 3-cell run between two vias
+
+        # a via pays for the pour it cuts on every layer: with both layers poured, a via
+        # pair under a short wall is cheap as a via alone, but dearer than going round
+        # once the holes count
+        wall = [(20, j) for j in range(5, ny)]
+        pour = [bytes([3]) * (nx * ny)] * 2
+        args = ([grid(wall), grid()], bytes([1]) * (nx * ny), nx, ny, 0.1, [(2, 30, 0, 0, 0.0)],
+                {(35, 30, 0): (0, 0.0)}, (0, 0, nx - 1, ny - 1), costs)
+        under, _ = module.search(*args, penalty=pour, via_cost=({}, 2.0))
+        self.assertEqual({s[2] for s in under}, {0, 1})
+        round_, _ = module.search(*args, penalty=pour, via_cost=({}, 2.0, 30.0))
+        self.assertEqual({s[2] for s in round_}, {0})
+
+        # a penalty steers the path away from cells without blocking them
+        band = bytearray(nx * ny)
+        for i in range(12, 28):
+            for j in range(15, 25):
+                band[j * nx + i] = 50
+        path, _ = module.search([grid()], grid(), nx, ny, 0.1, [(2, 20, 0, 0, 0.0)], {(37, 20, 0): (0, 0.0)},
+                                (0, 0, nx - 1, ny - 1), costs, penalty=[bytes(band)])
+        self.assertIsNotNone(path)
+        self.assertFalse(any(15 <= j < 25 and 12 <= i < 28 for i, j, *_ in path))
+
+    def test_autoroute_can_be_undone(self):
+        """File > Revert loads the routed file, so autoroute keeps the board from before it."""
+        patch = self.patch()
+        self.assertIn('result["backupPath"] = autoroute_backup.keep(before_path, board_path)', patch)
+        self.assertIn('+            "undo_autoroute": self._handle_undo_autoroute,', patch)
+        self.assertIn('"check_freerouting", "clean_up_routing", "undo_autoroute",', patch)
+        module = types.ModuleType("autoroute_backup")
+        exec(self.new_file("python/commands/autoroute_backup.py"), module.__dict__)
+
+        folder = tempfile.mkdtemp()
+        board = os.path.join(folder, "b.kicad_pcb")
+        before = os.path.join(folder, "staged.kicad_pcb")
+        with open(before, "w") as f:
+            f.write("unrouted")
+        with open(board, "w") as f:
+            f.write("routed")
+        self.assertFalse(module.restore(board)["success"])  # no run yet
+        self.assertEqual(module.keep(before, board), os.path.join(folder, "autoroute-backup", "b.kicad_pcb"))
+        self.assertTrue(module.restore(board)["success"])
+        with open(board) as f:
+            self.assertEqual(f.read(), "unrouted")
+        self.assertFalse(os.path.exists(os.path.join(folder, "autoroute-backup")))
+        self.assertFalse(module.restore(board)["success"])  # once only
+
+    def test_powerlab_route_tool(self):
+        """powerlab_route: the PowerLab router as a background MCP tool. Its result is put on
+        the board once, only if the board is unchanged since the start, and the board from
+        before is kept for undo_autoroute."""
+        patch = self.patch()
+        for line in ('+            "powerlab_route": self._handle_powerlab_route,',
+                     '+            "powerlab_route_status": self._handle_powerlab_route_status,',
+                     '+    "powerlab_route",', '+    "powerlab_route_status",',  # TS tools
+                     '+  "powerlab_route", // PowerLab patch',  # long command timeout
+                     '"powerlab_route",\n+      "powerlab_route_status"]',  # registry category
+                     'if (command === "powerlab_route_status")',
+                     'out["backupPath"] = autoroute_backup.keep(job["input"], board_path)',
+                     'sync = push_to_kicad(kboard, source, "Undo autoroute")'):
+            self.assertIn(line, patch)
+        commands = types.ModuleType("commands")
+        backup = types.ModuleType("commands.autoroute_backup")
+        exec(self.new_file("python/commands/autoroute_backup.py"), backup.__dict__)
+        commands.autoroute_backup = backup
+        plr = types.ModuleType("powerlab_route")
+        exec(self.new_file("python/commands/powerlab_route.py"), plr.__dict__)
+        saved = {k: sys.modules.get(k) for k in ("commands", "commands.autoroute_backup")}
+        sys.modules.update({"commands": commands, "commands.autoroute_backup": backup})
+        try:
+            folder = tempfile.mkdtemp()
+            plr.ROOT = os.path.join(folder, "jobs")
+            board = os.path.join(folder, "b.kicad_pcb")
+            with open(board, "w") as f:
+                f.write("unrouted")
+            self.assertEqual(plr.status(board), {"state": "none"})
+            # what start() and the router process leave behind
+            jd = plr.job_dir(board)
+            start = plr._copy_project(board, os.path.join(jd, "input"))
+            plr._write(os.path.join(jd, "job.json"), {"input": start, "input_sha1": plr._sha1(start)})
+            result = os.path.join(jd, "result.kicad_pcb")
+            with open(result, "w") as f:
+                f.write("routed")
+            plr._write(os.path.join(jd, "status.json"), {"state": "done", "result": result, "updated": time.time()})
+
+            with open(board, "w") as f:
+                f.write("edited during the run")
+            self.assertFalse(plr.apply(board)["success"])
+            with open(board) as f:
+                self.assertEqual(f.read(), "edited during the run")  # not overwritten
+            with open(board, "w") as f:
+                f.write("unrouted")
+
+            applied = plr.apply(board)
+            self.assertTrue(applied["success"], applied)
+            self.assertFalse(applied["saved_in_kicad"])
+            with open(board) as f:
+                self.assertEqual(f.read(), "routed")
+            self.assertEqual(plr.status(board)["state"], "applied")
+            self.assertFalse(plr.apply(board)["success"])  # once only
+            self.assertTrue(backup.restore(board)["success"])  # undo_autoroute
+            with open(board) as f:
+                self.assertEqual(f.read(), "unrouted")
+
+            # a router process that stopped writing its status is gone
+            plr._write(os.path.join(jd, "status.json"), {"state": "running", "updated": time.time() - 3600})
+            self.assertEqual(plr.status(board)["state"], "failed")
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    sys.modules.pop(k, None)
+                else:
+                    sys.modules[k] = v
+
+    def test_powerlab_route_runs_the_router(self):
+        """The router process: Default-class nets are routed from scratch, nets with locked
+        copper and pour nets are left out, and the routed board and a report are written."""
+        root = self.router_package()
+        for name in ("powerlab_route", "route_cleanup", "autoroute_backup", "freerouting_live"):
+            with open(os.path.join(root, "commands", name + ".py"), "w", encoding="utf-8") as f:
+                f.write(self.new_file(f"python/commands/{name}.py") + "\n")
+        import pcbnew
+        mm, P = pcbnew.FromMM, lambda x, y: pcbnew.VECTOR2I(pcbnew.FromMM(x), pcbnew.FromMM(y))
+        board = pcbnew.BOARD()
+        for a, b in (((0, 0), (30, 0)), ((30, 0), (30, 20)), ((30, 20), (0, 20)), ((0, 20), (0, 0))):
+            edge = pcbnew.PCB_SHAPE(board, pcbnew.SHAPE_T_SEGMENT)
+            edge.SetStart(P(*a)); edge.SetEnd(P(*b)); edge.SetLayer(pcbnew.Edge_Cuts); edge.SetWidth(mm(0.1))
+            board.Add(edge)
+        nets = {}
+        for name in ("SIG", "HAND", "GND"):
+            nets[name] = pcbnew.NETINFO_ITEM(board, name)
+            board.Add(nets[name])
+        for ref, (x, y), net in (("R1", (5, 5), "SIG"), ("R2", (25, 5), "SIG"), ("R3", (5, 15), "HAND"),
+                                 ("R4", (25, 15), "HAND"), ("C1", (15, 10), "GND"), ("C2", (20, 10), "GND")):
+            fp = pcbnew.FOOTPRINT(board)
+            fp.SetReference(ref)
+            fp.SetPosition(P(x, y))
+            pad = pcbnew.PAD(fp)
+            pad.SetShape(pcbnew.PAD_SHAPE_RECTANGLE)
+            pad.SetAttribute(pcbnew.PAD_ATTRIB_SMD)
+            pad.SetLayerSet(pcbnew.PAD.SMDMask())
+            pad.SetSize(pcbnew.F_Cu, P(1, 1))
+            pad.SetPosition(P(x, y))
+            pad.SetNumber("1")
+            pad.SetNet(nets[net])
+            fp.Add(pad)
+            board.Add(fp)
+        old = pcbnew.PCB_TRACK(board)  # an old, unlocked SIG track: routed again
+        old.SetStart(P(5, 5)); old.SetEnd(P(15, 2)); old.SetWidth(mm(0.2)); old.SetLayer(pcbnew.F_Cu)
+        old.SetNet(nets["SIG"])
+        board.Add(old)
+        hand = pcbnew.PCB_TRACK(board)  # hand-routed and locked: left alone
+        hand.SetStart(P(5, 15)); hand.SetEnd(P(25, 15)); hand.SetWidth(mm(0.5)); hand.SetLayer(pcbnew.F_Cu)
+        hand.SetNet(nets["HAND"]); hand.SetLocked(True)
+        board.Add(hand)
+        folder = tempfile.mkdtemp()
+        os.makedirs(os.path.join(folder, "input"))
+        source = os.path.join(folder, "input", "b.kicad_pcb")
+        board.Save(source)
+
+        sys.path.insert(0, root)
+        try:
+            for m in [m for m in sys.modules if m == "commands" or m.startswith("commands.")]:
+                del sys.modules[m]
+            from commands import powerlab_route as plr
+            job = {"input": source, "nets": None, "pour_nets": ["GND"], "kicad_cli": None, "pitch": 0.1,
+                   "turn": 1.5, "via": 4.0, "diagonal": 1.3, "layers": [1.0, 1.2], "min_run": 2,
+                   "min_run_diag": 3, "max_nodes": 2000000}
+            plr._write(os.path.join(folder, "job.json"), job)
+            plr.run(folder)
+        finally:
+            sys.path.pop(0)
+        status = plr._read(os.path.join(folder, "status.json"))
+        self.assertEqual(status["state"], "done", status.get("error"))
+        report = plr._read(os.path.join(folder, "report.json"))
+        self.assertEqual((report["nets"], report["routed"], report["connections"]), (1, 1, 1), report)
+        self.assertEqual(sorted(report["nets_left_out"]), ["GND", "HAND"])
+        self.assertEqual(report["old_tracks_removed"], 1)
+        routed = pcbnew.LoadBoard(status["result"])
+        ends = {(round(pcbnew.ToMM(p.x), 3), round(pcbnew.ToMM(p.y), 3))
+                for t in routed.GetTracks() if t.GetNetname() == "SIG" for p in (t.GetStart(), t.GetEnd())}
+        self.assertIn((5.0, 5.0), ends)
+        self.assertIn((25.0, 5.0), ends)
+        self.assertNotIn((15.0, 2.0), ends)  # the old track is gone
+        self.assertEqual([t.IsLocked() for t in routed.GetTracks() if t.GetNetname() == "HAND"], [True])
 
     def test_clean_up_routing(self):
         """Post-route clean-up: stubs, dead ends, net-class widths and 90 degree corners."""
@@ -787,6 +1918,16 @@ class PanelDefaultsTests(unittest.TestCase):
         # Issue #27: file-only tools (get_design_rules) say "No board is loaded" with KiCad open
         self.assertIn('says "No board is loaded"', c["PANEL_NOTE"])
         self.assertIn("call open_board with the 'Board file' path", c["PANEL_NOTE"])
+        # Issue #53: the error still showed first; load the file before the first such call
+        self.assertIn("Before the first get_design_rules call in a chat, call open_board",
+                      c["PANEL_NOTE"])
+
+    def test_board_views_get_the_board_path(self):
+        # Issue #52: get_board_2d_view failed with "pcbPath required" when KiCad had the board
+        # open: the tool process has no board loaded, so the path has to be passed.
+        c = self.constants()
+        self.assertIn("get_board_2d_view, always pass pcbPath: the 'Board file' path",
+                      c["PANEL_NOTE"])
 
     def test_gerbers_can_be_zipped(self):
         # Issue #24: PCBWay wants the Gerbers zipped, but only kicad-cli was allowed in the shell.

@@ -1,6 +1,6 @@
 ﻿---
 name: powerlab-pcb-design-rules
-description: METU PowerLab PCB design rules for KiCad work — PCBWay standard-price (no-surcharge) spec, fab limits and lab default DRC values, schematic rules, and common PCB layout rules. Use whenever designing, reviewing, or editing a schematic or PCB, setting up KiCad board/DRC constraints or net classes, sizing traces/vias/copper, or checking a layout for manufacturability and layout quality.
+description: METU PowerLab PCB design rules for KiCad work — PCBWay standard-price (no-surcharge) spec, fab limits and lab default DRC values, schematic rules, common PCB layout rules, and a 233-rule layout review handbook (stackup, placement, power, grounding, high-speed, RF, crystals, switching power, ESD, thermal, vias, DFM, DFA, silkscreen, mechanical, testability, aesthetics). Use whenever designing, reviewing, or editing a schematic or PCB, setting up KiCad board/DRC constraints or net classes, sizing traces/vias/copper, or checking a layout for manufacturability and layout quality.
 ---
 
 # PCB Design Rules — METU PowerLab
@@ -17,6 +17,7 @@ Sources: https://www.pcbway.com/capabilities.html and the quote form at https://
 - When two rules conflict, the stricter one wins. A project's own `CLAUDE.md` or README can override these; it wins over this file.
 - If a design can't meet a rule, don't silently break it. Tell the user which rule, where, and why.
 - Copper weight changes the limits. Always confirm the copper weight (outer and inner) before setting constraints.
+- The lab rules in §1–§3 come first. The review handbook (§4) adds detail where they say nothing; where the two give different numbers, use the lab's.
 
 ---
 
@@ -260,7 +261,7 @@ Follow these steps in order when laying out a board. Before starting, collect ev
   - **2 layers** (default): route mostly on top. Keep the bottom as an unbroken GND pour as far as possible.
   - **4 layers** (only when justified, §2.0): L1 signals + parts / **L2 solid GND** / L3 power / L4 signals.
 - **Draw the board outline first** on Edge.Cuts, as one closed shape, with dimensions from the enclosure or mechanical drawing. A 1 mm corner radius is recommended.
-- **Place the mounting holes.** M3 = 3.2 mm hole, at least 4 mm from the board edge (hole centre), with a Ø 6–7 mm keepout with no parts or traces. Plated + GND or non-plated (NPTH) depends on the project: **ask the user** before placing them.
+- **Place the mounting holes.** M3 = 3.2 mm hole, at least 4 mm from the board edge (hole centre), with a **Ø 8 mm keepout** (an M3 washer is 7 mm across) with no parts or tracks, on every layer. Use a 3.4 mm hole when the hole positions aren't precise. Plated + GND or non-plated (NPTH) depends on the project: **ask the user** before placing them.
 - **Place the critical parts, then lock their position and rotation.** This means connectors, switches, LEDs, displays, heatsinked parts: anything whose position the enclosure or the user defines. Connectors sit at the board edge, facing outward.
 
 ### 3.2 Placement
@@ -269,10 +270,18 @@ Follow these steps in order when laying out a board. Before starting, collect ev
 - **Place similar components together**, block by block, matching the schematic sheets. For example, keep the whole power supply section together. KiCad can select all parts from one schematic sheet at once.
 - **Decoupling capacitors go right next to the VCC/GND pins of every IC. This is an extremely important rule.**
   - One cap per supply pin. The smallest value goes closest to the pin.
+  - Distance: each 100 nF cap within about 2.5 mm of its pin; bulk caps (µF) within about 25 mm of the IC. A layout recommendation in the IC's datasheet wins.
   - Put the via to the plane at the cap pad, so current flows plane → via → cap → pin. Don't connect the cap through a long trace.
   - Keep the loop (cap → pin → GND pin → cap) as small as possible. Place decoupling before any other passives around the IC.
-- **Crystals and oscillators** go right next to their MCU pins, with their load caps. Don't route traces under a crystal, and surround it with a GND pour.
-- **Gate drivers and magnetics**: place each gate driver so its gate and return tracks reach the switch without crossing the high-current copper, and plan the routes so no track has to pass under an inductor or transformer (§3.4).
+- **Crystals and oscillators** go right next to their MCU pins (within about 10 mm, on the same side), with their load caps beside the crystal, placed symmetrically. Don't route any track under a crystal or its load caps, on any layer, and surround it with a GND pour.
+- **Switching converters and half bridges: place the hot loop first.** The input ceramic capacitor is the first part placed after the switches:
+  - right at a regulator's VIN and PGND pins, or bridging the high-side drain and low-side source of each half-bridge leg (one cap per pin pair or per leg);
+  - capacitor, switches and diode on the same side and connected on the same layer, with no via inside the loop; the layer under the loop is solid GND;
+  - keep the switch-node copper only as large as its current needs, and put the feedback divider right at the IC's FB pin, away from the switch node and the inductor.
+- **Gate drivers and magnetics**: place each gate driver as close to its MOSFETs as the layout allows, so its gate and return tracks are short and reach the switch without crossing the high-current copper. Its bootstrap and supply caps sit right at the driver's pins, with no via between cap and pin. Plan the routes so no track has to pass under an inductor or transformer (§3.4).
+- **Power input protection sits at the input connector, in order:** connector → reverse-polarity protection → fuse or eFuse → TVS → bulk capacitor → the rest of the board. Nothing branches off before the chain.
+- **TVS and ESD diodes go at the connector, not at the IC.** The line runs connector → TVS pad → protected IC: through the TVS pad without a stub, and with no via between the connector and the TVS. The TVS GND pad goes straight into the GND pour with a via right at the pad (two or more for surge parts). Keep unprotected tracks away from the protected ones.
+- **Radio modules (ESP32, Bluetooth, Wi-Fi) and antennas:** put the antenna end at the board edge, overhanging it where the module datasheet shows that. No copper on any layer under the antenna or inside its keepout. Keep metal parts, screws, batteries, tall connectors and cables at least 10 mm from the antenna (Espressif asks for 15 mm inside the enclosure), and keep switching converters, inductors and crystals away from it. Modules with a u.FL or SMA antenna connector don't need the keepout.
 - **Orient polarized components (diodes, LEDs, electrolytic/tantalum caps) the same way** wherever possible, to simplify assembly and inspection. Where possible, put pin 1 of ICs in the same corner.
 - **Leave enough space for pick-and-place and hand soldering:**
 
@@ -292,7 +301,7 @@ Follow these steps in order when laying out a board. Before starting, collect ev
   - 3 global fiducials on each side that has SMD parts, in corners, not in a straight line (non-collinear), and not placed symmetrically.
   - Each is a 1 mm copper dot with a 2 mm solder-mask opening and a 3 mm keepout (no silk, no copper).
   - Add a local pair diagonally across any part with pitch ≤ 0.5 mm.
-- **Test points:** on every supply rail, GND, and key signals (clocks, resets, communication buses, sense signals). Give each a silkscreen label, and put a GND test point or probe hook near the groups.
+- **Test points:** on every supply rail, GND, and key signals (clocks, resets, communication buses, sense signals). Give each a silkscreen label, and put a GND test point or probe hook near the groups. The programming/debug connector (SWD, JTAG, UART boot) stays reachable with the board in its enclosure.
 
 ### 3.3 Copper pours and high-current copper
 
@@ -320,7 +329,7 @@ Lay the copper before routing any signal, in this order:
   - A pour has the lowest impedance and decouples best. Power pins that sit close together (a regulator with its caps, a cap row) always share one area.
   - The pour flows around the pads of other nets (e.g. a switch node between them). Check that it stays in one piece.
   - Where no pour fits, use a track at the Power class width (≥ 0.5 mm) from end to end. Neck down only right at a pin that forces it (a fine-pitch IC pin), and widen again right after it.
-  - Autorouters may ignore net-class widths; Freerouting 2.4.1 does. Check every power track after autorouting.
+  - Check every power track's width after routing.
 
 **High current**
 - **Use polygons/power planes for high-current paths if you can. Otherwise, use a wide trace.** Size width for the current using IPC-2221:
@@ -373,15 +382,17 @@ Copper comes first (§3.3): power pads, power rails and pour nets (no GND fan-ou
 
 **Pad connections**
 - **Enter a pad straight and end at its centre.**
-  - The last segment runs straight into the pad along its axis, square to the edge it crosses, and ends at the pad's centre.
+  - The last segment runs straight into the pad and ends at the pad's centre: along its axis, square to the edge it crosses, or at 45° straight to the centre where the pad isn't fine pitch. Don't add a bend just before the pad only to come in square.
   - A track that only touches the pad's edge, or clips its corner at an angle, is electrically connected but still wrong. It leaves odd copper shapes and pour slivers.
   - Use the pad as the junction. Several tracks of one net can meet at the pad centre, or a track can continue from that pad to the next pad of the net. Don't build a T-junction right beside a pad.
+  - **No duplicate tracks.** Never run a second track of a net beside or on top of one it already has: join the existing track (a T-junction away from the pads) or the pad. Two tracks of a net leave a pad in different directions.
 - **No copper islands or slivers next to pads.**
   - Where a track end, its round cap or a short jog sits beside a pad, the pour fills the gap between the track and the pad's clearance ring. That gap becomes a sliver or an island.
   - Route the track into the pad centre so it meets the pad cleanly.
   - Then refill and look at every pad connection (§3.3, pour quality).
 - **Shortest path, fewest corners.**
   - No detours and no staircases. Approach a pad from the side facing the route, then finish straight into its centre.
+  - A track bends only where something forces it: no wiggles round pads, no loops or U-turns round a via or pad.
   - Every corner is 45° or an arc. Never 90° or sharper, also where two track widths meet.
   - No stubs: remove unused neck-downs and dangling ends.
 - **Keep escape room at fine-pitch parts.**
@@ -396,6 +407,8 @@ Copper comes first (§3.3): power pads, power rails and pour nets (no GND fan-ou
   - Plan it at placement (§3.2): put the gate driver where its tracks reach the switches without crossing the power copper.
   - Where a switching track must leave the power layer, run its return beside it and use a signal + return via pair side by side. This rule wins over avoiding vias on fast signals.
   - If the two can't be separated by layer, tell the user where, and keep the switching track short, never running alongside the high-current copper.
+- **Gate return is Kelvin.** Use the MOSFET's Kelvin-source pin if it has one; otherwise take the return from the foot of the source pin with its own track, never through the power copper. Run gate and return side by side, or stacked on the next layer.
+- **Current-sense shunts use Kelvin connections.** The two sense tracks leave from the inner edge of the shunt pads, carry no load current, run together as a pair to the amplifier, and keep away from the switch node and inductors.
 
 **High-frequency and clock traces**
 - **Keep high-frequency traces (clocks, SPI clock, switching gate signals, etc.) short, and minimise their current loop (trace + return path).**
@@ -417,13 +430,13 @@ Copper comes first (§3.3): power pads, power rails and pour nets (no GND fan-ou
 - **Never use blind or buried vias.** Through-hole vias only (they're also outside the standard-price spec).
 - **Use tented vias** (solder mask covers the via). This is also the PCBWay standard option.
   - The one exception is thermal vias inside an exposed pad. There the pad's mask opening leaves them open on the pad side; tent them on the other side.
-- Don't put vias in SMD pads (except exposed/thermal pads). Keep a solder-mask web between a via and a pad so solder can't wick away.
+- Don't put vias in SMD pads (except exposed/thermal pads). Keep at least 0.25 mm from the pad edge to the via's ring, with a solder-mask web between them, so solder can't wick away.
 - No vias on high-speed signals if you can avoid them (§3.4). Where one is needed, a GND via goes right next to it.
 - **Use vias for high-current areas, and copy that copper to the bottom/top layer for heat problems.** The copper on both layers shares current and spreads heat. Via current budget:
-  - 0.3 mm via ≈ 1 A, 0.4 mm via ≈ 1.5 A (conservative)
+  - Plan **0.5 A per 0.3 mm via** and **0.7 A per 0.4 mm via**: vias needed ≥ current ÷ current per via. In hot or critical paths, plan 0.2–0.3 A per via. Published values range from 0.2 A to about 1 A per via; these sit on the safe side.
   - Use at least 2 vias on any power layer change. Place them across the current flow, not in a line along it.
-- **Thermal vias** under hot parts and exposed pads: 0.3 mm drill at 1.0–1.2 mm pitch. Use a windowpane paste pattern on large exposed pads.
-- **Stitching vias:** tie GND pours on all layers together with vias about every 5 mm, and densely along board edges and around noisy sections.
+- **Thermal vias** under hot parts and exposed pads: 0.3 mm drill at 1.0–1.2 mm pitch, connected to the planes solid (no thermal spokes). Use a windowpane paste pattern on large exposed pads.
+- **Stitching vias:** tie GND pours on all layers together with vias about every 5 mm, and densely along board edges and around noisy sections. Around a radio module and along an RF feed line, every 3 mm or closer.
 
 ### 3.6 Silkscreen and board information
 
@@ -442,6 +455,8 @@ Copper comes first (§3.3): power pads, power rails and pour nets (no GND fan-ou
 - [ ] All zones refilled; **DRC 0 errors**, including schematic parity (no missing or extra parts or nets)
 - [ ] Every `LAYOUT:` note from the schematic is satisfied
 - [ ] Decoupling caps right at their IC pins; crystals right at the MCU
+- [ ] Hot loops small with the input caps at the switches; gate drivers and their bootstrap caps close; gate returns and shunt sense tracks Kelvin (§3.2, §3.4)
+- [ ] Input protection at the connector in order; TVS diodes at their connectors; antenna at the edge with its keepout clear on every layer (§3.2)
 - [ ] No high-speed trace crosses a plane gap; clocks short, with return vias at layer changes
 - [ ] High-current paths sized per §3.3; via counts per §3.5
 - [ ] Every power pad sits in its copper area, laid before the signal routing (§3.3)
@@ -456,3 +471,40 @@ Copper comes first (§3.3): power pads, power rails and pour nets (no GND fan-ou
 - [ ] Outputs for PCBWay:
   - fabrication: Gerber RS-274X + Excellon drill files, zipped
   - assembly: BOM (`.xlsx`/`.csv` with reference, quantity, MPN, manufacturer, package, SMD/THT) and a position (centroid) file with SMD parts, X/Y, rotation and side, plus an assembly drawing if anything is unusual
+
+---
+
+## 4. Layout review handbook
+
+The `handbook/` folder next to this file holds 233 layout rules, collected from manufacturer application notes, fab capability pages and expert reviews of real boards posted online (EEVblog, KiCad forum and others), with sources. Each rule has an ID such as `SMPS-014`, a severity (Critical > High > Medium > Low > Cosmetic), how it looks on the board, why it matters, the fix, exceptions and sources.
+
+Use it when you place, route or review a board:
+- **Quick scan:** `handbook/91-checklist.md` lists every rule on one line, sorted by severity, with its file.
+- **Full rule:** open the topic file and read the rule's *How it looks in the image* and *Exceptions*. If an exception applies, it isn't a finding.
+
+| File | Prefix | Topic |
+|---|---|---|
+| `01-stackup.md` | STK | 2/4-layer stackup, reference planes |
+| `02-placement.md` | PLC | Functional blocks, connectors, heat sources |
+| `03-power-distribution.md` | PWR | Track width for current, regulators, decoupling |
+| `04-grounding.md` | GND | GND plane, splits, stitching vias, return paths |
+| `05-high-speed-signals.md` | HS | USB, differential pairs, impedance, length matching |
+| `06-rf-antenna.md` | RF | Antenna keepout, module placement, RF feed |
+| `07-crystal-oscillator.md` | XTL | Crystals and oscillators |
+| `08-switching-power.md` | SMPS | Hot loops, inductors, feedback, gate drive |
+| `09-esd-protection.md` | ESD | TVS placement and protection path |
+| `10-thermal.md` | THM | Thermal vias, copper area, exposed pads |
+| `11-vias.md` | VIA | Via-in-pad, tenting, size, current |
+| `12-dfm.md` | DFM | Fab limits, edge clearance, acid traps, slivers |
+| `13-dfa.md` | DFA | Footprints, spacing, tombstoning, polarity, fiducials |
+| `14-silkscreen.md` | SLK | Labels, revision, readability |
+| `15-mechanical.md` | MEC | Mounting holes, connector access, panels |
+| `16-testability.md` | TST | Test points, programming and debug access |
+| `17-aesthetics.md` | EST | Order, alignment, symmetry, track flow |
+| `90-visual-audit-guide.md` | GOR | Reading board images: colours, scale, analysis order, report format |
+| `92-glossary.md` | | Terms |
+| `SOURCES.md`, `DECISIONS.md` | | Every source; choices made while writing the handbook |
+
+The handbook was written for reviewers who only see a screenshot, so many rules say "ask the user" or "estimate from the image". Here you have the board itself: measure distances, widths and via counts with the kicad tools instead of estimating, and ask only for what the board can't tell you (currents, enclosure, fab, stackup choices).
+
+Cite rules by ID in reviews, e.g. "C5 is 4 mm from U2's VDD pin (PWR-006)". Report each problem once, under its primary rule: when a rule's Exceptions say "Primary rule for this finding: X", use X. The severity is the rule's; express doubt with the confidence (Certain / Likely / Needs verification), not by lowering the severity.

@@ -26,14 +26,12 @@ The installer downloads these from their official sources into `%LOCALAPPDATA%\P
 | [colorlog](https://pypi.org/project/colorlog/), [pydantic](https://pypi.org/project/pydantic/) | | MIT |
 | [requests](https://pypi.org/project/requests/) | | Apache-2.0 |
 | [python-dotenv](https://pypi.org/project/python-dotenv/) | | BSD-3-Clause |
-| [Freerouting 2.4.1](https://github.com/freerouting/freerouting) | autorouting | GPL-3.0. Official release jar, run as a separate program; source on GitHub. |
-| [Eclipse Temurin 25.0.4.1 JRE](https://adoptium.net/) | runs Freerouting | GPL-2.0 WITH Classpath-exception-2.0. Its notices are in the installed `legal/` folder. |
 
 ## Installed by you
 
 | Software | License |
 |---|---|
-| [KiCad 10](https://www.kicad.org/) (the panel runs inside it and uses its Python, `pcbnew` and the bundled wxPython) | GPL-3.0; wxPython: wxWindows Library Licence |
+| [KiCad 10](https://www.kicad.org/) (the panel runs inside it and uses its Python, `pcbnew` and the bundled wxPython and [NumPy](https://numpy.org/); the PowerLab router uses NumPy) | GPL-3.0; wxPython: wxWindows Library Licence; NumPy: BSD-3-Clause |
 | [Claude Code](https://docs.claude.com/claude-code) | Anthropic proprietary; used under your own Claude account and Anthropic's terms |
 | [Node.js](https://nodejs.org/), [Git](https://git-scm.com/), [GitHub CLI](https://cli.github.com/) (optional) | MIT; GPL-2.0 (Git); MIT |
 
