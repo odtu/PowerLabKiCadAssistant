@@ -1,6 +1,6 @@
 # PowerLab router: design plan
 
-Status: milestones 0–6 done (results in §12–18). The router isn't a tool yet: its code is in the MCP patch (`python/commands/powerlab_router/`), and `tools/router_bench.py` runs it. Phase 1 (pad-centre entry and shortcuts in `clean_up_routing`) is on hold.
+Status: milestones 0–8 done (results in §12–20). Since §21 the router is a kicad MCP tool, `powerlab_route` (with `powerlab_route_status`), offered by the `powerlab-autoroute` skill; `tools/router_bench.py` still runs it from a terminal. Phase 1 (pad-centre entry and shortcuts in `clean_up_routing`) is on hold.
 
 ## 1. Why
 
@@ -618,3 +618,29 @@ Every connection routes for the first time. KiCad's DRC on the routed TestPCB fi
 - more corners overall (235 against 174).
 
 A corner cost of 3.0 brings the corners near the hand count (195) but loses a connection. The corners need planning, not a higher price.
+
+## 21. The router as a tool (2026-10-16)
+
+**What was built:**
+- **`powerlab_route`** (kicad MCP tool): routes the saved board the way `tools/router_bench.py` does: the Default-class nets (or `nets`), their unlocked tracks and vias taken out first, `order="bus"` with rip-up, finish, step-in and drawn shapes, the M8 costs (turn 1.5, via 4.0, run 2, layers 1.0/1.2, diagonal 1.3, diagonal run 3, 2 000 000 nodes), then zones refilled. Optional `gridPitch`, `turnCost`, `viaCost`, `diagonalCost`, `layerCosts`, `pourNets` (default GND). Pour nets and nets with locked copper are left out and listed.
+- **Background run:** a run takes 10–15 minutes, longer than a tool call should block the MCP's single worker. `powerlab_route` starts the router in a KiCad Python process of its own (`commands/powerlab_route.py`) on a copy of the saved board and returns at once. Status, report and result live in `%TEMP%\powerlab-route\<board hash>\`. The router process also keeps zone fills (which can crash a process) away from the worker.
+- **`powerlab_route_status`:** waits up to `wait` seconds (default 300; the Node timeout is `wait` + 120 s) and reports progress (connections routed so far). When the run is done it applies the result once:
+  - the saved board from before is kept in `autoroute-backup\`, so `undo_autoroute` undoes the run;
+  - with KiCad open on the board: KiCad's copper is brought in line with the result (`LiveCopper.finish`, as after a live Freerouting run), zones are refilled and the board is saved in KiCad, so no File → Revert and no stale KiCad board to save over the result;
+  - without KiCad: the result is copied over the board file.
+- **Guards:** it won't start while KiCad's board has copper or footprint changes that aren't saved, and won't apply a result if the saved file or KiCad's board changed during the run.
+- **`undo_autoroute` in live mode:** with KiCad open, it now puts the old copper back into KiCad's board and saves there, instead of asking for File → Revert.
+- The `powerlab-autoroute` skill offers the PowerLab router for signal nets; Freerouting stays for 4-layer boards and what the router leaves.
+
+**End to end through the MCP server (stdio, as Claude Code calls it), TestPCB copies:**
+
+| Run | Routed | New DRC errors | Vias | Track | Time | KiCad |
+|---|---|---|---|---|---|---|
+| File only (KiCad closed) | 52 / 52 | 0 | 30 | 607 mm | 814 s | — |
+| Live, from the hand-routed board | 52 / 52 | 0 | 30 | 607 mm | 693 s | 363 items added, 269 removed in 0.85 s, saved there; KiCad's board equals the file |
+
+- `undo_autoroute` restored the file byte for byte without KiCad, and with KiCad open put the hand-routed copper back in KiCad (269 added, 363 removed) and saved it.
+- An unsaved track in KiCad made `powerlab_route` refuse to start.
+- The 300 s status calls returned through the Node bridge; three calls cover a run.
+
+**Not done:** no live preview while routing (the plan's §3 "Live"); the copper appears at the end. The status phase stays "routing" through the pour repair and finish passes (2–4 minutes after the last connection).

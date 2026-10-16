@@ -1,22 +1,36 @@
 ---
 name: powerlab-autoroute
-description: Autoroute a KiCad PCB with Freerouting 2.4.1 (Java 25) through the kicad MCP tools, the METU Power Lab way. Use when the user asks to autoroute, auto-route, route the board/remaining nets/signals automatically, or run Freerouting. Covers setting the lab design rules and net classes first, protecting hand-routed power and gate-drive nets, best-of-N runs, DRC and rule checks afterwards, and reporting what is left.
+description: Autoroute a KiCad PCB through the kicad MCP tools, the METU Power Lab way, with the PowerLab router (powerlab_route, applies the lab rules) or Freerouting 2.4.1 (Java 25). Use when the user asks to autoroute, auto-route, route the board/remaining nets/signals automatically, or run the PowerLab router or Freerouting. Covers choosing the router, setting the lab design rules and net classes first, protecting hand-routed power and gate-drive nets, best-of-N runs, DRC and rule checks afterwards, and reporting what is left.
 ---
 
-# Autorouting with Freerouting
+# Autorouting: the PowerLab router or Freerouting
 
-Freerouting is good at the many small signal connections and bad at power electronics judgement. Use it to finish a board, not to design the critical paths.
+Autorouters are good at the many small signal connections and bad at power electronics judgement. Use them to finish a board, not to design the critical paths: power and gate-drive nets are still routed by hand first (step 3), whichever router finishes the rest.
 
-**The lab design rules come first.** Before anything else, load the `powerlab-pcb-design-rules` skill. Every width, clearance, via and routing-order decision below comes from it: §2.6 for constraints and net classes, §3.3 for pours and high-current copper, §3.4 for routing, §3.5 for vias. Freerouting only routes as well as the rules it is given. With the default net class it routes everything as thin signal tracks, and the result is useless for a power board.
+**The lab design rules come first.** Before anything else, load the `powerlab-pcb-design-rules` skill. Every width, clearance, via and routing-order decision below comes from it: §2.6 for constraints and net classes, §3.3 for pours and high-current copper, §3.4 for routing, §3.5 for vias. A router only routes as well as the rules it is given. With the default net class it routes everything as thin signal tracks, and the result is useless for a power board.
 
-## 0. Is Freerouting the right tool for this board?
+## Which router
+Two routers are available. Offer the PowerLab router for the signal nets, and say that Freerouting stays available.
+- **PowerLab router (`powerlab_route`):** the lab's own router. It runs on the user's computer in KiCad's Python and applies the lab rules while it routes, so it needs less repair afterwards:
+  - GND pours kept whole (§3.3): tracks that would cut a pour in pieces are routed elsewhere;
+  - no tracks under inductors and transformers (§3.4);
+  - escape room left at fine-pitch pins, and escape vias at the pins;
+  - keepouts: rule areas, footprint keepouts and the `.kicad_dru` clearance rules;
+  - buses between two pin rows drawn as parallel runs; tracks with few corners and few vias, entering pads straight at their centres, at the net-class width.
+
+  It is slower: about 10–15 minutes for a 2-layer board with ~50 connections, so it runs in the background (step 4). It has been tested on 2-layer boards. On a 4-layer board, or for what it leaves unrouted, use Freerouting.
+- **Freerouting (`autoroute`):** fast (seconds to minutes), and the better fit for dense 4-layer boards with many outer-layer power pours (step 0). It doesn't know the lab rules, so step 5 has more to check and fix.
+
+If the user asks for one by name, use that one.
+
+## 0. Is autorouting the right tool for this board?
 Check with `get_board_info` / `query_zones` / `get_ratsnest` before promising anything.
 - **Good fit:** a board where most signal nets are still unrouted and copper pours are few, or are only GND on inner plane layers. A 2-layer board with 62 footprints and 29 nets routed completely in about 5 s.
 - **Harder, so say so before running:** a dense board with many copper pours on the outer layers (e.g. VBUS, phase and switch-node pours on F.Cu). By default Freerouting reads each zone's whole outline as a solid plane of that net, so it starts out with hundreds of false clearance violations: on a 4-layer ESC board with 11 pour nets on F.Cu, rerouting just 4 small nets did not finish in 5 minutes. Pass those power pours in `keepoutPourNets` (step 3). That makes them keepouts the router goes around, and the same board's 150 open connections then routed in under 7 minutes.
-- **Poor fit:** a board that is already mostly routed by hand, with lots of locked copper among the remaining connections. Freerouting 2.4.1 routes over locked tracks and vias as if they weren't there (step 3, "Check for shorts"). For a board like that, recommend KiCad's interactive router (`X`, with walkaround/shove) for the remaining nets instead, and only run Freerouting if the user still wants to try.
+- **Poor fit:** a board that is already mostly routed by hand, with lots of locked copper among the remaining connections. Freerouting 2.4.1 routes over locked tracks and vias as if they weren't there (step 3, "Check for shorts"). For a board like that, recommend the PowerLab router (it treats locked copper as an obstacle) or KiCad's interactive router (`X`, with walkaround/shove) for the remaining nets, and only run Freerouting if the user still wants to try.
 
 ## 1. Check the setup first
-Call the `check_freerouting` tool.
+The PowerLab router needs nothing beyond the panel's install. For Freerouting, call the `check_freerouting` tool.
 - It must find **Java 25** and the Freerouting jar. Freerouting 2.4.1 is built for Java 25 and fails with `UnsupportedClassVersionError` on older Java.
 - In the PowerLab Assistant panel both are preinstalled and found automatically. If the check fails, stop and tell the user to run `install.ps1 -Update` from the PowerLab KiCad Assistant folder, then restart KiCad. Don't try to install Java or Freerouting yourself.
 
@@ -86,6 +100,22 @@ Before routing, confirm with the user, or check with the kicad tools:
 - **3D models:** check that the footprints still have their 3D models (`get_component_properties` or the 3D viewer). If they are missing, tell the user to run **Tools → Update Footprints from Library** with **Reset 3D models** ticked. It restores them without moving the parts.
 
 ## 4. Route
+### With the PowerLab router
+- **Saved board:** `powerlab_route` routes the saved `.kicad_pcb`. With the board open in KiCad, it refuses to start while KiCad has copper or footprint changes that aren't saved: ask the user to press Ctrl+S, then call it again.
+- **Baseline DRC:** run `run_drc` once before routing, so new errors can be told apart from old ones. The report also lists the new DRC errors it found itself.
+- **Which nets:** by default every net of the Default net class. Nets with locked copper (hand-routed) and pour nets are left out; the report lists them under `nets_left_out`. Pass `nets` to route fewer.
+  - The chosen nets are routed from scratch: their unlocked tracks and vias are removed first. Lock anything on those nets that must stay.
+  - `pourNets` defaults to `["GND"]`: never routed, the pours connect them. Pass the board's GND net name if it differs.
+  - Leave the costs at their defaults unless the user asks: `turnCost` (higher: fewer corners), `viaCost` (higher: fewer vias), `diagonalCost`, `layerCosts` (top first; the default makes the bottom 20% dearer) and `gridPitch` (0.1 mm).
+- **Run it:** call `powerlab_route`. It returns at once, and the router works in the background. Tell the user it takes about 10–15 minutes on a 2-layer board with ~50 connections, and that they shouldn't edit or save the board until it's done: a board changed during the run isn't overwritten, so the run would be wasted.
+- **Wait:** call `powerlab_route_status` (it waits up to `wait` seconds, default 300) until `state` is no longer `running`. Between calls, tell the user the progress (`routed` of `connections`). `cancel: true` stops the run and leaves the board unchanged.
+- **The result:** when the run is done, `powerlab_route_status` puts it on the board.
+  - With KiCad open on the board, the new copper goes into KiCad's board, the zones are refilled and the board is saved there, so no File → Revert. If it says KiCad couldn't be updated, ask for File → Revert.
+  - Without KiCad, the routed board is written to the file.
+  - Its report: connections routed and `left` (with the reason), vias, track length, `new_drc_errors` and time.
+- **Connections left:** route them by hand, or with Freerouting (`autoroute`, below), which keeps the routed copper and routes what is open.
+
+### With Freerouting
 - **Load the saved board:** `autoroute` reads the `.kicad_pcb` file, not KiCad's live copy. After live edits (placement, new pours), save first (`save_board`, or ask the user to press Ctrl+S), then call `open_board` with the board path so the router sees them. Also call `open_board` if `autoroute` says "No board is loaded". On large boards it can take over 30 s and time out once; retry once.
 - **Baseline DRC:** run `run_drc` once before routing, so new errors can be told apart from old ones.
 - **Estimate the run time:** check the ratsnest (`get_ratsnest`) and tell the user how many connections are open. Freerouting 2.4.1 needs seconds for a small 2-layer board, about 2 minutes for a 2-layer ESP32 board with ~85 nets, and several minutes per attempt for a dense 4-layer one.
@@ -95,15 +125,19 @@ Before routing, confirm with the user, or check with the kicad tools:
   - Existing and locked copper isn't touched. Zones aren't refilled; that's step 5.
   - Each update is one undo step in KiCad. To undo the whole run, use `undo_autoroute` (below), not Edit → Undo.
   - Not with `attempts` > 1 (refused), not in Docker, and not without KiCad open: use a normal run then.
-- **Undo:** File → Revert doesn't undo a run, because the routed board is already in the saved file. Each successful run keeps the saved board from before it in `autoroute-backup\` next to the board, and `undo_autoroute` puts it back.
-  - It works once, and only for the last run: the next run replaces the copy.
-  - Everything done after the run is lost too (clean-up, zones, vias, edits).
-  - With KiCad open, ask the user to use **File → Revert** right after it, before any edit or save in KiCad. A save there would write the routed board back.
+- **Undo:** see "Undo" below.
 - **Pour nets:** always pass `pourNets` for GND and `keepoutPourNets` for the outer-layer power pours (step 3).
 - **Priority nets:** put signal nets that must be completed (e.g. MCU control, communication) in `targetNets`.
 - **If it times out:** say so plainly. Nothing is imported and the board is unchanged. Offer a longer timeout, routing more nets by hand first, or adding the missing pours.
 
+### Undo (both routers)
+File → Revert doesn't undo a run, because the routed board is already in the saved file. Each successful `autoroute` or `powerlab_route` run keeps the saved board from before it in `autoroute-backup\` next to the board, and `undo_autoroute` puts it back.
+- It works once, and only for the last run: the next run replaces the copy.
+- Everything done to the copper after the run is lost too (clean-up, vias, edits).
+- With KiCad open on the board, it puts the old copper back into KiCad's board, refills the zones and saves there, so no File → Revert. If it says to use **File → Revert** instead, ask the user to do that right away, before any edit or save in KiCad: a save there would write the routed board back.
+
 ## 5. Check the result against the rules (§3.3–3.7)
+After the PowerLab router, skip the clean-up and the reload: it routes at the net-class widths with 45° corners, and with KiCad open the result is already in KiCad with the zones refilled. Start at "Look at it". The other checks still apply, with fewer findings expected.
 - **Clean up first:** run `clean_up_routing` right after `autoroute`. Like `autoroute` it works on the saved file. It:
   - removes the router's zero-length and tiny stubs, and tracks with a free end;
   - widens tracks to their net-class width (Freerouting writes every net at the default width, step 2), halfway where the full width breaks DRC, not at all where that breaks it too;
@@ -140,7 +174,7 @@ Before routing, confirm with the user, or check with the kicad tools:
 - **Optional:** render the top and bottom with `kicad-cli pcb render` so the user can look at the result.
 
 ## 6. Tell the user
-- **How it went:** say how many nets were routed and how many are left, plus the DRC result compared with the baseline and the rule checks from step 5.
+- **How it went:** say which router ran, how many nets were routed and how many are left, plus the DRC result compared with the baseline and the rule checks from step 5.
 - **Reload:** with KiCad open, the user already reverted after `clean_up_routing` (step 5), and the later steps saved through KiCad, so KiCad shows the routed board. Without KiCad open, the routing is in the board file; they see it when they open the board.
 - **Finish:** suggest teardrops (Edit → Edit Teardrops, §3.4) once routing is final.
 - **Review:** remind them that autorouted power-electronics boards need a human review against the §3.7 checklist before ordering. That includes loop areas, return paths, track widths on high-current nets, and via counts on power paths. Then offer the design review (`powerlab-design-review`) with a `<choices>` button: it checks the routed board against the lab rules and the review handbook, fixes what it can, and writes a review with a PDF.

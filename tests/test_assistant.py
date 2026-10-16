@@ -1472,7 +1472,7 @@ class McpPatchTests(unittest.TestCase):
         patch = self.patch()
         self.assertIn('result["backupPath"] = autoroute_backup.keep(before_path, board_path)', patch)
         self.assertIn('+            "undo_autoroute": self._handle_undo_autoroute,', patch)
-        self.assertIn('"check_freerouting", "clean_up_routing", "undo_autoroute"]', patch)
+        self.assertIn('"check_freerouting", "clean_up_routing", "undo_autoroute",', patch)
         module = types.ModuleType("autoroute_backup")
         exec(self.new_file("python/commands/autoroute_backup.py"), module.__dict__)
 
@@ -1490,6 +1490,145 @@ class McpPatchTests(unittest.TestCase):
             self.assertEqual(f.read(), "unrouted")
         self.assertFalse(os.path.exists(os.path.join(folder, "autoroute-backup")))
         self.assertFalse(module.restore(board)["success"])  # once only
+
+    def test_powerlab_route_tool(self):
+        """powerlab_route: the PowerLab router as a background MCP tool. Its result is put on
+        the board once, only if the board is unchanged since the start, and the board from
+        before is kept for undo_autoroute."""
+        patch = self.patch()
+        for line in ('+            "powerlab_route": self._handle_powerlab_route,',
+                     '+            "powerlab_route_status": self._handle_powerlab_route_status,',
+                     '+    "powerlab_route",', '+    "powerlab_route_status",',  # TS tools
+                     '+  "powerlab_route", // PowerLab patch',  # long command timeout
+                     '"powerlab_route",\n+      "powerlab_route_status"]',  # registry category
+                     'if (command === "powerlab_route_status")',
+                     'out["backupPath"] = autoroute_backup.keep(job["input"], board_path)',
+                     'sync = push_to_kicad(kboard, source, "Undo autoroute")'):
+            self.assertIn(line, patch)
+        commands = types.ModuleType("commands")
+        backup = types.ModuleType("commands.autoroute_backup")
+        exec(self.new_file("python/commands/autoroute_backup.py"), backup.__dict__)
+        commands.autoroute_backup = backup
+        plr = types.ModuleType("powerlab_route")
+        exec(self.new_file("python/commands/powerlab_route.py"), plr.__dict__)
+        saved = {k: sys.modules.get(k) for k in ("commands", "commands.autoroute_backup")}
+        sys.modules.update({"commands": commands, "commands.autoroute_backup": backup})
+        try:
+            folder = tempfile.mkdtemp()
+            plr.ROOT = os.path.join(folder, "jobs")
+            board = os.path.join(folder, "b.kicad_pcb")
+            with open(board, "w") as f:
+                f.write("unrouted")
+            self.assertEqual(plr.status(board), {"state": "none"})
+            # what start() and the router process leave behind
+            jd = plr.job_dir(board)
+            start = plr._copy_project(board, os.path.join(jd, "input"))
+            plr._write(os.path.join(jd, "job.json"), {"input": start, "input_sha1": plr._sha1(start)})
+            result = os.path.join(jd, "result.kicad_pcb")
+            with open(result, "w") as f:
+                f.write("routed")
+            plr._write(os.path.join(jd, "status.json"), {"state": "done", "result": result, "updated": time.time()})
+
+            with open(board, "w") as f:
+                f.write("edited during the run")
+            self.assertFalse(plr.apply(board)["success"])
+            with open(board) as f:
+                self.assertEqual(f.read(), "edited during the run")  # not overwritten
+            with open(board, "w") as f:
+                f.write("unrouted")
+
+            applied = plr.apply(board)
+            self.assertTrue(applied["success"], applied)
+            self.assertFalse(applied["saved_in_kicad"])
+            with open(board) as f:
+                self.assertEqual(f.read(), "routed")
+            self.assertEqual(plr.status(board)["state"], "applied")
+            self.assertFalse(plr.apply(board)["success"])  # once only
+            self.assertTrue(backup.restore(board)["success"])  # undo_autoroute
+            with open(board) as f:
+                self.assertEqual(f.read(), "unrouted")
+
+            # a router process that stopped writing its status is gone
+            plr._write(os.path.join(jd, "status.json"), {"state": "running", "updated": time.time() - 3600})
+            self.assertEqual(plr.status(board)["state"], "failed")
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    sys.modules.pop(k, None)
+                else:
+                    sys.modules[k] = v
+
+    def test_powerlab_route_runs_the_router(self):
+        """The router process: Default-class nets are routed from scratch, nets with locked
+        copper and pour nets are left out, and the routed board and a report are written."""
+        root = self.router_package()
+        for name in ("powerlab_route", "route_cleanup", "autoroute_backup", "freerouting_live"):
+            with open(os.path.join(root, "commands", name + ".py"), "w", encoding="utf-8") as f:
+                f.write(self.new_file(f"python/commands/{name}.py") + "\n")
+        import pcbnew
+        mm, P = pcbnew.FromMM, lambda x, y: pcbnew.VECTOR2I(pcbnew.FromMM(x), pcbnew.FromMM(y))
+        board = pcbnew.BOARD()
+        for a, b in (((0, 0), (30, 0)), ((30, 0), (30, 20)), ((30, 20), (0, 20)), ((0, 20), (0, 0))):
+            edge = pcbnew.PCB_SHAPE(board, pcbnew.SHAPE_T_SEGMENT)
+            edge.SetStart(P(*a)); edge.SetEnd(P(*b)); edge.SetLayer(pcbnew.Edge_Cuts); edge.SetWidth(mm(0.1))
+            board.Add(edge)
+        nets = {}
+        for name in ("SIG", "HAND", "GND"):
+            nets[name] = pcbnew.NETINFO_ITEM(board, name)
+            board.Add(nets[name])
+        for ref, (x, y), net in (("R1", (5, 5), "SIG"), ("R2", (25, 5), "SIG"), ("R3", (5, 15), "HAND"),
+                                 ("R4", (25, 15), "HAND"), ("C1", (15, 10), "GND"), ("C2", (20, 10), "GND")):
+            fp = pcbnew.FOOTPRINT(board)
+            fp.SetReference(ref)
+            fp.SetPosition(P(x, y))
+            pad = pcbnew.PAD(fp)
+            pad.SetShape(pcbnew.PAD_SHAPE_RECTANGLE)
+            pad.SetAttribute(pcbnew.PAD_ATTRIB_SMD)
+            pad.SetLayerSet(pcbnew.PAD.SMDMask())
+            pad.SetSize(pcbnew.F_Cu, P(1, 1))
+            pad.SetPosition(P(x, y))
+            pad.SetNumber("1")
+            pad.SetNet(nets[net])
+            fp.Add(pad)
+            board.Add(fp)
+        old = pcbnew.PCB_TRACK(board)  # an old, unlocked SIG track: routed again
+        old.SetStart(P(5, 5)); old.SetEnd(P(15, 2)); old.SetWidth(mm(0.2)); old.SetLayer(pcbnew.F_Cu)
+        old.SetNet(nets["SIG"])
+        board.Add(old)
+        hand = pcbnew.PCB_TRACK(board)  # hand-routed and locked: left alone
+        hand.SetStart(P(5, 15)); hand.SetEnd(P(25, 15)); hand.SetWidth(mm(0.5)); hand.SetLayer(pcbnew.F_Cu)
+        hand.SetNet(nets["HAND"]); hand.SetLocked(True)
+        board.Add(hand)
+        folder = tempfile.mkdtemp()
+        os.makedirs(os.path.join(folder, "input"))
+        source = os.path.join(folder, "input", "b.kicad_pcb")
+        board.Save(source)
+
+        sys.path.insert(0, root)
+        try:
+            for m in [m for m in sys.modules if m == "commands" or m.startswith("commands.")]:
+                del sys.modules[m]
+            from commands import powerlab_route as plr
+            job = {"input": source, "nets": None, "pour_nets": ["GND"], "kicad_cli": None, "pitch": 0.1,
+                   "turn": 1.5, "via": 4.0, "diagonal": 1.3, "layers": [1.0, 1.2], "min_run": 2,
+                   "min_run_diag": 3, "max_nodes": 2000000}
+            plr._write(os.path.join(folder, "job.json"), job)
+            plr.run(folder)
+        finally:
+            sys.path.pop(0)
+        status = plr._read(os.path.join(folder, "status.json"))
+        self.assertEqual(status["state"], "done", status.get("error"))
+        report = plr._read(os.path.join(folder, "report.json"))
+        self.assertEqual((report["nets"], report["routed"], report["connections"]), (1, 1, 1), report)
+        self.assertEqual(sorted(report["nets_left_out"]), ["GND", "HAND"])
+        self.assertEqual(report["old_tracks_removed"], 1)
+        routed = pcbnew.LoadBoard(status["result"])
+        ends = {(round(pcbnew.ToMM(p.x), 3), round(pcbnew.ToMM(p.y), 3))
+                for t in routed.GetTracks() if t.GetNetname() == "SIG" for p in (t.GetStart(), t.GetEnd())}
+        self.assertIn((5.0, 5.0), ends)
+        self.assertIn((25.0, 5.0), ends)
+        self.assertNotIn((15.0, 2.0), ends)  # the old track is gone
+        self.assertEqual([t.IsLocked() for t in routed.GetTracks() if t.GetNetname() == "HAND"], [True])
 
     def test_clean_up_routing(self):
         """Post-route clean-up: stubs, dead ends, net-class widths and 90 degree corners."""

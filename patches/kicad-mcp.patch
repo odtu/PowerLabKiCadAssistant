@@ -27,7 +27,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 diff --git a/README.md b/README.md
-index 831a2f3..49ff333 100644
+index 831a2f3..a352c15 100644
 --- a/README.md
 +++ b/README.md
 @@ -23,8 +23,8 @@ The [Model Context Protocol](https://modelcontextprotocol.io/) is an open standa
@@ -36,8 +36,8 @@ index 831a2f3..49ff333 100644
  
 -- 233 tools registered, 173 of them indexed for keyword discovery
 -- 173 tools across 16 categories with JSON Schema validation
-+- 234 tools registered, 174 of them indexed for keyword discovery
-+- 174 tools across 16 categories with JSON Schema validation
++- 237 tools registered, 177 of them indexed for keyword discovery
++- 177 tools across 16 categories with JSON Schema validation
  - Keyword tool discovery via `search_tools` / `get_category_tools`
  - 23 dynamic resources exposing project state
  - Complete schematic workflow with 65 tools (authoring, batch edits, hierarchy, layout) and dynamic symbol loading (~10,000 symbols)
@@ -46,7 +46,7 @@ index 831a2f3..49ff333 100644
  - **32 essential tools** that `search_tools` surfaces first, covering the
    operations nearly every session needs
 -- **173 tools indexed across 16 categories** (board, component, export, drc,
-+- **174 tools indexed across 16 categories** (board, component, export, drc,
++- **177 tools indexed across 16 categories** (board, component, export, drc,
    schematic, library, symbol_library, symbol_pins, schematic_hierarchy,
    schematic_layout, schematic_batch, routing, autoroute, validation,
    parts-registry, digikey)
@@ -55,20 +55,22 @@ index 831a2f3..49ff333 100644
  ## Available Tools
  
 -The server exposes every tool directly, so your assistant can call any of them without a discovery step -- just ask for what you want to accomplish. **173 tools** are additionally indexed into 16 functional categories, so `search_tools` and `get_category_tools` can find one by keyword.
-+The server exposes every tool directly, so your assistant can call any of them without a discovery step -- just ask for what you want to accomplish. **174 tools** are additionally indexed into 16 functional categories, so `search_tools` and `get_category_tools` can find one by keyword.
++The server exposes every tool directly, so your assistant can call any of them without a discovery step -- just ask for what you want to accomplish. **177 tools** are additionally indexed into 16 functional categories, so `search_tools` and `get_category_tools` can find one by keyword.
  
  The lists below are a curated tour of the most useful tools, not the full set.
 -For the complete, generated reference of all 233 tools -- including how each one
-+For the complete, generated reference of all 234 tools -- including how each one
++For the complete, generated reference of all 237 tools -- including how each one
  is discovered -- see [Tool Inventory](docs/TOOL_INVENTORY.md).
  
  ### Project Management (12 tools)
-@@ -1514,7 +1514,7 @@ How many Basic parts are available?
+@@ -1513,8 +1513,8 @@ How many Basic parts are available?
+ 
  - **JSON-RPC 2.0 Transport:** Bi-directional communication via STDIO
  - **Protocol Version:** MCP 2025-06-18
- - **Capabilities:** Tools (233), Resources (23)
+-- **Capabilities:** Tools (233), Resources (23)
 -- **Tool discovery:** keyword search catalogue indexing 173 tools in 16 categories
-+- **Tool discovery:** keyword search catalogue indexing 174 tools in 16 categories
++- **Capabilities:** Tools (237), Resources (23)
++- **Tool discovery:** keyword search catalogue indexing 177 tools in 16 categories
  - **Error Handling:** Standard JSON-RPC error codes
  
  ### TypeScript Server (`src/`)
@@ -77,23 +79,24 @@ index 831a2f3..49ff333 100644
  See [STATUS_SUMMARY.md](docs/STATUS_SUMMARY.md) for the complete status matrix and [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
  
 -**Working Features (233 tools):**
-+**Working Features (234 tools):**
++**Working Features (237 tools):**
  
  - Project management with snapshot checkpointing
  - Complete board design (outline, layers, zones, mounting holes, text, SVG logos)
 diff --git a/python/commands/autoroute_backup.py b/python/commands/autoroute_backup.py
 new file mode 100644
-index 0000000..4215435
+index 0000000..ef01ec3
 --- /dev/null
 +++ b/python/commands/autoroute_backup.py
-@@ -0,0 +1,49 @@
+@@ -0,0 +1,56 @@
 +"""
 +The board as it was before the last autoroute run, so the run can be undone (PowerLab patch).
 +
 +autoroute writes the routed board over the saved .kicad_pcb, so File > Revert in KiCad
 +loads the routed board, not the one before. Each run that changes the board keeps a copy
 +of the saved file from before it in autoroute-backup/ next to the board; undo_autoroute
-+copies it back and removes it.
++copies it back (into KiCad's open board when KiCad has it open) and removes it.
++powerlab_route keeps one the same way.
 +"""
 +
 +import os
@@ -125,11 +128,17 @@ index 0000000..4215435
 +        return {
 +            "success": False,
 +            "message": "No autoroute backup for this board",
-+            "errorDetails": f"Expected {source}. Only a successful autoroute run leaves one, and undo_autoroute uses it up.",
++            "errorDetails": f"Expected {source}. Only a successful autoroute or powerlab_route run leaves one, and undo_autoroute uses it up.",
 +        }
-+    taken = datetime.fromtimestamp(os.path.getmtime(source)).strftime("%Y-%m-%d %H:%M")
 +    # copyfile, not copy2: a fresh modification time, so KiCad sees the file changed
 +    shutil.copyfile(source, board_path)
++    return discard(board_path)
++
++
++def discard(board_path: str) -> Dict[str, Any]:
++    """Remove the backup once it has been put back (in the file, or in KiCad's open board)."""
++    source = backup_path(board_path)
++    taken = datetime.fromtimestamp(os.path.getmtime(source)).strftime("%Y-%m-%d %H:%M")
 +    os.remove(source)
 +    try:
 +        os.rmdir(os.path.dirname(source))
@@ -593,7 +602,7 @@ index 0c12af2..cedd101 100644
          try:
 diff --git a/python/commands/freerouting_live.py b/python/commands/freerouting_live.py
 new file mode 100644
-index 0000000..a44f0b2
+index 0000000..36e1a36
 --- /dev/null
 +++ b/python/commands/freerouting_live.py
 @@ -0,0 +1,377 @@
@@ -908,7 +917,7 @@ index 0000000..a44f0b2
 +            self._apply(list(self.shown.values()), [], "Freerouting (live): cancelled")
 +            self.shown.clear()
 +
-+    def finish(self, final: Dict[Key, Dict[str, Any]]) -> Dict[str, int]:
++    def finish(self, final: Dict[Key, Dict[str, Any]], message: str = "Freerouting autoroute") -> Dict[str, int]:
 +        """Make KiCad's board copper match the routed result.
 +
 +        Copper already there with the same geometry is left alone, so locked
@@ -929,7 +938,7 @@ index 0000000..a44f0b2
 +                else:
 +                    remove.append(item)
 +        add = [(k, s) for k, s in final.items() if k not in live]
-+        self._apply(remove, add, "Freerouting autoroute")
++        self._apply(remove, add, message)
 +        self.shown.clear()
 +        return {"added": len(add), "removed": len(remove), "locked_kept": kept_locked}
 +
@@ -1076,6 +1085,446 @@ index 0000000..052abc5
 +        text = text[:close] + f"(net {PLACEHOLDER_NET})\n    " + text[close:]
 +    return text, dropped
 +
+diff --git a/python/commands/powerlab_route.py b/python/commands/powerlab_route.py
+new file mode 100644
+index 0000000..e678af2
+--- /dev/null
++++ b/python/commands/powerlab_route.py
+@@ -0,0 +1,434 @@
++"""
++The PowerLab router as a background job (PowerLab patch).
++
++A run takes minutes (10-15 on a 2-layer ESP32 board), so powerlab_route starts the router
++(commands/powerlab_router/) in a KiCad Python process of its own, on a copy of the saved
++board, and the MCP's worker keeps answering. powerlab_route_status waits for it and
++reports progress. When it has finished, the result goes onto the board once: into KiCad's
++open board over the API and saved there (no File > Revert), or over the saved file when
++KiCad doesn't have the board open. The saved board from before the run is kept in
++autoroute-backup/, so undo_autoroute undoes it.
++
++Like tools/router_bench.py, the router routes the chosen nets from scratch: their unlocked
++tracks and vias are taken out first. Nets with locked copper are left alone (hand-routed).
++
++One job per board, in %TEMP%/powerlab-route/<board hash>/:
++  job.json        what to route (written by the worker)
++  status.json     state, phase and progress (written by the router process)
++  report.json     the router's report
++  log.txt         one line per connection event
++  input/          the saved board at the start, with its .kicad_pro and .kicad_dru
++  stripped/       the board with the nets taken out (DRC baseline)
++  result/         the routed board
++"""
++
++import hashlib
++import json
++import os
++import shutil
++import subprocess
++import sys
++import tempfile
++import threading
++import time
++import traceback
++from typing import Any, Dict, List, Optional
++
++ROOT = os.path.join(tempfile.gettempdir(), "powerlab-route")
++DEFAULTS = {"pitch": 0.1, "turn": 1.5, "via": 4.0, "min_run": 2, "layers": [1.0, 1.2], "diagonal": 1.3,
++            "min_run_diag": 3, "max_nodes": 2000000}
++HEARTBEAT = 5  # s between status writes while the router works
++STALE = 600  # s without a status write: the router process is gone (a zone fill holds the GIL)
++PROJECT_FILES = (".kicad_pro", ".kicad_dru")
++
++_procs: Dict[str, subprocess.Popen] = {}  # job folder -> router process started by this worker
++
++
++def _norm(path: str) -> str:
++    return os.path.normcase(os.path.abspath(path))
++
++
++def job_dir(board_path: str) -> str:
++    return os.path.join(ROOT, hashlib.sha1(_norm(board_path).encode("utf-8")).hexdigest()[:16])
++
++
++def _sha1(path: str) -> str:
++    h = hashlib.sha1()
++    with open(path, "rb") as fh:
++        for chunk in iter(lambda: fh.read(1 << 20), b""):
++            h.update(chunk)
++    return h.hexdigest()
++
++
++def _read(path: str) -> Optional[Dict[str, Any]]:
++    for _ in range(5):  # the router process may be replacing it
++        try:
++            with open(path, encoding="utf-8") as fh:
++                return json.load(fh)
++        except FileNotFoundError:
++            return None
++        except (OSError, ValueError):
++            time.sleep(0.1)
++    return None
++
++
++def _write(path: str, data: Dict[str, Any]) -> None:
++    tmp = path + ".tmp"
++    with open(tmp, "w", encoding="utf-8") as fh:
++        json.dump(data, fh, indent=1)
++    for _ in range(20):
++        try:
++            os.replace(tmp, path)
++            return
++        except PermissionError:  # a reader has it open (Windows)
++            time.sleep(0.05)
++    os.replace(tmp, path)
++
++
++def _copy_project(board_path: str, folder: str) -> str:
++    """Copy the board and its project/rules files into folder; returns the board copy."""
++    os.makedirs(folder, exist_ok=True)
++    stem = os.path.splitext(os.path.basename(board_path))[0]
++    target = os.path.join(folder, stem + ".kicad_pcb")
++    shutil.copy2(board_path, target)
++    for ext in PROJECT_FILES:
++        src = os.path.splitext(board_path)[0] + ext
++        if os.path.isfile(src):
++            shutil.copy2(src, os.path.join(folder, stem + ext))
++    return target
++
++
++# ---------------------------------------------------------------------------
++# Worker side
++# ---------------------------------------------------------------------------
++
++
++def status(board_path: str) -> Dict[str, Any]:
++    """The job's status, with "alive" telling whether its router process still runs."""
++    folder = job_dir(board_path)
++    st = _read(os.path.join(folder, "status.json"))
++    if st is None:
++        return {"state": "none"}
++    if st.get("state") == "running":
++        proc = _procs.get(folder)
++        if proc is not None:
++            alive = proc.poll() is None
++        else:
++            alive = time.time() - st.get("updated", 0) < STALE
++        if not alive:
++            st = _read(os.path.join(folder, "status.json")) or st  # it may have just finished
++            if st.get("state") == "running":
++                st.update(state="failed", error="the router process ended without a result")
++                _write(os.path.join(folder, "status.json"), st)
++    return st
++
++
++def start(board_path: str, params: Dict[str, Any], kicad_cli: Optional[str], live: bool) -> Dict[str, Any]:
++    folder = job_dir(board_path)
++    st = status(board_path)
++    if st.get("state") == "running":
++        return {
++            "success": False,
++            "message": "The PowerLab router is already routing this board",
++            "errorDetails": "Wait for it with powerlab_route_status, or stop it with powerlab_route_status cancel: true",
++        }
++    shutil.rmtree(folder, ignore_errors=True)
++    os.makedirs(folder)
++    board_copy = _copy_project(board_path, os.path.join(folder, "input"))
++    nets = params.get("nets")
++    job = {
++        "board_path": os.path.abspath(board_path),
++        "input": board_copy,
++        "input_sha1": _sha1(board_copy),
++        "nets": [str(n) for n in nets] if nets else None,
++        "pour_nets": [str(n) for n in (params.get("pourNets") or ["GND"])],
++        "kicad_cli": kicad_cli,
++        "live": live,
++        "pitch": float(params.get("gridPitch") or DEFAULTS["pitch"]),
++        "turn": float(params.get("turnCost") or DEFAULTS["turn"]),
++        "via": float(params.get("viaCost") or DEFAULTS["via"]),
++        "diagonal": float(params.get("diagonalCost") or DEFAULTS["diagonal"]),
++        "layers": [float(f) for f in (params.get("layerCosts") or DEFAULTS["layers"])],
++        "min_run": DEFAULTS["min_run"],
++        "min_run_diag": DEFAULTS["min_run_diag"],
++        "max_nodes": DEFAULTS["max_nodes"],
++    }
++    _write(os.path.join(folder, "job.json"), job)
++    now = time.time()
++    _write(os.path.join(folder, "status.json"),
++           {"state": "running", "phase": "starting", "started": now, "updated": now})
++    log = open(os.path.join(folder, "process.log"), "w", encoding="utf-8", errors="replace")
++    python_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++    _procs[folder] = subprocess.Popen(
++        [sys.executable, "-u", os.path.abspath(__file__), folder],
++        cwd=python_dir,
++        stdout=log,
++        stderr=subprocess.STDOUT,
++        stdin=subprocess.DEVNULL,
++        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
++    )
++    log.close()
++    return {"success": True, "job": folder}
++
++
++def wait(board_path: str, seconds: float) -> Dict[str, Any]:
++    deadline = time.time() + max(0.0, seconds)
++    while True:
++        st = status(board_path)
++        if st.get("state") != "running" or time.time() >= deadline:
++            return st
++        time.sleep(min(2.0, max(0.1, deadline - time.time())))
++
++
++def cancel(board_path: str) -> Dict[str, Any]:
++    folder = job_dir(board_path)
++    st = status(board_path)
++    if st.get("state") != "running":
++        return {"success": False, "message": f"No PowerLab router run in progress (state: {st.get('state')})"}
++    proc = _procs.pop(folder, None)
++    pid = proc.pid if proc else st.get("pid")
++    try:
++        if proc is not None:
++            proc.kill()
++            proc.wait(timeout=10)
++        elif pid:
++            os.kill(int(pid), 9)
++    except Exception as e:
++        return {"success": False, "message": f"Could not stop the router process: {e}"}
++    st.update(state="cancelled", updated=time.time())
++    _write(os.path.join(folder, "status.json"), st)
++    return {"success": True, "message": "Stopped the PowerLab router; the board is unchanged"}
++
++
++def report(board_path: str) -> Optional[Dict[str, Any]]:
++    return _read(os.path.join(job_dir(board_path), "report.json"))
++
++
++def unsaved_changes(kboard: Any, board_path: str) -> Dict[str, int]:
++    """Copper and footprint positions in KiCad's open board that differ from the file.
++
++    Empty when KiCad shows what is saved (zone fills aren't compared)."""
++    import pcbnew
++    from commands.freerouting_live import kipy_key, pcbnew_copper
++
++    board = pcbnew.LoadBoard(board_path)
++    saved = set(pcbnew_copper(board))
++    live = {kipy_key(i) for i in list(kboard.get_tracks()) + list(kboard.get_vias())} - {None}
++    fps = {(fp.GetReference(), fp.GetPosition().x, fp.GetPosition().y) for fp in board.GetFootprints()}
++    live_fps = {(fp.reference_field.text.value, fp.position.x, fp.position.y) for fp in kboard.get_footprints()}
++    out = {}
++    if saved != live:
++        out["copper_items"] = len(saved ^ live)
++    if fps != live_fps:
++        out["footprints"] = len({f[0] for f in fps ^ live_fps})
++    return out
++
++
++def apply(board_path: str, kboard: Any = None) -> Dict[str, Any]:
++    """Put a finished job's routed board on the board (once).
++
++    With kboard (KiCad's open board, kipy), KiCad's copper is brought in line with the
++    result, zones are refilled and the board is saved in KiCad. Otherwise the result is
++    copied over the saved file."""
++    from commands import autoroute_backup
++
++    folder = job_dir(board_path)
++    job = _read(os.path.join(folder, "job.json")) or {}
++    st = status(board_path)
++    result = st.get("result")
++    if st.get("state") != "done" or not result or not os.path.isfile(result):
++        return {"success": False, "message": "No finished PowerLab router run to apply"}
++    if not os.path.isfile(board_path) or _sha1(board_path) != job.get("input_sha1"):
++        return {
++            "success": False,
++            "message": "The saved board changed after the run started, so the result wasn't applied",
++            "errorDetails": "The routed board would overwrite those changes. Start powerlab_route again.",
++        }
++    if kboard is not None:
++        changed = unsaved_changes(kboard, job["input"])
++        if changed:
++            return {
++                "success": False,
++                "message": "KiCad's board was edited after the run started, so the result wasn't applied",
++                "errorDetails": f"Differences from the routed board's starting point: {changed}. "
++                                "Save in KiCad (Ctrl+S) and start powerlab_route again.",
++            }
++    out: Dict[str, Any] = {"success": True}
++    try:
++        out["backupPath"] = autoroute_backup.keep(job["input"], board_path)
++        out["undo"] = "undo_autoroute puts back the board from before this run"
++    except OSError as e:
++        out["undo"] = f"no backup kept ({e}), so this run can't be undone"
++    synced = False
++    if kboard is not None:
++        try:
++            out["kicad"] = push_to_kicad(kboard, result, "PowerLab router")
++            synced = True
++        except Exception as e:
++            out["kicad_error"] = str(e)
++    if not synced:
++        shutil.copyfile(result, board_path)  # copyfile: a fresh modification time
++    out["saved_in_kicad"] = synced
++    st.update(state="applied", applied=time.time(), saved_in_kicad=synced)
++    _write(os.path.join(folder, "status.json"), st)
++    return out
++
++
++def push_to_kicad(kboard: Any, board_file: str, message: str) -> Dict[str, Any]:
++    """Make KiCad's open board's copper match board_file, refill zones, save in KiCad."""
++    import pcbnew
++    from commands.freerouting_live import LiveCopper, pcbnew_copper
++
++    t0 = time.time()
++    sync = LiveCopper(kboard).finish(pcbnew_copper(pcbnew.LoadBoard(board_file)), message)
++    kboard.refill_zones(block=True, max_poll_seconds=60.0)
++    kboard.save()
++    return {**sync, "seconds": round(time.time() - t0, 2)}
++
++
++# ---------------------------------------------------------------------------
++# Router process
++# ---------------------------------------------------------------------------
++
++
++class _Status:
++    """status.json, rewritten on every change and every HEARTBEAT seconds."""
++
++    def __init__(self, folder: str) -> None:
++        self.path = os.path.join(folder, "status.json")
++        self.data = _read(self.path) or {"started": time.time()}
++        self.data.update(state="running", pid=os.getpid())
++        self.lock = threading.Lock()
++        self.stop = threading.Event()
++        self.write()
++        threading.Thread(target=self._beat, daemon=True).start()
++
++    def write(self, **changes: Any) -> None:
++        with self.lock:
++            self.data.update(changes, updated=time.time())
++            _write(self.path, self.data)
++
++    def _beat(self) -> None:
++        while not self.stop.wait(HEARTBEAT):
++            try:
++                self.write()
++            except OSError:
++                pass
++
++
++def pick_nets(board: Any, wanted: Optional[List[str]], pour_nets: List[str]):
++    """Nets to route, and the ones left out with why. Default: the Default net class."""
++    ns = board.GetDesignSettings().m_NetSettings
++    on_pads = {p.GetNetname() for fp in board.GetFootprints() for p in fp.Pads() if p.GetNetname()}
++    locked = {t.GetNetname() for t in board.GetTracks() if t.IsLocked()}
++    if wanted:
++        candidates = list(dict.fromkeys(wanted))
++    else:
++        candidates = sorted(n for n in on_pads if ns.GetEffectiveNetClass(n).GetName() == "Default")
++    nets, skipped = [], {}
++    for n in candidates:
++        if n not in on_pads:
++            skipped[n] = "no pads on this net"
++        elif n in pour_nets:
++            skipped[n] = "pour net: the pour connects it"
++        elif n in locked:
++            skipped[n] = "has locked copper (routed by hand); unlock it to route it again"
++        else:
++            nets.append(n)
++    return nets, skipped
++
++
++def run(folder: str) -> None:
++    job = _read(os.path.join(folder, "job.json"))
++    st = _Status(folder)
++    log = open(os.path.join(folder, "log.txt"), "w", encoding="utf-8", errors="replace")
++    try:
++        import pcbnew
++        from commands.powerlab_router.router import Router
++        from commands.powerlab_router.search import Costs
++        from commands.route_cleanup import Drc
++
++        st.write(phase="loading the board")
++        board = pcbnew.LoadBoard(job["input"])
++        nets, skipped = pick_nets(board, job.get("nets"), job["pour_nets"])
++        if not nets:
++            raise ValueError(f"No nets to route; left out: {skipped}")
++        removed = 0
++        for t in list(board.GetTracks()):
++            if t.GetNetname() in nets and not t.IsLocked():
++                board.Delete(t)
++                removed += 1
++        pcbnew.ZONE_FILLER(board).Fill(board.Zones())
++        stripped = os.path.join(folder, "stripped", os.path.basename(job["input"]))
++        os.makedirs(os.path.dirname(stripped))
++        for ext in PROJECT_FILES:
++            src = os.path.splitext(job["input"])[0] + ext
++            if os.path.isfile(src):
++                shutil.copy2(src, os.path.splitext(stripped)[0] + ext)
++        board.Save(stripped)
++        board = pcbnew.LoadBoard(stripped)
++        drc = Drc(stripped, job["kicad_cli"]) if job.get("kicad_cli") else None
++        if drc:
++            st.write(phase="DRC before routing")
++            base = drc.errors(board)
++
++        costs = Costs(turn=job["turn"], via=job["via"], min_run=job["min_run"],
++                      layer_factor=dict(enumerate(job["layers"])), max_nodes=job["max_nodes"],
++                      diagonal=job["diagonal"], min_run_diag=job["min_run_diag"])
++        router = Router(board, pitch=job["pitch"], pour_nets=job["pour_nets"], costs=costs, order="bus",
++                        ripup=True, finish=True, step_in=True, draw=True)
++        total = len(router.connections(nets))
++        done: Dict[str, bool] = {}
++        st.write(phase="routing", nets=len(nets), connections=total, routed=0)
++
++        def progress(r: Dict[str, Any]) -> None:
++            done[r["connection"]] = bool(r.get("ok"))
++            log.write(f"{r['net']} {r['connection']} {r['event']}\n")
++            log.flush()
++            st.write(routed=sum(done.values()), events=st.data.get("events", 0) + 1, last=r["event"][:120])
++
++        rep = router.run(nets, log=progress)
++        st.write(phase="refilling zones")
++        pcbnew.ZONE_FILLER(board).Fill(board.Zones())
++        result = os.path.join(folder, "result", os.path.basename(job["input"]))
++        os.makedirs(os.path.dirname(result))
++        board.Save(result)
++        new_drc = None
++        if drc:
++            st.write(phase="DRC after routing")
++            after = Drc(stripped, job["kicad_cli"])
++            new_drc = {}
++            for kind, _ in after.errors(pcbnew.LoadBoard(result)) - base:
++                new_drc[kind] = new_drc.get(kind, 0) + 1
++            after.close()
++            drc.close()
++        tracks = [t for t in board.GetTracks() if t.GetNetname() in nets]
++        rep.pop("connections_list", None)
++        for k in ("shapes", "finish", "drawn_whole", "nodes", "retries", "search_seconds"):
++            rep.pop(k, None)
++        rep.update(
++            nets=len(nets),
++            nets_left_out=skipped,
++            old_tracks_removed=removed,
++            track_mm=round(sum(pcbnew.ToMM(t.GetLength()) for t in tracks if t.Type() == pcbnew.PCB_TRACE_T), 1),
++            vias=sum(1 for t in tracks if t.Type() == pcbnew.PCB_VIA_T),
++            new_drc_errors=new_drc,
++            grid_pitch=job["pitch"],
++            costs={"turn": job["turn"], "via": job["via"], "diagonal": job["diagonal"], "layers": job["layers"]},
++            routing_seconds=rep.pop("seconds"),
++            seconds=round(time.time() - st.data["started"], 1),
++        )
++        _write(os.path.join(folder, "report.json"), rep)
++        st.write(state="done", phase="finished", result=result, routed=rep["routed"])
++    except Exception as e:
++        log.write(traceback.format_exc())
++        st.write(state="failed", error=f"{type(e).__name__}: {e}")
++    finally:
++        st.stop.set()
++        log.close()
++
++
++if __name__ == "__main__":
++    # python/, not python/commands/ (whose module names could shadow others)
++    sys.path[0] = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++    run(sys.argv[1])
 diff --git a/python/commands/powerlab_router/__init__.py b/python/commands/powerlab_router/__init__.py
 new file mode 100644
 index 0000000..acab7e9
@@ -4758,7 +5207,7 @@ index 6f9a813..827e3fa 100644
              # Apply changes
              commit = board.begin_commit()
 diff --git a/python/kicad_interface.py b/python/kicad_interface.py
-index c6ac305..d8c69ce 100644
+index c6ac305..a26a5d9 100644
 --- a/python/kicad_interface.py
 +++ b/python/kicad_interface.py
 @@ -558,6 +558,7 @@ class KiCADInterface(SchematicHandlersMixin):
@@ -4769,7 +5218,7 @@ index c6ac305..d8c69ce 100644
              "route_differential_pair": self.routing_commands.route_differential_pair,
              "refill_zones": self._handle_refill_zones,
              # Design rule commands
-@@ -732,10 +733,12 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -732,10 +733,14 @@ class KiCADInterface(SchematicHandlersMixin):
              "remove_library_table_entry": remove_library_table_entry,
              "set_library_table_uri": set_library_table_uri,
              # Freerouting autoroute commands
@@ -4780,10 +5229,12 @@ index c6ac305..d8c69ce 100644
              "check_freerouting": self.freerouting_commands.check_freerouting,
 +            "clean_up_routing": self._handle_clean_up_routing,  # PowerLab patch
 +            "undo_autoroute": self._handle_undo_autoroute,  # PowerLab patch
++            "powerlab_route": self._handle_powerlab_route,  # PowerLab patch
++            "powerlab_route_status": self._handle_powerlab_route_status,  # PowerLab patch
              # Eagle import commands
              "import_eagle_project": self.eagle_commands.import_eagle_project,
              # Schematic migration
-@@ -756,12 +759,14 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -756,12 +761,14 @@ class KiCADInterface(SchematicHandlersMixin):
          "route_trace": "_ipc_route_trace",
          "route_arc_trace": "_ipc_route_arc_trace",
          "add_via": "_ipc_add_via",
@@ -4798,7 +5249,7 @@ index c6ac305..d8c69ce 100644
          "refill_zones": "_ipc_refill_zones",
          # Board commands
          "add_text": "_ipc_add_text",
-@@ -779,6 +784,7 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -779,6 +786,7 @@ class KiCADInterface(SchematicHandlersMixin):
          "get_component_list": "_ipc_get_component_list",
          "get_component_properties": "_ipc_get_component_properties",
          "set_footprint_type": "_ipc_set_footprint_type",
@@ -4806,7 +5257,7 @@ index c6ac305..d8c69ce 100644
          "add_component_3d_model": "_ipc_add_component_3d_model",
          # Save command
          "save_project": "_ipc_save_project",
-@@ -1236,6 +1242,7 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -1236,6 +1244,7 @@ class KiCADInterface(SchematicHandlersMixin):
          "add_board_text",
          "move_footprint_text",
          "add_copper_pour",
@@ -4814,7 +5265,7 @@ index c6ac305..d8c69ce 100644
          "refill_zones",
          "import_svg_logo",
          "sync_schematic_to_board",
-@@ -1848,6 +1855,118 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -1848,6 +1857,249 @@ class KiCADInterface(SchematicHandlersMixin):
          state = self._dirty_state(board_path)
          return {"success": True, "boardPath": board_path, **state}
  
@@ -4901,14 +5352,31 @@ index c6ac305..d8c69ce 100644
 +                "errorDetails": "Open the board with open_board, or pass boardPath",
 +            }
 +        board_path = str(board_path)
++        # With the board open in KiCad, put the old copper back there and save it there,
++        # so no File > Revert is needed (PowerLab patch)
++        kboard = self._live_kicad_board(board_path)
++        source = autoroute_backup.backup_path(board_path)
++        if kboard is not None and os.path.isfile(source):
++            from commands.powerlab_route import push_to_kicad
++
++            try:
++                sync = push_to_kicad(kboard, source, "Undo autoroute")
++            except Exception as e:
++                logger.warning(f"Undo autoroute: KiCad not updated: {e}")
++            else:
++                result = autoroute_backup.discard(board_path)
++                self._reload_board_file(board_path)
++                return {
++                    **result,
++                    "message": f"Put back the copper of {os.path.basename(board_path)} from before the last "
++                               "autoroute run, in KiCad, and saved it there",
++                    "boardPath": board_path,
++                    "kicad": sync,
++                }
 +        result = autoroute_backup.restore(board_path)
 +        if not result.get("success"):
 +            return result
-+        board = self._safe_load_board(board_path)
-+        if board is not None:
-+            self.board = board
-+            self._update_command_handlers()
-+            self._record_board_signature()
++        self._reload_board_file(board_path)
 +        return {
 +            **result,
 +            "message": f"Put back {os.path.basename(board_path)} as saved before the last autoroute run",
@@ -4916,6 +5384,120 @@ index c6ac305..d8c69ce 100644
 +            "next_steps": (
 +                "If the board is open in KiCad, use File > Revert now, before any edit or save "
 +                "there: a save in KiCad would write the routed board back."
++            ),
++        }
++
++    def _reload_board_file(self, board_path: str) -> None:
++        board = self._safe_load_board(board_path)
++        if board is not None:
++            self.board = board
++            self._update_command_handlers()
++            self._record_board_signature()
++
++    def _live_kicad_board(self, board_path: str) -> Any:
++        """KiCad's open board (kipy) when KiCad has board_path open, else None (PowerLab patch)."""
++        self._try_enable_ipc_backend()
++        backend = getattr(self, "ipc_backend", None)
++        if backend and backend.is_connected() and self._ipc_board_path_matches(board_path):
++            try:
++                return backend._kicad.get_board()
++            except Exception as e:
++                logger.warning(f"No board from KiCad: {e}")
++        return None
++
++    def _handle_powerlab_route(self, params: Dict[str, Any]) -> Dict[str, Any]:
++        """Start the PowerLab router on the saved board, in the background (PowerLab patch)."""
++        from commands import powerlab_route
++
++        board_path = params.get("boardPath") or self._authoritative_board_path()
++        if not board_path or not os.path.isfile(str(board_path)):
++            return {
++                "success": False,
++                "message": "No saved board",
++                "errorDetails": "Open the board with open_board, or pass boardPath",
++            }
++        board_path = os.path.abspath(str(board_path))
++        kboard = self._live_kicad_board(board_path)
++        if kboard is not None:
++            changed = powerlab_route.unsaved_changes(kboard, board_path)
++            if changed:
++                return {
++                    "success": False,
++                    "message": "KiCad's board has changes that aren't saved",
++                    "errorDetails": f"Differences from the saved file: {changed}. The router routes the saved "
++                                    "file, so save in KiCad (Ctrl+S) and call powerlab_route again.",
++                }
++        started = powerlab_route.start(board_path, params, self._find_kicad_cli_static(), kboard is not None)
++        if not started.get("success"):
++            return started
++        return {
++            "success": True,
++            "message": "The PowerLab router is routing the saved board in the background",
++            "boardPath": board_path,
++            "kicad_open": kboard is not None,
++            "next_steps": (
++                "Call powerlab_route_status to wait for it and see its progress; repeat until it says "
++                "the run is finished. A 2-layer board with ~50 connections takes about 10-15 minutes. "
++                "Don't edit or save the board meanwhile: a changed board is not overwritten, so the run "
++                "would be wasted."
++            ),
++        }
++
++    def _handle_powerlab_route_status(self, params: Dict[str, Any]) -> Dict[str, Any]:
++        """Wait for a PowerLab router run, then put its result on the board (PowerLab patch)."""
++        from commands import powerlab_route
++
++        board_path = params.get("boardPath") or self._authoritative_board_path()
++        if not board_path:
++            return {"success": False, "message": "No board", "errorDetails": "Pass boardPath"}
++        board_path = os.path.abspath(str(board_path))
++        if params.get("cancel"):
++            return powerlab_route.cancel(board_path)
++        st = powerlab_route.wait(board_path, float(params.get("wait", 300)))
++        state = st.get("state")
++        if state == "none":
++            return {"success": False, "message": "No PowerLab router run for this board; start one with powerlab_route"}
++        elapsed = round(st.get("updated", 0) - st.get("started", 0))
++        progress = {k: st[k] for k in ("phase", "nets", "connections", "routed", "last") if k in st}
++        if state == "running":
++            return {
++                "success": True,
++                "state": "running",
++                "elapsed_seconds": elapsed,
++                **progress,
++                "next_steps": "Still routing: call powerlab_route_status again.",
++            }
++        if state in ("failed", "cancelled"):
++            return {"success": False, "state": state, "message": f"The PowerLab router run {state}",
++                    "errorDetails": st.get("error", ""), "board_unchanged": True}
++        report = powerlab_route.report(board_path) or {}
++        if state == "applied":
++            return {"success": True, "state": "applied", "message": "This run's result is already on the board",
++                    "report": report}
++        applied = powerlab_route.apply(board_path, self._live_kicad_board(board_path))
++        if not applied.get("success"):
++            return {**applied, "state": "done", "report": report}
++        self._reload_board_file(board_path)
++        left = len(report.get("left", []))
++        message = f"Routed {report.get('routed')} of {report.get('connections')} connections"
++        message += f" ({left} left)" if left else ""
++        if applied.get("saved_in_kicad"):
++            message += "; the result is in KiCad and saved there (no File > Revert needed)"
++        elif "kicad_error" in applied:
++            message += "; KiCad couldn't be updated, so use File > Revert to see the result"
++        else:
++            message += "; written to the board file"
++        return {
++            "success": True,
++            "state": "applied",
++            "message": message,
++            "boardPath": board_path,
++            "report": report,
++            **applied,
++            "next_steps": (
++                "Run DRC and compare with the baseline, render the board (powerlab-visual-review), "
++                "and route what is under report.left by hand or with autoroute (Freerouting). "
++                "undo_autoroute puts back the board from before this run."
 +            ),
 +        }
 +
@@ -4933,7 +5515,7 @@ index c6ac305..d8c69ce 100644
      def _handle_batch_move_components(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """Batch move wrapper that preserves the external-edit save guard."""
          if getattr(self, "session_backend", None) == "ipc" and not self._ipc_session_alive():
-@@ -5079,6 +5198,65 @@ print("ok")
+@@ -5079,6 +5331,65 @@ print("ok")
              logger.error(f"IPC route_arc_trace error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -4999,7 +5581,7 @@ index c6ac305..d8c69ce 100644
      def _ipc_add_via(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for add_via - adds via with real-time UI update"""
          try:
-@@ -5131,21 +5309,37 @@ print("ok")
+@@ -5131,21 +5442,37 @@ print("ok")
              net = params.get("net")
              clearance = params.get("clearance", 0.5)
              min_width = params.get("minWidth", 0.25)
@@ -5044,7 +5626,7 @@ index c6ac305..d8c69ce 100644
  
              success = self.ipc_board_api.add_zone(
                  points=formatted_points,
-@@ -5833,6 +6027,100 @@ print("ok")
+@@ -5833,6 +6160,100 @@ print("ok")
              logger.error(f"IPC set_footprint_type error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -5146,17 +5728,33 @@ index c6ac305..d8c69ce 100644
      # Legacy IPC command handlers (explicit ipc_* commands)
  
 diff --git a/src/command-timeout.ts b/src/command-timeout.ts
-index dfd876c..d257d5f 100644
+index dfd876c..0c3e2d9 100644
 --- a/src/command-timeout.ts
 +++ b/src/command-timeout.ts
-@@ -35,6 +35,7 @@ export const LONG_RUNNING_COMMANDS = [
+@@ -35,6 +35,9 @@ export const LONG_RUNNING_COMMANDS = [
    "list_schematic_labels",
    "get_schematic_view",
    "digikey_check_library_availability",
 +  "clean_up_routing", // PowerLab patch: several kicad-cli DRC runs
++  "powerlab_route", // PowerLab patch: copies the board, compares it with KiCad's
++  "undo_autoroute", // PowerLab patch: refills the zones in KiCad
  ] as const;
  
  /**
+@@ -66,6 +69,13 @@ export function computeCommandTimeout(command: string, params?: unknown): number
+     return Math.max(budgetMs, LONG_COMMAND_TIMEOUT_MS);
+   }
+ 
++  // PowerLab patch: waits up to `wait` seconds (default 300, at most 900) for the router
++  if (command === "powerlab_route_status") {
++    const p = (params ?? {}) as Record<string, unknown>;
++    const waitSec = Math.min(toPositiveNumber(p.wait) ?? 300, 900);
++    return Math.max(waitSec * 1000 + AUTOROUTE_OVERHEAD_MS, LONG_COMMAND_TIMEOUT_MS);
++  }
++
+   if ((LONG_RUNNING_COMMANDS as readonly string[]).includes(command)) {
+     return LONG_COMMAND_TIMEOUT_MS;
+   }
 diff --git a/src/tools/board.ts b/src/tools/board.ts
 index 2738ebc..7f0b245 100644
 --- a/src/tools/board.ts
@@ -5193,7 +5791,7 @@ index 2738ebc..7f0b245 100644
  
        if (result.success) {
 diff --git a/src/tools/freerouting.ts b/src/tools/freerouting.ts
-index d9942f7..485eade 100644
+index d9942f7..6e8bb8a 100644
 --- a/src/tools/freerouting.ts
 +++ b/src/tools/freerouting.ts
 @@ -19,7 +19,7 @@ export function registerFreeroutingTools(server: McpServer, callKicadScript: Fun
@@ -5240,7 +5838,7 @@ index d9942f7..485eade 100644
      },
      async (args: any) => {
        const result = await callKicadScript("autoroute", args);
-@@ -75,6 +97,54 @@ export function registerFreeroutingTools(server: McpServer, callKicadScript: Fun
+@@ -75,6 +97,111 @@ export function registerFreeroutingTools(server: McpServer, callKicadScript: Fun
      },
    );
  
@@ -5275,7 +5873,7 @@ index d9942f7..485eade 100644
 +  // Undo the last autoroute run (PowerLab patch)
 +  server.tool(
 +    "undo_autoroute",
-+    "Undo the last autoroute run: put back the saved .kicad_pcb from before it. Each successful autoroute run keeps that copy in autoroute-backup/ next to the board; this copies it back over the board file and removes it, so it works once. Everything done to the board after the run is lost too (clean_up_routing, refilled zones, vias, edits). With the board open in KiCad, use File > Revert right after, before any edit or save there.",
++    "Undo the last autoroute run: put back the saved .kicad_pcb from before it. Each successful autoroute run keeps that copy in autoroute-backup/ next to the board; this copies it back over the board file and removes it, so it works once. Everything done to the board after the run is lost too (clean_up_routing, refilled zones, vias, edits). Also undoes a powerlab_route run. With the board open in KiCad, the old copper is put back there and saved there; otherwise use File > Revert right after, before any edit or save in KiCad.",
 +    {
 +      boardPath: z.string().optional().describe("Path to .kicad_pcb file (default: current board)"),
 +    },
@@ -5292,19 +5890,77 @@ index d9942f7..485eade 100644
 +    },
 +  );
 +
++  // The PowerLab router (PowerLab patch): a local router that applies the lab rules
++  server.tool(
++    "powerlab_route",
++    "Route signal nets with the PowerLab router instead of Freerouting. It runs on this computer in KiCad's Python and applies the METU Power Lab rules while routing: GND pours kept whole, no tracks under inductors or transformers, escape room at fine-pitch pins, rule-area keepouts and the .kicad_dru clearance rules, buses routed as parallel runs, few corners and vias, tracks entering pads straight at their centres. It routes the saved .kicad_pcb, so save in KiCad first. The chosen nets are routed from scratch: their unlocked tracks and vias are removed first; nets with locked copper (hand-routed) are left out. A run takes minutes (about 10-15 on a 2-layer board with ~50 connections), so it runs in the background: this call returns at once, then call powerlab_route_status until it reports the result. At the end the result goes into KiCad's open board and is saved there (no File > Revert), or into the board file when KiCad doesn't have it open. The board from before the run is kept; undo_autoroute puts it back.",
++    {
++      boardPath: z.string().optional().describe("Path to .kicad_pcb file (default: current board)"),
++      nets: z
++        .array(z.string())
++        .optional()
++        .describe("Nets to route (default: every net of the Default net class). Power, gate-drive and other hand-routed nets should be locked or left out."),
++      pourNets: z
++        .array(z.string())
++        .optional()
++        .describe("Nets that connect through their copper pours and are never routed (default: ['GND']). The router keeps these pours whole."),
++      gridPitch: z.number().optional().describe("Routing grid in mm (default 0.1)"),
++      turnCost: z.number().optional().describe("Cost of a corner, in mm of track (default 1.5). Higher: fewer corners, longer tracks."),
++      viaCost: z.number().optional().describe("Cost of a via, in mm of track (default 4.0). Higher: fewer vias, longer tracks."),
++      diagonalCost: z.number().optional().describe("Cost factor of a 45-degree step (default 1.3)"),
++      layerCosts: z
++        .array(z.number())
++        .optional()
++        .describe("Cost factor per copper layer, top first (default [1.0, 1.2]: the bottom costs 20% more)"),
++    },
++    async (args: any) => {
++      const result = await callKicadScript("powerlab_route", args);
++      return {
++        content: [
++          {
++            type: "text",
++            text: JSON.stringify(result, null, 2),
++          },
++        ],
++      };
++    },
++  );
++
++  server.tool(
++    "powerlab_route_status",
++    "Wait for the PowerLab router run started with powerlab_route and report its progress (connections routed so far). When the run has finished, puts the result on the board (in KiCad when it has the board open, saved there) and returns the router's report: connections routed and left with the reason, vias, track length, new DRC errors against the board before routing, and time. If the board was edited or saved during the run, the result is not applied (start again). Call it again while state is 'running'.",
++    {
++      boardPath: z.string().optional().describe("Path to .kicad_pcb file (default: current board)"),
++      wait: z.number().optional().describe("Seconds to wait for the run to finish before reporting progress (default 300, at most 900)"),
++      cancel: z.boolean().optional().describe("Stop the run; the board stays unchanged"),
++    },
++    async (args: any) => {
++      const result = await callKicadScript("powerlab_route_status", args);
++      return {
++        content: [
++          {
++            type: "text",
++            text: JSON.stringify(result, null, 2),
++          },
++        ],
++      };
++    },
++  );
++
    // Export DSN only
    server.tool(
      "export_dsn",
 diff --git a/src/tools/registry.ts b/src/tools/registry.ts
-index 902f7b1..efaf3dc 100644
+index 902f7b1..3a1ef9b 100644
 --- a/src/tools/registry.ts
 +++ b/src/tools/registry.ts
-@@ -235,7 +235,7 @@ export const toolCategories: ToolCategory[] = [
+@@ -235,7 +235,8 @@ export const toolCategories: ToolCategory[] = [
    {
      name: "autoroute",
      description: "Freerouting autorouter: automatic PCB routing via Specctra DSN/SES",
 -    tools: ["autoroute", "export_dsn", "import_ses", "check_freerouting"],
-+    tools: ["autoroute", "export_dsn", "import_ses", "check_freerouting", "clean_up_routing", "undo_autoroute"],
++    tools: ["autoroute", "export_dsn", "import_ses", "check_freerouting", "clean_up_routing", "undo_autoroute", "powerlab_route",
++      "powerlab_route_status"],
    },
    {
      name: "validation",
