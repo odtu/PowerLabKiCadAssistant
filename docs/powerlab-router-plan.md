@@ -1,6 +1,6 @@
 # PowerLab router: design plan
 
-Status: milestones 0–4 done (results in §12–16). The router isn't a tool yet: its code is in the MCP patch (`python/commands/powerlab_router/`), and `tools/router_bench.py` runs it. Phase 1 (pad-centre entry and shortcuts in `clean_up_routing`) is on hold.
+Status: milestones 0–5 done (results in §12–17). The router isn't a tool yet: its code is in the MCP patch (`python/commands/powerlab_router/`), and `tools/router_bench.py` runs it. Phase 1 (pad-centre entry and shortcuts in `clean_up_routing`) is on hold.
 
 ## 1. Why
 
@@ -457,4 +457,40 @@ The 6 entries "at an angle" are 45° entries into round header pins, on purpose.
 - shapes for the non-bus connections: whole-connection patterns (L/Z between the two pins and their escape vias) before the search, the way the bus river works;
 - a "step-in" for rivers, where a track moves to the slot freed by the one before (the hand routing does that);
 - a tidiness measure in `route_quality.py`: parallel runs at pitch, bends aligned.
+
+## 17. Milestone 5: whole-connection shapes, river step-in (2026-10-16)
+
+**What was built:**
+- **River step-in** (`bus.py`): once the track before has turned off into its pin, a track moves with one 45° step into the slot it freed, 1.5 pitches below where that track left the channel. This is what the hand routing does: IO35 runs at 104.8 mm, then steps to 104.4 under IO34.
+  - The step is taken only if the end bend still lies fully off the far pin's pad. The first version put it inside round header pads (8 off-centre ends).
+  - `step_in` is an option on the router and on `bus.plan`.
+- **Whole-connection shapes** (`Router._draw`), tried before the search for every connection that isn't a bus. The ways a person would draw it:
+  - on one layer, pin to pin, straight, with one bend or as a Z;
+  - an escape via at one pin, the shape on the other layer, then straight into the other pin;
+  - escape vias at both pins, with the shape between them.
+
+  They are scored like the search (length, lab costs, bends, jogs, vias), and the cheapest that fits is kept. The search runs only when even that is much dearer than a straight line in the open pour.
+  - Found on the way: the first limit ("1.4× a straight line") ignored that open pour costs about 4× per mm on purpose, so every shape failed it.
+- **Bus plans chosen by the pours:** each bus's choices (step-in or not; via column side and distance) are placed, the pours measured, and taken out again. The plan that leaves the pours most whole wins, then the one that places most.
+
+**TestPCB, full board.** Top pour = largest-piece share in KiCad's fill.
+
+| | Hand-routed | M4 | **M5 default** (step-in + shapes) | M5, shapes only |
+|---|---|---|---|---|
+| Routed (of 52) / new DRC errors | 52 / — | 50 / 0 | **51 / 0** | 50 / 1 starved thermal |
+| Drawn whole (not searched) | — | 0 | 13 | 13 |
+| Segments / short jogs | 248 / 10 | 304 / 44 | 344 / 56 | 318 / 44 |
+| Vias | 23 | 32 | 35 | 36 |
+| Parallel runs at exactly 0.4 mm | 31 | 18 | 16 | 18 |
+| Top / bottom GND pour, largest piece | 91% / 94% | 98% / 98% | **58%** / 98% | 97% / 98% |
+| Time | — | 223 s | 234 s | 279 s |
+
+By eye, around the USB-UART chip the QFN's left pins now leave as a tidy parallel bundle of four, as in the hand routing. The right side still has more escape vias than by hand.
+
+**What this showed:**
+- **Step-in routes one more connection, but cuts the top GND pour in two** in KiCad's fill. The router didn't see it: its own measure said 98% / 98%.
+  - The reason: it lets the pour flow through GND pads. In KiCad's fill, a pad with thermal relief sits in a gap ring and joins the pour only through its spokes, so two pieces meeting at such a pad stay separate polygons. Both are still GND, connected through that pad (DRC accepts it), but the plane is weaker.
+  - Next: count thermal-relief pour-net pads as breaks in the pour measure, reading which pads connect solid from the custom rules (`zone_connection`). Then the pour checks and the bus chooser see the real split.
+- **The shapes don't lower the counts yet:** a few more vias, because escape-via topologies are cheap. They make the non-bus areas tidier by eye. Next: weigh vias against bends for these shapes.
+- **Pour integrity is still the fragile part.** Small changes flip a pour between whole and two pieces, because the last connections close walls that earlier choices left open. The fix belongs in planning (keeping corridors open), not in checks afterwards.
 

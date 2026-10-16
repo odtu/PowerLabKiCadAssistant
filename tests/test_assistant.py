@@ -1070,6 +1070,15 @@ class McpPatchTests(unittest.TestCase):
         self.assertGreater(moved[first][2][0], x0 + 0.25)
         self.assertGreaterEqual(moved[first + 1][2][0], moved[first][2][0] + 0.4 - 1e-9)
 
+        # step-in: once a track has turned off into its pin, the next moves into its slot
+        down = sorted((i for i in shapes if pairs[i][1][1] > pairs[i][0][1] + 0.05), key=lambda i: pairs[i][0][1])
+        def last_run(pts):
+            return [u[0] for u, v in zip(pts[2:-1], pts[3:-1]) if abs(u[0] - v[0]) < 1e-9][-1]
+        stepped = [(prev, i) for prev, i in zip(down, down[1:]) if len(shapes[i]) > 6]
+        self.assertTrue(stepped)
+        for prev, i in stepped:
+            self.assertAlmostEqual(last_run(shapes[i]), last_run(shapes[prev]), places=6)
+
         # pins in a different order on the two rows would cross: no plan
         crossed = [pairs[1], (pairs[0][0], pairs[2][1]), (pairs[2][0], pairs[0][1])]
         self.assertEqual(module.plan(crossed, 0.4, 0.9, 1.0), {})

@@ -10,7 +10,8 @@ JSON summary: routed/left per group, time, search nodes, retries, new DRC errors
 The board's .kicad_pro and .kicad_dru are copied next to the output, so the router and
 DRC use the same custom rules. Costs can be set with the environment variables TURN, RUN
 (min straight cells between turns), VIA, NODES (node limit per search), ORDER
-("bus", "length" or "constrained"), RIPUP (1/0), FINISH (1/0, the shortcut pass) and LAYERS
+("bus", "length" or "constrained"), RIPUP, FINISH (the shortcut pass), STEPIN (river
+step-in), DRAW (whole-connection shapes before the search; all 1/0) and LAYERS
 (cost factor per copper layer, top first, e.g. "1.3,1.0").
 """
 import json
@@ -53,7 +54,8 @@ def main(src, out, only=None, pitch=0.1):
                   layer_factor=dict(enumerate(float(f) for f in env("LAYERS", "1.0,1.2").split(","))),
                   max_nodes=int(env("NODES", "1000000")), weight=float(env("WEIGHT", "1.0")))
     router = Router(b, pitch=pitch, costs=costs, order=env("ORDER", "bus"), ripup=env("RIPUP", "1") == "1",
-                    finish=env("FINISH", "1") == "1")
+                    finish=env("FINISH", "1") == "1", step_in=env("STEPIN", "1") == "1",
+                    draw=env("DRAW", "1") == "1")
 
     def log(r):
         print(r["net"], r["connection"], r["group"], r["event"], r.get("nodes"), r.get("seconds"))

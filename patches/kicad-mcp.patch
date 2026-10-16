@@ -1086,10 +1086,10 @@ index 0000000..acab7e9
 +in odtu/PowerLabKiCadAssistant. Milestone 0: grid, search and pad entry lanes."""
 diff --git a/python/commands/powerlab_router/bus.py b/python/commands/powerlab_router/bus.py
 new file mode 100644
-index 0000000..719fe25
+index 0000000..341e276
 --- /dev/null
 +++ b/python/commands/powerlab_router/bus.py
-@@ -0,0 +1,110 @@
+@@ -0,0 +1,144 @@
 +"""River routing of a bus between two parallel pin rows, as drawn by hand (no pcbnew).
 +
 +A module's pin row and a header's pin row side by side, with one connection per pin
@@ -1107,7 +1107,7 @@ index 0000000..719fe25
 +"""
 +
 +def plan(pairs, pitch, edge_a, edge_b, clear=None, chamfers=(0.6, 0.4, 0.25), tolerance=0.05, step=0.1,
-+         round_b=False):
++         round_b=False, step_in=True):
 +    """Shapes for a bus. `pairs`: [(a centre, b centre)] in world mm; `edge_a`, `edge_b`:
 +    how far from its row's centre line a track's centre must stay in the channel (pad
 +    half-width + clearance + half a track). `clear(index, points)` says whether the shape
@@ -1163,6 +1163,7 @@ index 0000000..719fe25
 +    up = [i for i in reversed(order_a) if local[i][0][1] - local[i][1][1] > tolerance]
 +    for members, sign in ((down, 1.0), (up, -1.0)):
 +        nxt = lo + min(chamfers)
++        placed_here = []
 +        for i in members:
 +            a, b = local[i]
 +            dy = abs(b[1] - a[1])
@@ -1185,8 +1186,8 @@ index 0000000..719fe25
 +                        for dd in (0.5, 0.7, 1.0):
 +                            for side in (1.0, -1.0):
 +                                yh = b[1] + side * sign * dd  # the level run, beside the pin's row
-+                                down = sign * (yh - sign * e - (a[1] + sign * e))
-+                                if down < -1e-6 or x - e <= b[0] + dd + 1e-6:
++                                fall = sign * (yh - sign * e - (a[1] + sign * e))
++                                if fall < -1e-6 or x - e <= b[0] + dd + 1e-6:
 +                                    continue
 +                                tries.append(p[:3] + [(x, yh - sign * e), (x - e, yh), (b[0] + dd, yh), b])
 +                    for q in tries:
@@ -1194,12 +1195,45 @@ index 0000000..719fe25
 +                            out[i] = q
 +                            nxt = x + pitch
 +                            placed = True
++                            placed_here.append(i)
 +                            break
 +                    if placed:
 +                        break
 +                x += step
 +            # one that found no slot goes to the search; the next ones may still fit
++        if step_in:
++            _step_in(out, placed_here, local, sign, pitch, clear, world, lo)
 +    return {i: world(p) for i, p in out.items()}
++
++
++def _step_in(out, order, local, sign, pitch, clear, world, lo):
++    """Once the track before has turned off into its pin, a track moves over into the slot
++    it freed, as the hand-routed TestPCB does: a 45 degree step from its own slot to the
++    one before, a pitch and a half below where that track left the channel. Only for the
++    plain shape (run, bend, level into the pin); kept only if it is clear."""
++    for prev, k in zip(order, order[1:]):
++        p, q = out[prev], out[k]
++        if len(q) != 6:
++            continue  # not the plain shape
++        a, b = local[k]
++        xk = q[2][0]
++        runs = [u[0] for u, v in zip(p[2:-1], p[3:-1]) if abs(u[0] - v[0]) < 1e-9]
++        if not runs:
++            continue
++        xp = runs[-1]  # where the track before ran last along the channel
++        if xk - xp < pitch - 1e-6:
++            continue
++        left = max(sign * pt[1] for pt in p) * sign  # the furthest row the track before reaches
++        ys = left + sign * 1.5 * pitch  # below that, its slot is free
++        top = ys - sign * (xk - xp)
++        e = xk - q[4][0]  # the end bend's size
++        if xp - e < lo - 1e-6:
++            continue  # the end bend would land on the far pin's pad
++        if sign * (top - q[2][1]) < 1e-6 or sign * (b[1] - sign * e - ys) < 1e-6:
++            continue  # no room for the step above or below
++        new = [q[0], q[1], q[2], (xk, top), (xp, ys), (xp, b[1] - sign * e), (xp - e, b[1]), q[-1]]
++        if clear is None or clear(k, world(new)):
++            out[k] = new
 diff --git a/python/commands/powerlab_router/costs.py b/python/commands/powerlab_router/costs.py
 new file mode 100644
 index 0000000..a2aef7b
@@ -2610,10 +2644,10 @@ index 0000000..d5193b9
 +    return max(0, len(pts) - 2)
 diff --git a/python/commands/powerlab_router/router.py b/python/commands/powerlab_router/router.py
 new file mode 100644
-index 0000000..50db9f9
+index 0000000..61faf09
 --- /dev/null
 +++ b/python/commands/powerlab_router/router.py
-@@ -0,0 +1,777 @@
+@@ -0,0 +1,894 @@
 +"""The PowerLab router's main loop (plan §4.2-4.6).
 +
 +Connections are the edges of a minimum spanning tree over each net's pads. Groups are
@@ -2638,7 +2672,7 @@ index 0000000..50db9f9
 +import numpy as np
 +import pcbnew
 +
-+from commands.powerlab_router.costs import LabCosts, labels, pieces
++from commands.powerlab_router.costs import HUG, LabCosts, labels, pieces
 +from commands.powerlab_router.groups import GROUPS, classify, is_clock
 +from commands.powerlab_router.model import FINE_PITCH, MM, RouterBoard, _grown, _polys, is_round
 +from commands.powerlab_router import bus as river
@@ -2719,7 +2753,8 @@ index 0000000..50db9f9
 +
 +class Router:
 +    def __init__(self, board, pitch=0.1, pour_nets=("GND",), costs=None, rules=None, groups=None,
-+                 order="bus", ripup=True, finish=True):
++                 order="bus", ripup=True, finish=True, step_in=True, draw=True):
++        self.step_in, self.draw = step_in, draw
 +        self.order, self.ripup, self.finish = order, ripup, finish
 +        self.rb = RouterBoard(board, pitch=pitch, pour_nets=pour_nets, rules=rules)
 +        self.costs = costs or Costs(layer_factor={1: 1.2} if len(self.rb.layers) == 2 else None)
@@ -2761,50 +2796,69 @@ index 0000000..50db9f9
 +        1. as a river on the layer both rows share (bus.py), each track in the first free
 +           slot of the channel, a pitch beside the one before;
 +        2. the rest, when the near row is on one layer and the far row on both: a short
-+           stub from each pin to an escape via, the vias in one column beside the pin row
-+           (on whichever side places more), then a river on the other layer from the via
-+           column into the far row.
-+        What doesn't fit goes to the search."""
-+        rb = self.rb
++           stub from each pin to an escape via, the vias in one column beside the pin row,
++           then a river on the other layer from the via column into the far row.
++        The planner has a few real choices (step-in or not, which side and how far out the
++        via column goes). Each is placed, the pours measured, and taken out again; the one
++        that leaves the pours most whole wins, then the one that places most. A pin row is
++        itself a wall to a pour (its gaps are too narrow to fill), so a bus placed without
++        looking can close the last way round a part. What doesn't fit goes to the search."""
 +        placed = []
 +        buses = {}
 +        for c in conns:
 +            if c.bus:
 +                buses.setdefault(c.bus, []).append(c)
 +        for _name, members in sorted(buses.items(), key=lambda kv: -len(kv[1])):
-+            ends = [self._near_far(c) for c in members]
-+            shared = [L for L in rb.layers if all(a.IsOnLayer(L) and b.IsOnLayer(L) for a, b in ends)]
-+            if not shared:
++            options = self._bus_options(members)
++            if not options:
 +                continue
-+            L = shared[0]
-+            key = rb.key(members[0].net)
-+            w, vd = key[1], key[2]
-+            pitch = w + max(rb.clearance_to(o, key, "Track", L) for c in members for o in (c.a, c.b))
-+            pairs = [(_xy(a), _xy(b)) for a, b in ends]
-+            axis = self._row_axis([p[0] for p in pairs])
-+            a_pads, b_pads = [a for a, _b in ends], [b for _a, b in ends]
-+            edge_a = self._row_edge(a_pads, axis, key, L, w)
-+            edge_b = self._row_edge(b_pads, axis, key, L, w)
-+            done = self._place(members, river.plan(pairs, pitch, edge_a, edge_b, clear=self._clear_on(members, L, w),
-+                                                   round_b=all(is_round(b, L) for b in b_pads)),
-+                               lambda i, pts: ([(rb.layers.index(L), pts)], []))
-+            placed += done
-+            # 2. escape vias and a river on the other layer
-+            rest = [i for i, c in enumerate(members) if c not in done]
-+            others = [M for M in rb.layers if M != L and all(b.IsOnLayer(M) for _a, b in ends)]
-+            if len(rest) < 2 or not others or any(len([M for M in rb.layers if a.IsOnLayer(M)]) > 1 for a in a_pads):
++            best, best_key = None, None
++            for opt in options:
++                done = self._place_option(members, opt)
++                key = (self._pour_quality() if self.pour_net else (0, 0), -len(done))
++                for c in done:
++                    self._unroute(c)
++                if best_key is None or key < best_key:
++                    best, best_key = opt, key
++            placed += self._place_option(members, best)
++        self._q = None
++        return placed
++
++    def _bus_options(self, members):
++        """Candidate plans for a bus: [(step_in, top shapes, bottom shapes, vias, layers)]."""
++        rb = self.rb
++        ends = [self._near_far(c) for c in members]
++        shared = [L for L in rb.layers if all(a.IsOnLayer(L) and b.IsOnLayer(L) for a, b in ends)]
++        if not shared:
++            return []
++        L = shared[0]
++        key = rb.key(members[0].net)
++        w, vd = key[1], key[2]
++        pitch = w + max(rb.clearance_to(o, key, "Track", L) for c in members for o in (c.a, c.b))
++        pairs = [(_xy(a), _xy(b)) for a, b in ends]
++        axis = self._row_axis([p[0] for p in pairs])
++        a_pads, b_pads = [a for a, _b in ends], [b for _a, b in ends]
++        edge_a = self._row_edge(a_pads, axis, key, L, w)
++        edge_b = self._row_edge(b_pads, axis, key, L, w)
++        others = [M for M in rb.layers if M != L and all(b.IsOnLayer(M) for _a, b in ends)]
++        one_layer = not any(len([M for M in rb.layers if a.IsOnLayer(M)]) > 1 for a in a_pads)
++        n = self._toward(pairs, axis)  # unit vector from the near row to the far row
++        options = []
++        for step_in in ((True, False) if self.step_in else (False,)):
++            top = river.plan(pairs, pitch, edge_a, edge_b, clear=self._clear_on(members, L, w),
++                             round_b=all(is_round(b, L) for b in b_pads), step_in=step_in)
++            options.append((step_in, top, {}, {}, (L, None)))
++            rest = [i for i in range(len(members)) if i not in top]
++            if len(rest) < 2 or not others or not one_layer:
 +                continue
 +            M = others[0]
-+            n = self._toward(pairs, axis)  # unit vector from the near row to the far row
-+            best = []
 +            # the via column beyond the pins or on the channel side, at a few distances: a
 +            # column further out leaves more room for the bundle on the other layer
 +            for side, extra in [(s, x) for s in (-1.0, 1.0) for x in VIA_COLUMN_EXTRA]:
 +                vias, ok = {}, []
 +                for i in rest:
 +                    a, _b = ends[i]
-+                    half = self._half_across(a, axis)
-+                    off = half + 0.25 + vd / 2 + 0.05 + extra  # via ring at least 0.25 mm off the pad (§3.5)
++                    off = self._half_across(a, axis) + 0.25 + vd / 2 + 0.05 + extra  # ring 0.25 mm off the pad (§3.5)
 +                    v = (_xy(a)[0] + side * n[0] * off, _xy(a)[1] + side * n[1] * off)
 +                    if rb.clear(members[i].net, L, _xy(a), v, w) and self._via_fits(members[i].net, v):
 +                        vias[i] = v
@@ -2815,16 +2869,22 @@ index 0000000..50db9f9
 +                edge_v = vd / 2 + max(rb.clearance_to(o, key, "Via", M) for c in members for o in (c.a, c.b)) + w / 2
 +                plan = river.plan(sub, pitch, edge_v, self._row_edge(b_pads, axis, key, M, w),
 +                                  clear=self._clear_on([members[i] for i in ok], M, w),
-+                                  round_b=all(is_round(b, M) for b in b_pads))
-+                found = {ok[j]: pts for j, pts in plan.items()}
-+                if len(found) > len(best):
-+                    best = [(i, vias[i], found[i]) for i in sorted(found)]
-+            shapes2 = {i: pts for i, _v, pts in best}
-+            via_at = {i: v for i, v, _p in best}
-+            placed += self._place(members, shapes2, lambda i, pts: (
-+                [(rb.layers.index(L), [_xy(ends[i][0]), via_at[i]]), (rb.layers.index(M), pts)], [via_at[i]]))
++                                  round_b=all(is_round(b, M) for b in b_pads), step_in=step_in)
++                bottom = {ok[j]: pts for j, pts in plan.items()}
++                if bottom:
++                    options.append((step_in, top, bottom, {i: vias[i] for i in bottom}, (L, M)))
++        return options
++
++    def _place_option(self, members, opt):
++        rb = self.rb
++        _step, top, bottom, vias, (L, M) = opt
++        ends = [self._near_far(c) for c in members]
++        done = self._place(members, top, lambda i, pts: ([(rb.layers.index(L), pts)], []))
++        if bottom:
++            done += self._place(members, bottom, lambda i, pts: (
++                [(rb.layers.index(L), [_xy(ends[i][0]), vias[i]]), (rb.layers.index(M), pts)], [vias[i]]))
 +        self._q = None
-+        return placed
++        return done
 +
 +    def _near_far(self, c):
 +        """(near pad, far pad): the near one on the part with pads on one layer only (the
@@ -2989,6 +3049,7 @@ index 0000000..50db9f9
 +            "search_seconds": round(totals["search_s"], 1),
 +            "nodes": totals["nodes"],
 +            "retries": totals["retries"],
++            "drawn_whole": totals.get("drawn", 0),
 +            "ripups": totals["ripups"],
 +            "pour_cuts_kept": totals.get("pour_cuts", 0),
 +            "connections_ripped": totals["ripped"],
@@ -3204,8 +3265,13 @@ index 0000000..50db9f9
 +                items = []
 +            blocked, via_ok = rb.obstacles(conn.net, extra)
 +            penalty = self._penalty(conn, blocked)
-+            geo, info = rb.route(conn.net, conn.a, conn.b, blocked, via_ok, self.costs,
-+                                 penalty=penalty, via_costs=self._via_costs(conn))
++            geo = self._draw(conn, blocked, via_ok, penalty) if self.draw else None
++            if geo is not None:
++                info = {"nodes": 0, "seconds": 0.0, "drawn": True}
++                totals["drawn"] = totals.get("drawn", 0) + 1
++            else:
++                geo, info = rb.route(conn.net, conn.a, conn.b, blocked, via_ok, self.costs,
++                                     penalty=penalty, via_costs=self._via_costs(conn))
 +            totals["nodes"] += info["nodes"]
 +            totals["search_s"] += info["seconds"]
 +            if geo is None:
@@ -3281,6 +3347,91 @@ index 0000000..50db9f9
 +                st["dearer_or_not_clear"] += 1
 +            out.append((L, pts[:lo] + best + pts[hi + 1:]))
 +        return out, vias
++
++    def _draw(self, conn, blocked, via_ok, penalty):
++        """The ways a person would draw one connection, tried before the search: on one
++        layer, pin to pin as a straight line, one bend or a Z (patterns.py); or with an
++        escape via at one pin or at both and the shape on the other layer. Every way is
++        scored like the search's (length, the lab costs, BEND per bend, SHORT per jog, the
++        vias) and the cheapest that fits is taken, unless even that is much dearer than
++        a straight line: then the search is better placed to find a way round."""
++        rb, g = self.rb, self.rb.grid
++        net = conn.net
++        la, lb = rb.lanes(conn.a, blocked, net, exact=False), rb.lanes(conn.b, blocked, net, exact=False)
++        if not la or not lb:
++            return None
++        _cls, w, vd, _n = rb.key(net)
++        via_cost = self.costs.via * 0.5  # escape vias at the pins (costs.ESCAPE_VIA_FACTOR)
++        scorers = {}
++
++        def score_of(L):
++            if L not in scorers:
++                scorers[L] = self._scorer(L, blocked, penalty)
++            return scorers[L]
++
++        def via_at(lane):
++            ux, uy = lane.exit[0] - lane.centre[0], lane.exit[1] - lane.centre[1]
++            n = math.hypot(ux, uy) or 1.0
++            out = vd / 2 + 0.05
++            v = (lane.exit[0] + ux / n * out, lane.exit[1] + uy / n * out)
++            i, j = g.cell(*v)
++            return v if 0 <= i < g.nx and 0 <= j < g.ny and via_ok[j * g.nx + i] else None
++
++        layers = range(len(rb.layers))
++        cands = []  # (rough cost, pieces, vias)
++        for A in la:
++            for B in lb:
++                if A.layer == B.layer:  # one layer, pin to pin
++                    for s in shapes(A.exit, A.direction, B.exit, (B.direction + 4) % 8, most=3, step=0.2):
++                        cands.append((A.cost + B.cost, [(A.layer, [A.centre] + s + [B.centre])], []))
++            va = via_at(A)
++            if va is None:
++                continue
++            for L2 in layers:
++                if L2 == A.layer:
++                    continue
++                for B in lb:
++                    if B.layer == L2:  # escape via at a, the far pin on the other layer
++                        for s in shapes(va, None, B.exit, (B.direction + 4) % 8, most=3, step=0.2):
++                            cands.append((A.cost + B.cost + via_cost,
++                                          [(A.layer, [A.centre, va]), (L2, s + [B.centre])], [va]))
++                    elif B.layer != L2:  # escape vias at both pins
++                        vb = via_at(B)
++                        if vb is None:
++                            continue
++                        for s in shapes(va, None, vb, None, most=3, step=0.2):
++                            cands.append((A.cost + B.cost + 2 * via_cost,
++                                          [(A.layer, [A.centre, va]), (L2, s), (B.layer, [vb, B.centre])], [va, vb]))
++        if not cands:
++            return None
++        straight = math.dist(_xy(conn.a), _xy(conn.b))
++        # in the open pour every mm of track costs more on purpose (costs.HUG), so allow for
++        # that; a way that crosses something really dear (an inductor, a pin's escape room)
++        # still goes to the search, which can go round it
++        open_factor = 1.0 + HUG * self.costs.unit / self.rb.grid.pitch
++        limit = (1.4 * straight + 3 * BEND) * open_factor + 2 * via_cost + 2.0
++
++        def rough(c):
++            base, pieces, vias = c
++            return base + sum(math.dist(p, q) for _L, pts in pieces for p, q in zip(pts, pts[1:])) + \
++                BEND * sum(max(0, len(pts) - 2) for _L, pts in pieces)
++        cands.sort(key=rough)
++        scored = []
++        for c in cands:
++            if rough(c) > limit:
++                break
++            base, pieces, vias = c
++            if all(self._grid_free(pts, L, blocked) for L, pts in pieces):
++                cost = base + sum(score_of(L)(pts) for L, pts in pieces)
++                if cost <= limit:
++                    scored.append((cost, pieces, vias))
++            if len(scored) >= SHAPE_TRIES:
++                break
++        for cost, pieces, vias in sorted(scored, key=lambda c: c[0]):
++            if all(rb.clear(net, rb.layers[L], p, q, w) for L, pts in pieces for p, q in zip(pts, pts[1:])) and \
++                    all(self._via_fits(net, v) for v in vias):
++                return pieces, vias
++        return None
 +
 +    def _scorer(self, L, blocked, penalty):
 +        g = self.rb.grid
