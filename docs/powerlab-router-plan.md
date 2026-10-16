@@ -1,6 +1,6 @@
 # PowerLab router: design plan
 
-Status: milestones 0–8 done (results in §12–20). Since §21 the router is a kicad MCP tool, `powerlab_route` (with `powerlab_route_status`), offered by the `powerlab-autoroute` skill; `tools/router_bench.py` still runs it from a terminal. Phase 1 (pad-centre entry and shortcuts in `clean_up_routing`) is on hold.
+Status: milestones 0–8 done (results in §12–20). Since §21 the router is a kicad MCP tool, `powerlab_route` (with `powerlab_route_status`), offered by the `powerlab-autoroute` skill; `tools/router_bench.py` still runs it from a terminal. Since §22 (1.0) it is the panel's only router: Freerouting is gone from the panel, and the router shows its copper live in KiCad. Phase 1 (pad-centre entry and shortcuts in `clean_up_routing`) is on hold.
 
 ## 1. Why
 
@@ -644,3 +644,62 @@ A corner cost of 3.0 brings the corners near the hand count (195) but loses a co
 - The 300 s status calls returned through the Node bridge; three calls cover a run.
 
 **Not done:** no live preview while routing (the plan's §3 "Live"); the copper appears at the end. The status phase stays "routing" through the pour repair and finish passes (2–4 minutes after the last connection).
+
+## 22. Live, joined, straighter; power pours and stitching (2026-10-16, release 1.0)
+
+**Feedback on §21** (the maintainer, from KiCad screenshots of TestPCB):
+- no live display while the router works;
+- corners that serve nothing: a track wiggling along a header column, bends right before a pad;
+- pads only entered up, down, left or right: a 45° entry straight to the centre is fine;
+- power rails (3V3, 5V) not given pours, against the lab rules (§3.3);
+- GND pours should join pads with thermal reliefs; solid only for high-current planes;
+- duplicate tracks of a net;
+- a loop: a track making a U-turn round a via;
+- stitching vias;
+- what the router can't do, Claude routes by hand; and Freerouting out of the panel.
+
+**What was found:**
+- **Duplicates:** two connections of one net leaving the same pad toward the same side, or both ending at one pad, ran side by side 0.3–0.4 mm apart for millimetres (ESP_RXD0 into J3.5: the module's track and the USB chip's), or on top of each other on a shared lane.
+- **Zigzags:** the finishing pass judged a straight line by the search's costs, including the pour's hug and sliver costs. Those make a track that follows pad outlines (hugging) cheaper than one that crosses the gap between pads, so a wiggle along a header column was "cheaper" than the straight line, and corners cost nothing there.
+- **The loop** was a detour: routed early round a via cluster, never revisited once the board around it was done.
+- **Skewed runs into vias** (IO2, also in §21): pad → via → other layer → via → pad with every piece one straight run. Aligning both ends to the off-grid pads moved the first via back, leaving a run 0.05 mm off 45°.
+
+**What was built:**
+- **Live display** (`powerlab_route.py`, `_Live`): the router process connects to KiCad itself (the worker passes its socket and token), unfills the pours, and pushes its board's copper into KiCad at most every 2 s (one commit each, `LiveCopper`). `live.json` keeps what it last showed, so applying the result can tell the live copper from an edit; a run that fails or is stopped puts KiCad's copper back as saved. `live: false` turns it off.
+- **T-junctions** (`model.route` `tree`, `search` goals with a set of directions): a connection may end on the net's own tracks already joined to its far pad, at an angle (never along the track), at least 1 mm from a pad centre (the pad is the junction there, §3.4). Rip-ups and the pour repair take the tracks that end on a moved track along. A lane another track of the net already leaves by costs 3 mm more. At the end, collinear overlapping tracks of a net are merged.
+- **45° pad entry:** pads that aren't fine pitch get diagonal lanes (0.3 mm dearer on a pad with axes), and the finishing pass may leave such a pad at any 45° multiple from its centre.
+- **Finishing pass** (`finish.py`): a corner costs 1.5 mm there too, the pour's hug and sliver costs are left out, and instead the pour is checked on KiCad's fill after each connection; a T-junction end stays on its track and never turns along it. The grids are kept current, because more passes follow.
+- **Second look** (`Router._improve`): up to 15 tracks that go more than 1.6× their straight distance or bend more than 6 times are routed again on the finished board, and kept if they score better (length, corners, vias) and leave the pour as whole.
+- **Vias slid square** (`_square_middles`): the two vias of such a path slide along their own runs by the least that makes the middle run a 45° multiple.
+- **Power rails** (`pick_nets`, `pours.py`): nets of other classes that have no tracks yet are routed too, power first at the class width. Then every power rail with tracks (routed now or by hand) gets a pour round its tracks and pads, 1 mm beyond them, above the GND pour, with thermal reliefs (solid only for `solidPourNets`). Not on the bottom of a 2-layer board (the GND plane), and a pour that leaves the GND pour in more or smaller pieces is taken out again.
+- **Stitching vias** (`pours.stitching_vias`): GND vias on a 5 mm grid (`stitchPitch`), each moved to a free spot nearby, where every GND layer is filled round it, clear of other nets, of fine-pitch escape room and of other GND vias.
+- **`add_copper_pour`** takes `padConnection` (thermal by default) and `priority`.
+- **The panel:** no Java or Freerouting downloads (old copies are removed), the Freerouting tools are blocked, and the routing skill starts with one question: by hand, or the PowerLab router and then hand fixes. After routing, Claude runs the design review without asking, then asks the user to look.
+
+**TestPCB, full board, from the hand-routed board** (Default-class nets; pours: largest-piece share, pieces, in KiCad's fill):
+
+| | Hand-routed | §21 (M8) | **§22** |
+|---|---|---|---|
+| Routed (of 52) / new DRC errors | 52 / — | 52 / 0 | **52 / 0** |
+| Segments / corners | 342 / 220 | 336 / 235 | **242 / 142** |
+| Vias (signal nets) | 60 | 30 | **26** |
+| Track length | 801 mm | 607 mm | **579 mm** |
+| Detour, median / worst | 1.20 / 1.77 | 1.26 / 1.63 | **1.16 / 1.56** |
+| Tracks of a net side by side (< 1 mm, parallel) | — | 7 | **0** |
+| Top / bottom GND pour | 91%, 9 / 94%, 3 | 98%, 3 / 99%, 2 | **98%, 3 / 99%, 2** |
+| T-junctions / overlaps merged | — | 0 / 0 | **6 / 2** |
+| Stitching vias | — | — | **36** |
+| Time | — | 814 s | **917 s** (653 s live) |
+
+(The hand-routed column counts every Default-class net of the hand-routed board, so its numbers aren't the router's 52 connections exactly.)
+
+By eye: the U-turn round the via near the QFN is gone, the module's and the USB chip's ESP_RXD0 tracks are one track with a T-junction, and header pins are entered at 45° without the bend before the pad.
+
+**Left:**
+- the longest diagonal is longer (10.9 mm, a bottom-layer run across the module area): straightening merged short diagonals into one;
+- 1 "sharp corner" in `route_quality.py` is a T-junction that lands on a via, not a bend;
+- ESP_EN keeps its 1.6° straight run between two off-grid pins (§16);
+- the +3V3_SYS pour only fits a 0.25 mm band round its tracks: wider ones cut off a top-layer GND island (DRC `starved_thermal`), so they are refused. A person would draw that pour round the regulator and its caps, not along the whole rail; that needs a planner for where the rail's pads cluster.
+
+**End to end through the MCP server, KiCad open on a scratch copy of the hand-routed TestPCB:** `powerlab_route` started with the live display; KiCad showed the copper in 25 updates while it routed, with the pours unfilled. `powerlab_route_status` then applied the result: KiCad already matched it (0 added, 0 removed), zones refilled, saved there. 52 of 52 routed, pours round +3V3_SYS, +5V_SYS and VBUS on F.Cu (thermal reliefs, priority above GND; top GND pour's largest piece about 98% → 64% (it now runs round the rails in two big pieces, stitched to the bottom), 5 → 7 pieces over both layers; bottom plane untouched), 36 stitching vias, 671 s. kicad-cli DRC on the result: 0 errors, 0 unconnected (the hand-routed board: 8 errors). A run stopped by an error put KiCad's copper back as saved (270 added, 269 removed).
+

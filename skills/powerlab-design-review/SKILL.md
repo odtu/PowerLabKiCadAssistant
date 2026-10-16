@@ -8,7 +8,7 @@ description: Review a KiCad PCB layout, fix what can be fixed, and repeat until 
 After you place or route a board, check your own work like a reviewer would, fix what you can, and check again. Stop only when nothing is left that you can fix on your own. Then write one final review for the user: what was fixed, what is still open, and what needs them.
 
 ## When
-- **At the end of every placement or routing task** you did in the panel: a functional block or more placed, nets routed, an autoroute run, pours or stitching vias added. Run it before you say the task is done. Skip it after a single small edit (one part moved, one track added), unless the user asks.
+- **At the end of every placement or routing task** you did in the panel: a functional block or more placed, nets routed, a PowerLab router run, pours or stitching vias added. Run it before you say the task is done. Skip it after a single small edit (one part moved, one track added), unless the user asks.
 - **Whenever the user asks** for a review, a check, or whether the board is ready to order.
 
 Say in one line that you're starting the review, e.g. "Layout done. Reviewing it now: DRC, views, lab rules and the review handbook."
@@ -16,7 +16,7 @@ Say in one line that you're starting the review, e.g. "Layout done. Reviewing it
 ## Before the first round
 1. Load `powerlab-pcb-design-rules` (lab rules §1–§3 and the handbook in its `handbook/` folder) and `powerlab-visual-review`, if they aren't loaded yet.
 2. If the project has `design-requirements.md`, read it: currents, voltages, enclosure, fab, layers. Anything a rule needs that it doesn't say (e.g. phase current for track widths) is a question for the user, not a guess.
-3. **Is KiCad's board up to date?** If a tool changed the `.kicad_pcb` file itself in this task (`autoroute`, `import_ses`, …) and the user hasn't used File → Revert since, stop and ask them to. Your fixes go to KiCad's live board, and saving it would overwrite the file with the old copy.
+3. **Is KiCad's board up to date?** If a tool changed the `.kicad_pcb` file itself in this task (e.g. `clean_up_routing`, or `powerlab_route` while KiCad didn't have the board open) and the user hasn't used File → Revert since, stop and ask them to. Your fixes go to KiCad's live board, and saving it would overwrite the file with the old copy.
 4. Save the board (`save_board`). kicad-cli and the renders read the saved `.kicad_pcb`, not KiCad's live copy. Save again after every group of fixes.
 5. Pick the rules that apply to this board from `handbook/91-checklist.md`. Skip whole sections that don't apply (RF without a radio, HS without fast signals, SMPS without a switching converter), and say which ones you skipped.
 

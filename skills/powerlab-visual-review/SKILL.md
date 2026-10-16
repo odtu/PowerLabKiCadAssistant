@@ -14,7 +14,7 @@ A rendered view shows all of these at a glance. On the lab's ESC3Phase board, re
 
 ## When
 - **Before you start:** one baseline view, so you know what's there.
-- **After every meaningful step:** a functional block placed, a group of nets routed, pours added or refilled, an autoroute run, stitching vias added. Don't batch ten changes and look once at the end.
+- **After every meaningful step:** a functional block placed, a group of nets routed, pours added or refilled, a PowerLab router run, stitching vias added. Don't batch ten changes and look once at the end.
 - **Before you say a placement or routing task is done:** final views, after `refill_zones`.
 - **When the user asks for a review:** at least three views: placement, top copper alone, bottom copper alone. Add the 3D top view when parts or silkscreen matter. One combined view isn't enough, because pours hide the tracks.
 

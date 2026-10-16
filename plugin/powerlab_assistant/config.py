@@ -67,17 +67,6 @@ def mcp_path():
     return config().get("mcp_path", "")
 
 
-def java_home():
-    """Private Java 25 installed by install.ps1 (Freerouting 2.4.1 needs it)."""
-    path = config().get("java_home", "")
-    return path if path and os.path.isfile(os.path.join(path, "bin", "java.exe")) else ""
-
-
-def freerouting_jar():
-    path = config().get("freerouting_jar", "")
-    return path if path and os.path.isfile(path) else ""
-
-
 def source_path():
     """The folder install.ps1 ran from (a git clone, if updates can be pulled)."""
     return config().get("source_path", "")

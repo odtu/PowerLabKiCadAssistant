@@ -129,7 +129,7 @@ class KiCadSource:
         ("Run ERC and summarize violations", "Run ERC on this schematic and summarize the violations"),
         ("Run DRC and summarize violations", "Run DRC on this board and summarize the violations"),
         ("Check the selected parts", "Check the selected parts against their datasheets"),
-        ("Autoroute the remaining nets", "Autoroute the remaining nets with Freerouting"),
+        ("Route the board", "Route this board"),
         ("Export Gerbers for PCBWay", "Export Gerbers and drill files for PCBWay"),
     ]
 

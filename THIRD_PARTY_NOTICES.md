@@ -26,8 +26,6 @@ The installer downloads these from their official sources into `%LOCALAPPDATA%\P
 | [colorlog](https://pypi.org/project/colorlog/), [pydantic](https://pypi.org/project/pydantic/) | | MIT |
 | [requests](https://pypi.org/project/requests/) | | Apache-2.0 |
 | [python-dotenv](https://pypi.org/project/python-dotenv/) | | BSD-3-Clause |
-| [Freerouting 2.4.1](https://github.com/freerouting/freerouting) | autorouting | GPL-3.0. Official release jar, run as a separate program; source on GitHub. |
-| [Eclipse Temurin 25.0.4.1 JRE](https://adoptium.net/) | runs Freerouting | GPL-2.0 WITH Classpath-exception-2.0. Its notices are in the installed `legal/` folder. |
 
 ## Installed by you
 

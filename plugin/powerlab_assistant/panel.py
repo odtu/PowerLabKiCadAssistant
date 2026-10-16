@@ -29,6 +29,13 @@ ALLOWED_TOOLS = [
     # which would also allow Remove-Item.
     "PowerShell(tar -a -cf:*)",
 ]
+# Tools Claude may not use: AskUserQuestion has no one to answer it (see <choices>), and
+# routing is the PowerLab router's or by hand: the kicad MCP server's Freerouting tools
+# are left out of the panel.
+DISALLOWED_TOOLS = [
+    "AskUserQuestion", "mcp__kicad__autoroute", "mcp__kicad__check_freerouting",
+    "mcp__kicad__export_dsn", "mcp__kicad__import_ses",
+]
 
 IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
                ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml"}
@@ -118,11 +125,18 @@ PANEL_NOTE = (
     "For any placement or routing work, also load the powerlab-visual-review skill: render the "
     "board and look at it after every step, fix what you see, and show the user the views. "
     "Save renders in the views folder named below (kicad-cli may write there too).\n"
+    "Routing: when the user asks to route the board or some nets, load the powerlab-autoroute "
+    "skill. Its first step is one question with <choices>: by hand, or with the PowerLab "
+    "router (recommended: it routes the board, then you fix its DRC errors and what it left by "
+    "hand). Freerouting isn't available in the panel; never offer it. Routing by hand means "
+    "you draw the tracks and vias with the kicad tools (route_trace, route_pad_to_pad, "
+    "add_via), following the lab rules.\n"
     "When you finish a placement or routing task, or the user asks for a review, load the "
     "powerlab-design-review skill and follow it: review the board, fix what you can and check "
     "again until nothing you can fix is left, then write the final review to "
     "design-review\\design-review.md in the project folder. The panel shows it to the user "
-    "and saves it as a PDF.\n"
+    "and saves it as a PDF. After routing, do this right away without asking first; only "
+    "then ask the user to look at the board and the review.\n"
     "You can make mistakes: for anything that ends up in hardware (footprints, pinouts, "
     "ratings, design rules), say what the user should double-check against the datasheet."
 )
@@ -823,7 +837,7 @@ class ClaudePanel(wx.Frame):
             args += ["--model", self.model]
         args += ["--effort", self.effort]
         args += ["--allowedTools", ",".join(ALLOWED_TOOLS)]
-        args += ["--disallowedTools", "AskUserQuestion"]  # no one to answer it; see <choices>
+        args += ["--disallowedTools", ",".join(DISALLOWED_TOOLS)]
 
         if not resend:
             self.say("user", text=text, files=[os.path.basename(p) for p in files])

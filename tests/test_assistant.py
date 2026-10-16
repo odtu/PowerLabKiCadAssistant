@@ -118,26 +118,29 @@ class UnreachableHintTests(unittest.TestCase):
 
 
 class SkillToolsEnvTests(unittest.TestCase):
-    """The panel's Claude sessions must find the private Java 25 before any system Java,
-    and the Freerouting jar, so the kicad MCP server's autoroute tool works."""
+    """The tools the panel's Claude sessions get, and the ones they don't."""
 
-    def test_java_first_on_path_and_jar_exported(self):
-        from powerlab_assistant import common
-        with tempfile.TemporaryDirectory() as tmp:
-            java_home = os.path.join(tmp, "jdk-25-jre")
-            os.makedirs(os.path.join(java_home, "bin"))
-            open(os.path.join(java_home, "bin", "java.exe"), "w").close()
-            jar = os.path.join(tmp, "freerouting-2.4.1.jar")
-            open(jar, "w").close()
-            saved = config.config
-            config.config = lambda: {"java_home": java_home, "freerouting_jar": jar}
-            try:
-                env = common.clean_env()
-            finally:
-                config.config = saved
-        self.assertEqual(env["PATH"].split(os.pathsep)[0], os.path.join(java_home, "bin"))
-        self.assertEqual(env["JAVA_HOME"], java_home)
-        self.assertEqual(env["FREEROUTING_JAR"], jar)
+    def test_freerouting_is_gone(self):
+        # Since 1.0 routing is the PowerLab router's or by hand: no Java or Freerouting
+        # downloads, no Freerouting environment, and the MCP's Freerouting tools are blocked
+        from powerlab_assistant import common, panel
+        saved = config.config
+        config.config = lambda: {"java_home": "C:/nowhere", "freerouting_jar": "C:/nowhere.jar"}
+        try:
+            env = common.clean_env()
+        finally:
+            config.config = saved
+        self.assertNotIn("FREEROUTING_JAR", env)
+        for tool in ("mcp__kicad__autoroute", "mcp__kicad__check_freerouting", "mcp__kicad__import_ses",
+                     "AskUserQuestion"):
+            self.assertIn(tool, panel.DISALLOWED_TOOLS)
+        with open(os.path.join(ROOT, "install.ps1"), encoding="utf-8") as f:
+            install = f.read()
+        self.assertNotIn("freerouting-2.4.1.jar", install)
+        self.assertNotIn("temurin", install.lower())
+        self.assertIn('$_.Name -eq "freerouting"', install)  # old copies are removed
+        self.assertIn("PowerLab router", panel.PANEL_NOTE)
+        self.assertIn("never offer it", panel.PANEL_NOTE)
 
     def test_windows_tar_before_git_tar(self):
         # Issue #24: Git's GNU tar can't write zips; Windows' own tar in System32 can.
@@ -185,7 +188,16 @@ class SkillToolsEnvTests(unittest.TestCase):
         self.assertIn("Shortest path, fewest corners", rules)
         with open(os.path.join(skills, "powerlab-autoroute", "SKILL.md"), encoding="utf-8") as f:
             route = f.read()
-        self.assertIn("Freerouting 2.4.1 ignores the net-class width", route)
+        # the first question, then the review without asking; no Freerouting
+        self.assertIn("## 0. Ask first: by hand or the PowerLab router", route)
+        self.assertIn("PowerLab router, then I fix its DRC errors by hand (Recommended)", route)
+        self.assertIn("Always run the design review next, without asking", route)
+        self.assertIn("Never offer it.", route)
+        self.assertNotIn("autoroute`", route.replace("undo_autoroute`", ""))
+        # GND pours with thermal reliefs; solid only for high-current pours; power rails as pours
+        self.assertIn("GND pours connect pads with thermal reliefs", route)
+        self.assertIn("powerPours", route)
+        self.assertIn("No duplicate tracks", rules)
         # No GND fan-out vias up front: pads reach the pour, vias only after routing
         self.assertIn("No GND fan-out before routing", route)
         self.assertIn("Never fan out GND pads with vias up front", rules)
@@ -1123,6 +1135,52 @@ class McpPatchTests(unittest.TestCase):
         # nothing is clear: nothing changes
         self.assertEqual(module._shorten(lambda a, b: False, pts, 1, len(pts) - 2), pts)
 
+    def test_powerlab_router_shortcut_corners_and_pad_entry(self):
+        """Corners cost something in the finishing pass, a pad that isn't fine pitch may be
+        entered at 45 degrees instead of bending just before it, and a T-junction end never
+        turns to run along the track it joins."""
+        module = types.ModuleType("finish")
+        exec(self.new_file("python/commands/powerlab_router/finish.py"), module.__dict__)
+        # pad centre, lane exit to the left, a 45 degree corner, then down (the bend before the pad)
+        pts = [(0, 0), (-1, 0), (-2, 1), (-2, 4)]
+        kept = module._shorten(lambda a, b: True, pts, 1, len(pts) - 1, bend=module.BEND)
+        self.assertEqual(kept[:2], pts[:2])  # lane kept: fine pitch
+        free = module._shorten(lambda a, b: True, pts, 0, len(pts) - 1, bend=module.BEND)
+        self.assertNotEqual(free[1], (-1, 0))  # straight from the pad centre, no lane bend
+        self.assertLess(module._turns(free), module._turns(pts))
+        for a, b in zip(free, free[1:]):
+            self.assertTrue(module._octilinear(b[0] - a[0], b[1] - a[1]))
+        # equal length, but a wiggle: only the corner cost straightens it
+        wiggle = [(0, 0), (1, 0), (2, 0), (2.5, 0.5), (3.5, 0.5), (4, 0), (6, 0), (7, 0)]
+        cost = lambda a, b: math.dist(a, b) + (0.6 * math.dist(a, b) if abs(a[1]) < 1e-9 and abs(b[1]) < 1e-9 else 0)
+        self.assertGreater(module._turns(module._shorten(lambda a, b: True, wiggle, 1, len(wiggle) - 2, cost)), 0)
+        straight = module._shorten(lambda a, b: True, wiggle, 1, len(wiggle) - 2, cost, bend=module.BEND)
+        self.assertEqual(module._turns(module._corners(straight)), 0)
+        # a T-junction end on a horizontal track: the last segment doesn't run along it
+        tee = [(0, 3), (0, 2), (1, 1), (3, 1), (4, 0)]
+        out = module._shorten(lambda a, b: True, tee, 1, len(tee) - 1, bend=module.BEND, forbid_end=(1.0, 0.0))
+        u = module._unit(out[-2], out[-1])
+        self.assertGreater(abs(u[1]), 1e-3)
+        self.assertEqual(out[-1], tee[-1])
+
+    def test_powerlab_router_search_joins_a_track(self):
+        """The search may end on the net's own track (a set of directions), at an angle."""
+        module = types.ModuleType("search")
+        exec(self.new_file("python/commands/powerlab_router/search.py"), module.__dict__)
+        nx, ny = 40, 20
+        blocked = [bytes(nx * ny)]
+        via_ok = bytes(nx * ny)
+        starts = [(2, 10, 0, 0, 0.0)]
+        goals = {(38, 10, 0): (0, 0.0)}  # the far pad, straight on
+        along = frozenset(k for k in range(8) if k % 4 != 2)  # a vertical track at i = 15
+        for j in range(ny):
+            goals.setdefault((15, j, 0), (along, 0.0))
+        path, stats = module.search(blocked, via_ok, nx, ny, 0.1, starts, goals, (0, 0, nx - 1, ny - 1),
+                                    module.Costs(layer_factor=None))
+        self.assertIsNotNone(path)
+        self.assertEqual(path[-1][:2], (15, 10))  # joined the track, not the far pad
+        self.assertIn(path[-1][3], along)
+
     def test_powerlab_router_rejects_loops(self):
         """A grid path that comes back to a cell it has been on, or changes layer twice at
         one spot (a loop through two vias, to turn where the corner rules don't allow it)."""
@@ -1271,6 +1329,135 @@ class McpPatchTests(unittest.TestCase):
             self.assertTrue(angle < 0.5 or angle > 44.5, (dx, dy))
             # around U1's pad, never through it
             self.assertFalse(13.8 < pcbnew.ToMM(t.GetStart().x) < 16.2 and 5.8 < pcbnew.ToMM(t.GetStart().y) < 14.2)
+
+    def _router_board(self, pads, nets):
+        """A 30 x 20 mm board with 1 x 1 mm SMD pads: pads = [(ref, (x, y), net)]."""
+        import pcbnew
+        mm, P = pcbnew.FromMM, lambda x, y: pcbnew.VECTOR2I(pcbnew.FromMM(x), pcbnew.FromMM(y))
+        board = pcbnew.BOARD()
+        for a, b in (((0, 0), (30, 0)), ((30, 0), (30, 20)), ((30, 20), (0, 20)), ((0, 20), (0, 0))):
+            edge = pcbnew.PCB_SHAPE(board, pcbnew.SHAPE_T_SEGMENT)
+            edge.SetStart(P(*a)); edge.SetEnd(P(*b)); edge.SetLayer(pcbnew.Edge_Cuts); edge.SetWidth(mm(0.1))
+            board.Add(edge)
+        info = {}
+        for name in nets:
+            info[name] = pcbnew.NETINFO_ITEM(board, name)
+            board.Add(info[name])
+        for ref, (x, y), net in pads:
+            fp = pcbnew.FOOTPRINT(board)
+            fp.SetReference(ref)
+            fp.SetPosition(P(x, y))
+            pad = pcbnew.PAD(fp)
+            pad.SetShape(pcbnew.PAD_SHAPE_RECTANGLE)
+            pad.SetAttribute(pcbnew.PAD_ATTRIB_SMD)
+            pad.SetLayerSet(pcbnew.PAD.SMDMask())
+            pad.SetSize(pcbnew.F_Cu, P(1, 1))
+            pad.SetPosition(P(x, y))
+            pad.SetNumber("1")
+            pad.SetNet(info[net])
+            fp.Add(pad)
+            board.Add(fp)
+        return board
+
+    def _import_router(self):
+        sys.path.insert(0, self.router_package())
+        try:
+            for m in [m for m in sys.modules if m == "commands" or m.startswith("commands.")]:
+                del sys.modules[m]
+            from commands.powerlab_router import router, pours
+        finally:
+            sys.path.pop(0)
+        return router, pours
+
+    def test_powerlab_router_squares_a_run_between_vias(self):
+        """pad -> via -> other layer -> via -> pad, each piece one run, both pads off the
+        grid: the vias slide along their runs so the middle run is a 45 degree multiple."""
+        try:
+            import pcbnew  # noqa: F401
+        except ImportError:
+            self.skipTest("needs KiCad's Python")
+        sys.path.insert(0, self.router_package())
+        try:
+            for m in [m for m in sys.modules if m == "commands" or m.startswith("commands.")]:
+                del sys.modules[m]
+            from commands.powerlab_router.model import _square_middles
+        finally:
+            sys.path.pop(0)
+        pieces = [(0, [(0.0, 0.0), (1.0, 0.0)]), (1, [(1.0, 0.0), (4.0, 3.05)]), (0, [(4.0, 3.05), (5.0, 3.05)])]
+        vias = [(1.0, 0.0), (4.0, 3.05)]
+        _square_middles(pieces, vias)
+        (a, b) = pieces[1][1]
+        self.assertAlmostEqual(abs(b[0] - a[0]), abs(b[1] - a[1]), places=6)  # 45 degrees
+        self.assertEqual(pieces[0][1][-1], a)
+        self.assertEqual(pieces[2][1][0], b)
+        self.assertEqual(vias, [a, b])
+        self.assertAlmostEqual(a[1], 0.0)  # each via stays on its own run
+        self.assertAlmostEqual(b[1], 3.05)
+
+    def test_powerlab_router_joins_a_nets_tracks(self):
+        """Two connections of one net leave the same pad toward the same side: the second
+        joins the first's track (or leaves by another lane) instead of running a second
+        track beside or on top of it."""
+        try:
+            import pcbnew
+        except ImportError:
+            self.skipTest("needs KiCad's Python")
+        router, _pours = self._import_router()
+        board = self._router_board([("R1", (5, 10), "SIG"), ("R2", (16, 4), "SIG"), ("R3", (16, 16), "SIG")], ["SIG"])
+        report = router.Router(board).run(["SIG"])
+        self.assertEqual(report["routed"], 2, report["left"])
+        T = pcbnew.ToMM
+        segs = [((T(t.GetStart().x), T(t.GetStart().y)), (T(t.GetEnd().x), T(t.GetEnd().y)))
+                for t in board.GetTracks() if t.Type() == pcbnew.PCB_TRACE_T]
+        for i, (a, b) in enumerate(segs):
+            for c, d in segs[i + 1:]:
+                u = (b[0] - a[0], b[1] - a[1])
+                v = (d[0] - c[0], d[1] - c[1])
+                if abs(u[0] * v[1] - u[1] * v[0]) > 1e-6:
+                    continue  # not parallel
+                gap = abs(u[0] * (c[1] - a[1]) - u[1] * (c[0] - a[0])) / math.hypot(*u)
+                if gap > 1.0:
+                    continue
+                n = math.hypot(*u)
+                s = sorted(((c[0] - a[0]) * u[0] + (c[1] - a[1]) * u[1], (d[0] - a[0]) * u[0] + (d[1] - a[1]) * u[1]))
+                overlap = min(n * n, s[1]) - max(0.0, s[0])
+                self.assertLess(overlap / n, 0.3, f"two tracks side by side: {(a, b)} {(c, d)}")
+
+    def test_powerlab_router_power_pours_and_stitching(self):
+        """After routing: a pour round a power rail's track (thermal reliefs, above the GND
+        pour), and GND stitching vias where both GND pours are filled."""
+        try:
+            import pcbnew
+        except ImportError:
+            self.skipTest("needs KiCad's Python")
+        router, pours = self._import_router()
+        board = self._router_board([("C1", (5, 10), "+3V3"), ("C2", (25, 10), "+3V3")], ["+3V3", "GND"])
+        P = lambda x, y: pcbnew.VECTOR2I(pcbnew.FromMM(x), pcbnew.FromMM(y))
+        gnd = board.FindNet("GND")
+        for layer in (pcbnew.F_Cu, pcbnew.B_Cu):
+            z = pcbnew.ZONE(board)
+            z.SetLayer(layer)
+            z.SetNet(gnd)
+            z.SetPadConnection(pcbnew.ZONE_CONNECTION_THERMAL)
+            for x, y in ((0, 0), (30, 0), (30, 20), (0, 20)):
+                z.AppendCorner(P(x, y), -1)
+            board.Add(z)
+        pcbnew.ZONE_FILLER(board).Fill(board.Zones())
+        r = router.Router(board)
+        self.assertTrue(r.is_power("+3V3"))
+        report = r.run(["+3V3"])
+        self.assertEqual(report["routed"], 1, report["left"])
+        made = pours.power_pours(r, ["+3V3"])
+        self.assertEqual(made["added"], {"+3V3": ["F.Cu"]})
+        rail = [z for z in board.Zones() if z.GetNetname() == "+3V3"]
+        self.assertEqual(len(rail), 1)
+        self.assertEqual(rail[0].GetPadConnection(), pcbnew.ZONE_CONNECTION_THERMAL)
+        self.assertGreater(rail[0].GetAssignedPriority(), 0)
+        stitched = pours.stitching_vias(r, 5.0)
+        self.assertGreater(stitched["added"], 4)
+        vias = [t for t in board.GetTracks() if t.Type() == pcbnew.PCB_VIA_T]
+        self.assertTrue(all(v.GetNetname() == "GND" for v in vias))
+        self.assertTrue(all(not r.rb.violations("GND", [v]) for v in vias))
 
     def test_powerlab_router_rules(self):
         """Milestone 1: clearance rules from .kicad_dru, last match wins, unknown terms only

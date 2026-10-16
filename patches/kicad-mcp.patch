@@ -1087,10 +1087,10 @@ index 0000000..052abc5
 +
 diff --git a/python/commands/powerlab_route.py b/python/commands/powerlab_route.py
 new file mode 100644
-index 0000000..e678af2
+index 0000000..864a099
 --- /dev/null
 +++ b/python/commands/powerlab_route.py
-@@ -0,0 +1,434 @@
+@@ -0,0 +1,621 @@
 +"""
 +The PowerLab router as a background job (PowerLab patch).
 +
@@ -1113,6 +1113,13 @@ index 0000000..e678af2
 +  input/          the saved board at the start, with its .kicad_pro and .kicad_dru
 +  stripped/       the board with the nets taken out (DRC baseline)
 +  result/         the routed board
++  live.json       with KiCad open: the copper last shown in KiCad while routing
++
++Live: with the board open in KiCad, the router process connects to KiCad itself and keeps
++KiCad's board showing its copper while it routes (every LIVE_GAP seconds at most, one
++commit each). The pours are unfilled meanwhile, so the new tracks can be seen; they are
++refilled when the result is applied. A run that fails or is stopped puts KiCad's copper
++back as it was saved.
 +"""
 +
 +import hashlib
@@ -1133,6 +1140,7 @@ index 0000000..e678af2
 +HEARTBEAT = 5  # s between status writes while the router works
 +STALE = 600  # s without a status write: the router process is gone (a zone fill holds the GIL)
 +PROJECT_FILES = (".kicad_pro", ".kicad_dru")
++LIVE_GAP = 2.0  # s between live updates in KiCad
 +
 +_procs: Dict[str, subprocess.Popen] = {}  # job folder -> router process started by this worker
 +
@@ -1216,7 +1224,18 @@ index 0000000..e678af2
 +    return st
 +
 +
-+def start(board_path: str, params: Dict[str, Any], kicad_cli: Optional[str], live: bool) -> Dict[str, Any]:
++def kicad_connection(kboard: Any) -> Optional[Dict[str, str]]:
++    """The socket and token of the KiCad that has kboard open, for the router process."""
++    client = getattr(kboard, "client", None)  # kipy's KiCadClient (or a KiCad that holds one)
++    client = getattr(client, "_client", client)
++    path = getattr(client, "_socket_path", None)
++    if not path:
++        return None
++    return {"socket": path, "token": getattr(client, "_kicad_token", "") or ""}
++
++
++def start(board_path: str, params: Dict[str, Any], kicad_cli: Optional[str], live: bool,
++          connection: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
 +    folder = job_dir(board_path)
 +    st = status(board_path)
 +    if st.get("state") == "running":
@@ -1237,11 +1256,17 @@ index 0000000..e678af2
 +        "pour_nets": [str(n) for n in (params.get("pourNets") or ["GND"])],
 +        "kicad_cli": kicad_cli,
 +        "live": live,
++        # live display while routing (default on with KiCad open; live: false turns it off)
++        "kicad": connection if live and params.get("live", True) is not False else None,
 +        "pitch": float(params.get("gridPitch") or DEFAULTS["pitch"]),
 +        "turn": float(params.get("turnCost") or DEFAULTS["turn"]),
 +        "via": float(params.get("viaCost") or DEFAULTS["via"]),
 +        "diagonal": float(params.get("diagonalCost") or DEFAULTS["diagonal"]),
 +        "layers": [float(f) for f in (params.get("layerCosts") or DEFAULTS["layers"])],
++        # power rails get pours round their tracks; stitching vias tie the GND pours (§3.3, §3.5)
++        "power_pours": params.get("powerPours", True) is not False,
++        "solid_pour_nets": [str(n) for n in (params.get("solidPourNets") or [])],
++        "stitch_pitch": float(params.get("stitchPitch", 5.0) or 0.0),
 +        "min_run": DEFAULTS["min_run"],
 +        "min_run_diag": DEFAULTS["min_run_diag"],
 +        "max_nodes": DEFAULTS["max_nodes"],
@@ -1280,33 +1305,50 @@ index 0000000..e678af2
 +        return {"success": False, "message": f"No PowerLab router run in progress (state: {st.get('state')})"}
 +    proc = _procs.pop(folder, None)
 +    pid = proc.pid if proc else st.get("pid")
-+    try:
-+        if proc is not None:
-+            proc.kill()
-+            proc.wait(timeout=10)
-+        elif pid:
-+            os.kill(int(pid), 9)
-+    except Exception as e:
-+        return {"success": False, "message": f"Could not stop the router process: {e}"}
++    # ask first, so a live update in KiCad isn't cut off halfway through its commit
++    with open(os.path.join(folder, "cancel"), "w") as fh:
++        fh.write("1")
++    deadline = time.time() + 15
++    while time.time() < deadline and (_read(os.path.join(folder, "status.json")) or {}).get("state") == "running":
++        time.sleep(0.5)
++    st = _read(os.path.join(folder, "status.json")) or st
++    if st.get("state") == "running":  # busy in a long search: stop it the hard way
++        try:
++            if proc is not None:
++                proc.kill()
++                proc.wait(timeout=10)
++            elif pid:
++                os.kill(int(pid), 9)
++        except Exception as e:
++            return {"success": False, "message": f"Could not stop the router process: {e}"}
 +    st.update(state="cancelled", updated=time.time())
 +    _write(os.path.join(folder, "status.json"), st)
-+    return {"success": True, "message": "Stopped the PowerLab router; the board is unchanged"}
++    return {"success": True, "message": "Stopped the PowerLab router; the saved board is unchanged"}
 +
 +
 +def report(board_path: str) -> Optional[Dict[str, Any]]:
 +    return _read(os.path.join(job_dir(board_path), "report.json"))
 +
 +
-+def unsaved_changes(kboard: Any, board_path: str) -> Dict[str, int]:
++def _key_text(key: Any) -> str:
++    return json.dumps(key)
++
++
++def unsaved_changes(kboard: Any, board_path: str, shown: Optional[set] = None) -> Dict[str, int]:
 +    """Copper and footprint positions in KiCad's open board that differ from the file.
 +
-+    Empty when KiCad shows what is saved (zone fills aren't compared)."""
++    Empty when KiCad shows what is saved (zone fills aren't compared). With `shown` (the
++    copper the live display last put in KiCad, as _key_text), the copper is compared with
++    that instead of the file."""
 +    import pcbnew
 +    from commands.freerouting_live import kipy_key, pcbnew_copper
 +
 +    board = pcbnew.LoadBoard(board_path)
-+    saved = set(pcbnew_copper(board))
 +    live = {kipy_key(i) for i in list(kboard.get_tracks()) + list(kboard.get_vias())} - {None}
++    if shown is not None:
++        saved, live = set(shown), {_key_text(k) for k in live}
++    else:
++        saved = set(pcbnew_copper(board))
 +    fps = {(fp.GetReference(), fp.GetPosition().x, fp.GetPosition().y) for fp in board.GetFootprints()}
 +    live_fps = {(fp.reference_field.text.value, fp.position.x, fp.position.y) for fp in kboard.get_footprints()}
 +    out = {}
@@ -1338,7 +1380,7 @@ index 0000000..e678af2
 +            "errorDetails": "The routed board would overwrite those changes. Start powerlab_route again.",
 +        }
 +    if kboard is not None:
-+        changed = unsaved_changes(kboard, job["input"])
++        changed = unsaved_changes(kboard, job["input"], live_shown(folder))
 +        if changed:
 +            return {
 +                "success": False,
@@ -1367,7 +1409,35 @@ index 0000000..e678af2
 +    return out
 +
 +
-+def push_to_kicad(kboard: Any, board_file: str, message: str) -> Dict[str, Any]:
++def live_shown(folder: str) -> Optional[set]:
++    """The copper the live display last put into KiCad (as _key_text), or None."""
++    data = _read(os.path.join(folder, "live.json"))
++    return set(data["shown"]) if data and "shown" in data else None
++
++
++def put_back(board_path: str, kboard: Any) -> Optional[Dict[str, Any]]:
++    """After a live run failed or was stopped: KiCad's copper back as saved, pours refilled.
++
++    Only once, and only while KiCad still shows what the live display put there (an edit
++    made meanwhile is never thrown away)."""
++    folder = job_dir(board_path)
++    shown = live_shown(folder)
++    st = status(board_path)
++    if kboard is None or shown is None or st.get("put_back"):
++        return None
++    job = _read(os.path.join(folder, "job.json")) or {}
++    if unsaved_changes(kboard, job["input"], shown):
++        return {"put_back": False, "why": "KiCad's board was edited during the run; use File > Revert"}
++    try:
++        sync = push_to_kicad(kboard, job["input"], "PowerLab router: back as saved", save=False)
++    except Exception as e:
++        return {"put_back": False, "why": f"{e}; use File > Revert"}
++    st.update(put_back=True)
++    _write(os.path.join(folder, "status.json"), st)
++    return {"put_back": True, **sync}
++
++
++def push_to_kicad(kboard: Any, board_file: str, message: str, save: bool = True) -> Dict[str, Any]:
 +    """Make KiCad's open board's copper match board_file, refill zones, save in KiCad."""
 +    import pcbnew
 +    from commands.freerouting_live import LiveCopper, pcbnew_copper
@@ -1375,7 +1445,8 @@ index 0000000..e678af2
 +    t0 = time.time()
 +    sync = LiveCopper(kboard).finish(pcbnew_copper(pcbnew.LoadBoard(board_file)), message)
 +    kboard.refill_zones(block=True, max_poll_seconds=60.0)
-+    kboard.save()
++    if save:
++        kboard.save()
 +    return {**sync, "seconds": round(time.time() - t0, 2)}
 +
 +
@@ -1409,15 +1480,75 @@ index 0000000..e678af2
 +                pass
 +
 +
++class Cancelled(Exception):
++    pass
++
++
++class _Live:
++    """KiCad's open board, kept showing the router board's copper while it routes.
++
++    Connects to KiCad on its own (the MCP's worker stays free). Every push makes KiCad's
++    copper equal the router board's (one commit), at most every LIVE_GAP seconds, and
++    records what it showed in live.json, so apply() can tell the live copper from an edit.
++    If KiCad's copper stops matching what was last shown (the user edited it), the live
++    display stops: the run goes on, and apply() refuses to overwrite the edit."""
++
++    def __init__(self, folder: str, conn: Dict[str, str], board_path: str) -> None:
++        from kipy import KiCad
++        from commands.freerouting_live import LiveCopper
++
++        self.path = os.path.join(folder, "live.json")
++        self.kicad = KiCad(socket_path=conn["socket"], kicad_token=conn.get("token", ""),
++                           client_name=f"powerlab-router-{os.getpid()}", timeout_ms=20000)
++        self.kboard = self.kicad.get_board()
++        if os.path.normcase(os.path.abspath(self.kboard.name)) != os.path.normcase(os.path.abspath(board_path)) and \
++                os.path.basename(self.kboard.name) != os.path.basename(board_path):
++            raise RuntimeError("KiCad has another board open")
++        self.copper = LiveCopper(self.kboard)
++        self.last = 0.0
++        self.shown: Optional[set] = None
++        self.stopped = ""
++        self.pushes = 0
++        try:  # the old fill would hide the new tracks; the pours are refilled at the end
++            self.kicad.run_action("pcbnew.ZoneFiller.zoneUnfillAll")
++        except Exception:
++            pass
++
++    def push(self, board: Any, force: bool = False) -> None:
++        from commands.freerouting_live import kipy_key, pcbnew_copper
++
++        if self.stopped or (not force and time.time() - self.last < LIVE_GAP):
++            return
++        try:
++            if self.shown is not None:
++                now = {_key_text(kipy_key(i)) for i in list(self.kboard.get_tracks()) + list(self.kboard.get_vias())}
++                if now != self.shown:
++                    self.stopped = "KiCad's board was edited during the run"
++                    return
++            final = pcbnew_copper(board)
++            self.copper.finish(final, "PowerLab router (live)")
++            self.shown = {_key_text(k) for k in final}
++            _write(self.path, {"shown": sorted(self.shown), "updated": time.time()})
++            self.pushes += 1
++        except Exception as e:
++            self.stopped = f"live display stopped: {e}"
++        self.last = time.time()
++
++
 +def pick_nets(board: Any, wanted: Optional[List[str]], pour_nets: List[str]):
-+    """Nets to route, and the ones left out with why. Default: the Default net class."""
++    """Nets to route, and the ones left out with why.
++
++    Default: every net of the Default class (routed from scratch), and the nets of the
++    other classes (power rails, USB...) that have no tracks yet. A power rail with tracks
++    was routed by hand, so it stays as it is unless `wanted` names it."""
 +    ns = board.GetDesignSettings().m_NetSettings
 +    on_pads = {p.GetNetname() for fp in board.GetFootprints() for p in fp.Pads() if p.GetNetname()}
 +    locked = {t.GetNetname() for t in board.GetTracks() if t.IsLocked()}
++    tracked = {t.GetNetname() for t in board.GetTracks()}
 +    if wanted:
 +        candidates = list(dict.fromkeys(wanted))
 +    else:
-+        candidates = sorted(n for n in on_pads if ns.GetEffectiveNetClass(n).GetName() == "Default")
++        candidates = sorted(on_pads)
 +    nets, skipped = [], {}
 +    for n in candidates:
 +        if n not in on_pads:
@@ -1426,6 +1557,8 @@ index 0000000..e678af2
 +            skipped[n] = "pour net: the pour connects it"
 +        elif n in locked:
 +            skipped[n] = "has locked copper (routed by hand); unlock it to route it again"
++        elif not wanted and ns.GetEffectiveNetClass(n).GetName() != "Default" and n in tracked:
++            skipped[n] = "already has tracks (routed by hand); name it in nets to route it again"
 +        else:
 +            nets.append(n)
 +    return nets, skipped
@@ -1435,6 +1568,9 @@ index 0000000..e678af2
 +    job = _read(os.path.join(folder, "job.json"))
 +    st = _Status(folder)
 +    log = open(os.path.join(folder, "log.txt"), "w", encoding="utf-8", errors="replace")
++    live: Optional[_Live] = None
++    live_note = ""
++    cancel_flag = os.path.join(folder, "cancel")
 +    try:
 +        import pcbnew
 +        from commands.powerlab_router.router import Router
@@ -1460,6 +1596,12 @@ index 0000000..e678af2
 +                shutil.copy2(src, os.path.splitext(stripped)[0] + ext)
 +        board.Save(stripped)
 +        board = pcbnew.LoadBoard(stripped)
++        if job.get("kicad"):
++            try:
++                live = _Live(folder, job["kicad"], job["board_path"])
++                live.push(board, force=True)  # the old tracks of these nets go
++            except Exception as e:
++                live_note = f"no live display: {e}"
 +        drc = Drc(stripped, job["kicad_cli"]) if job.get("kicad_cli") else None
 +        if drc:
 +            st.write(phase="DRC before routing")
@@ -1475,14 +1617,42 @@ index 0000000..e678af2
 +        st.write(phase="routing", nets=len(nets), connections=total, routed=0)
 +
 +        def progress(r: Dict[str, Any]) -> None:
-+            done[r["connection"]] = bool(r.get("ok"))
-+            log.write(f"{r['net']} {r['connection']} {r['event']}\n")
-+            log.flush()
-+            st.write(routed=sum(done.values()), events=st.data.get("events", 0) + 1, last=r["event"][:120])
++            if os.path.exists(cancel_flag):
++                raise Cancelled()
++            if "connection" in r:
++                done[r["connection"]] = bool(r.get("ok"))
++                log.write(f"{r['net']} {r['connection']} {r['event']}\n")
++                log.flush()
++                st.write(routed=sum(done.values()), events=st.data.get("events", 0) + 1, last=r["event"][:120])
++            if r.get("phase"):
++                st.write(phase=r["phase"])
++            if live:
++                live.push(board, force=bool(r.get("phase")))
 +
 +        rep = router.run(nets, log=progress)
++        from commands.powerlab_router import pours
++
++        if job.get("power_pours", True):
++            st.write(phase="power pours")
++            # every power rail with tracks: routed now, or by hand before (§3.3)
++            rails = sorted({t.GetNetname() for t in board.GetTracks() if t.GetNetname()} - set(job["pour_nets"]))
++            pour_drc = Drc(stripped, job["kicad_cli"]) if job.get("kicad_cli") else None
++            try:
++                rep["power_pours"] = pours.power_pours(router, [n for n in rails if router.is_power(n)],
++                                                      solid=job.get("solid_pour_nets") or [],
++                                                      check=(lambda: pour_drc.errors(board)) if pour_drc else None)
++            finally:
++                if pour_drc:
++                    pour_drc.close()
++            if live:
++                live.push(board, force=True)
++        if job.get("stitch_pitch", 5.0):
++            st.write(phase="stitching vias")
++            rep["stitching"] = pours.stitching_vias(router, float(job.get("stitch_pitch", 5.0)))
 +        st.write(phase="refilling zones")
 +        pcbnew.ZONE_FILLER(board).Fill(board.Zones())
++        if live:
++            live.push(board, force=True)
 +        result = os.path.join(folder, "result", os.path.basename(job["input"]))
 +        os.makedirs(os.path.dirname(result))
 +        board.Save(result)
@@ -1510,12 +1680,29 @@ index 0000000..e678af2
 +            costs={"turn": job["turn"], "via": job["via"], "diagonal": job["diagonal"], "layers": job["layers"]},
 +            routing_seconds=rep.pop("seconds"),
 +            seconds=round(time.time() - st.data["started"], 1),
++            live=({"updates": live.pushes, **({"stopped": live.stopped} if live.stopped else {})}
++                  if live else (live_note or None)),
 +        )
 +        _write(os.path.join(folder, "report.json"), rep)
 +        st.write(state="done", phase="finished", result=result, routed=rep["routed"])
 +    except Exception as e:
-+        log.write(traceback.format_exc())
-+        st.write(state="failed", error=f"{type(e).__name__}: {e}")
++        cancelled = isinstance(e, Cancelled)
++        if not cancelled:
++            log.write(traceback.format_exc())
++        if live and live.shown is not None and not live.stopped:
++            try:  # KiCad back as saved: its copper, and the pours refilled
++                import pcbnew
++                from commands.freerouting_live import pcbnew_copper
++
++                live.copper.finish(pcbnew_copper(pcbnew.LoadBoard(job["input"])), "PowerLab router: back as saved")
++                live.kboard.refill_zones(block=True, max_poll_seconds=60.0)
++                st.data["put_back"] = True
++            except Exception as e2:
++                log.write(f"KiCad not put back: {e2}\n")
++        if cancelled:
++            st.write(state="cancelled")
++        else:
++            st.write(state="failed", error=f"{type(e).__name__}: {e}")
 +    finally:
 +        st.stop.set()
 +        log.close()
@@ -1685,7 +1872,7 @@ index 0000000..341e276
 +            out[k] = new
 diff --git a/python/commands/powerlab_router/costs.py b/python/commands/powerlab_router/costs.py
 new file mode 100644
-index 0000000..4cb4b43
+index 0000000..427728c
 --- /dev/null
 +++ b/python/commands/powerlab_router/costs.py
 @@ -0,0 +1,341 @@
@@ -1964,8 +2151,8 @@ index 0000000..4cb4b43
 +        return out
 +
 +    # --- per connection ------------------------------------------------------------------
-+    def penalty(self, conn, blocked, hist, soft=None, soft_cost=0, clock_nets=(), clock_items=()):
-+        """Per layer bytes for the search."""
++    def penalty(self, conn, blocked, hist, soft=None, soft_cost=0, clock_nets=(), clock_items=(), pour=True):
++        """Per layer bytes for the search (pour=False: without the pour's hug and sliver costs)."""
 +        rb = self.rb
 +        g = rb.grid
 +        fast = conn.group == 1  # switching and clocks
@@ -1973,7 +2160,7 @@ index 0000000..4cb4b43
 +        out = []
 +        for i in range(self.n):
 +            p = hist[i].astype(np.int32) + self.spokes[i]
-+            if self.pour_layer[i]:
++            if self.pour_layer[i] and pour:
 +                hard = np.frombuffer(blocked[i], np.uint8).reshape(self.shape).astype(bool)
 +                dist = _dilate(hard, sliver + 2).astype(np.int32)
 +                p += np.where(dist <= 1, 0, np.where(dist <= sliver, SLIVER, HUG))
@@ -2032,22 +2219,28 @@ index 0000000..4cb4b43
 +        return math.pi * d * d / 4 / (w + 2 * self.pour_gap) / self.rb.grid.pitch
 diff --git a/python/commands/powerlab_router/finish.py b/python/commands/powerlab_router/finish.py
 new file mode 100644
-index 0000000..85e17c1
+index 0000000..e2151ce
 --- /dev/null
 +++ b/python/commands/powerlab_router/finish.py
-@@ -0,0 +1,180 @@
+@@ -0,0 +1,257 @@
 +"""Shortcut pass after routing (plan §4.7; the method of track_opt.py in the lab's
 +InductiveEncoder project).
 +
 +For each run of a connection's track on one layer, from each point jump to the farthest
 +later point that a clear straight segment, or a straight + 45 degree dogleg, reaches, if
-+that is cheaper, or as cheap with fewer corners. Cheaper by the same costs the search
-+used (length plus the lab costs per cell), so a shortcut never cuts under an inductor,
-+through a pour or across a pin's escape room just because it is shorter.
-+Detours, staircases and the small zigzags where a path joins a pad's lane disappear.
-+- The lanes stay: the first and last segments into the pads aren't touched, and every
-+  corner still turns by 45 degrees at most (design rules §3.4).
-+- Vias stay where they are.
++that is cheaper, or as cheap with fewer corners. Cheaper by the search's costs plus `bend`
++per corner, so corners that serve nothing go (design rules §3.4, "fewest corners"): a
++little wiggle round a pad, a stair-step, a bend just before a pad. The lab costs that
++matter for the route still count (no cutting under an inductor or across a pin's escape
++room); the pour's hug and sliver costs don't, because they made tracks follow pad outlines
++in little zigzags. Instead the router checks the pour on KiCad's fill after each
++connection (Router._pour_quality) and puts the old track back if the pour got worse.
++- Pads: a fine-pitch pad keeps its straight lane (§3.4, "leave pads straight out"); other
++  pads may be entered at 45 degrees to their centre, as by hand, instead of bending just
++  before the pad to come in square.
++- A track that ends on another track of its net (a T-junction) keeps that end, and never
++  turns to run along the track it joins.
++- Every corner still turns by 45 degrees at most (§3.4). Vias stay where they are.
 +- Every new segment is checked exactly against the other nets' copper.
 +No pcbnew here: the board is reached through the router's RouterBoard.
 +"""
@@ -2057,6 +2250,7 @@ index 0000000..85e17c1
 +MIN_SEGMENT = 0.2  # mm, between two corners
 +MAX_TURN = math.radians(45.5)
 +EPS = 1e-4
++BEND = 1.5  # mm: what a corner costs here (as in the search and the drawn shapes)
 +
 +
 +def _unit(a, b):
@@ -2073,6 +2267,16 @@ index 0000000..85e17c1
 +
 +def _octilinear(dx, dy):
 +    return abs(dx) < EPS or abs(dy) < EPS or abs(abs(dx) - abs(dy)) < EPS
++
++
++def _turns(pts):
++    """Changes of direction along a point list."""
++    n = 0
++    for a, b, c in zip(pts, pts[1:], pts[2:]):
++        u, v = _unit(a, b), _unit(b, c)
++        if u is not None and v is not None and abs(u[0] * v[1] - u[1] * v[0]) > 1e-3:
++            n += 1
++    return n
 +
 +
 +def _candidates(p, q):
@@ -2107,34 +2311,43 @@ index 0000000..85e17c1
 +    return sum(math.dist(a, b) for a, b in zip(pts, pts[1:]))
 +
 +
-+def _shorten(clear, pts, lo, hi, cost=None):
++def _shorten(clear, pts, lo, hi, cost=None, bend=0.0, forbid_end=None):
 +    """Shortcut pts[lo..hi]; segments before lo and after hi stay. `clear(a, b)` says
-+    whether a segment keeps its clearance; `cost(a, b)` what it costs (default: length)."""
++    whether a segment keeps its clearance; `cost(a, b)` what it costs (default: length);
++    `bend` what a corner costs; `forbid_end`: a unit direction the last segment may not
++    run along (the track a T-junction joins)."""
 +    cost = cost or math.dist
 +
-+    def total(ps):
-+        return sum(cost(a, b) for a, b in zip(ps, ps[1:]))
++    def score(ps, before, after):
++        chain = ([before] if before is not None else []) + ps + ([after] if after is not None else [])
++        return sum(cost(a, b) for a, b in zip(ps, ps[1:])) + bend * _turns(chain)
 +
 +    out = pts[:lo + 1]
 +    i = lo
 +    while i < hi:
 +        done = False
 +        for j in range(hi, i + 1, -1):
-+            old = total(pts[i:j + 1])
++            before = out[-2] if len(out) >= 2 else None
++            after = pts[j + 1] if j + 1 < len(pts) else None
++            old = score(pts[i:j + 1], before, after)
 +            for mids in _candidates(pts[i], pts[j]):
 +                new = [pts[i]] + mids
 +                # cheaper, or as cheap with fewer corners (a staircase of 45 and 90 degree
 +                # steps is as long as one dogleg)
-+                c = total(new)
++                c = score(new, before, after)
 +                if c > old + 0.01 or (c > old - 0.01 and len(new) >= j - i + 1):
 +                    continue
 +                if any(math.dist(a, b) < MIN_SEGMENT for a, b in zip(new, new[1:])):
 +                    continue
-+                dirs = [_unit(out[-2], out[-1]) if len(out) >= 2 else None]
++                dirs = [_unit(before, out[-1]) if before is not None else None]
 +                dirs += [_unit(a, b) for a, b in zip(new, new[1:])]
-+                dirs.append(_unit(pts[j], pts[j + 1]) if j + 1 < len(pts) else None)
++                dirs.append(_unit(pts[j], after) if after is not None else None)
 +                if not all(_turn_ok(u, v) for u, v in zip(dirs, dirs[1:])):
 +                    continue
++                if forbid_end is not None and j == len(pts) - 1:
++                    u = _unit(new[-2], new[-1])
++                    if u is not None and abs(u[0] * forbid_end[1] - u[1] * forbid_end[0]) < 1e-3:
++                        continue
 +                if all(clear(a, b) for a, b in zip(new, new[1:])):
 +                    out += mids
 +                    i = j
@@ -2148,17 +2361,48 @@ index 0000000..85e17c1
 +    return out + pts[hi + 1:]
 +
 +
++def _on(point, pieces, layer):
++    """Whether point lies on one of the pieces' segments on `layer`."""
++    for L, pts in pieces:
++        if L != layer:
++            continue
++        for a, b in zip(pts, pts[1:]):
++            dx, dy = b[0] - a[0], b[1] - a[1]
++            n2 = dx * dx + dy * dy
++            t = 0.0 if n2 < 1e-12 else max(0.0, min(1.0, ((point[0] - a[0]) * dx + (point[1] - a[1]) * dy) / n2))
++            if math.dist(point, (a[0] + t * dx, a[1] + t * dy)) < 0.005:
++                return True
++    return False
++
++
++def _joined_along(c):
++    """The unit direction of the track c's T-junction end lies on, or None."""
++    if c.tee is None or not c.tee.geo:
++        return None
++    L, pts = c.geo[0][-1]
++    end = pts[-1]
++    for M, qs in c.tee.geo[0]:
++        if M != L:
++            continue
++        for a, b in zip(qs, qs[1:]):
++            if _on(end, [(L, [a, b])], L):
++                return _unit(a, b)
++    return None
++
++
 +def shortcut(router, conns):
 +    """Shorten the routed connections in place; returns a summary."""
 +    rb = router.rb
 +    g = rb.grid
-+    stats = {"connections_shortened": 0, "mm_saved": 0.0, "corners_removed": 0, "undone": 0}
++    stats = {"connections_shortened": 0, "mm_saved": 0.0, "corners_removed": 0, "undone": 0, "pour_kept": 0}
 +    for c in conns:
++        if not c.items:
++            continue
 +        pieces, vias = c.geo
 +        w = rb.widths(c.net)[0]
 +        vd = rb.key(c.net)[2]
 +        blocked = rb.obstacles(c.net)[0]
-+        penalty = router._penalty(c, blocked)
++        penalty = router._penalty(c, blocked, pour=False)
 +        unit = router.costs.unit
 +        factor = router.costs.layer_factor
 +
@@ -2180,37 +2424,57 @@ index 0000000..85e17c1
 +                        total += pen[j * g.nx + i] * unit * (d / n) / g.pitch
 +                return total
 +            return cost
++        along = _joined_along(c)
 +        new_pieces, saved, corners = [], 0.0, 0
 +        for k, (L, pts) in enumerate(pieces):
-+            lo = 1 if k == 0 else 0
-+            hi = len(pts) - 2 if k == len(pieces) - 1 else len(pts) - 1
++            first, last = k == 0, k == len(pieces) - 1
++            # a pad end may move off its lane unless the pad is fine pitch; a T-junction
++            # end stays put, but the way into it may change
++            lo = (0 if router._free_end(c, pts[0]) else 1) if first else 0
++            if last and c.tee is None:
++                hi = len(pts) - 1 if router._free_end(c, pts[-1]) else len(pts) - 2
++            else:
++                hi = len(pts) - 1
 +            if hi - lo < 2:
 +                new_pieces.append((L, pts))
 +                continue
 +            layer = rb.layers[L]
++
 +            # the exact check sees copper and the board edge; the rule areas come from the grid
 +            def ok(a, b, layer=layer, L=L):
 +                return router._outside_keepouts([a, b], L, w, vd) and rb.clear(c.net, layer, a, b, w)
-+            new = _corners(_shorten(ok, pts, lo, hi, cost_on(L)))
++            new = _corners(_shorten(ok, pts, lo, hi, cost_on(L), bend=BEND, forbid_end=along if last else None))
 +            saved += _length(pts) - _length(new)
-+            corners += len(pts) - len(new)
++            corners += _turns(pts) - _turns(new)
 +            new_pieces.append((L, new))
-+        if saved < 0.01 and corners == 0:
++        if saved < 0.01 and corners <= 0:
 +            continue
-+        old_items = c.items
++        before_q = router._pour_quality() if router.pour_net else None
++        old_geo, old_items = c.geo, c.items
 +        for it in old_items:
 +            router.owner.pop(it.m_Uuid.AsString(), None)
 +        rb.remove(old_items)
 +        items = rb.add(c.net, new_pieces, vias)
-+        if rb.violations(c.net, items):  # shouldn't happen: every segment was checked
++        router._q = None
++        # the tracks that end on this one must still find it
++        kids = [d for d in set(router.owner.values()) if d.tee is c and d.items]
++        bad = rb.violations(c.net, items) or any(not _on(d.geo[0][-1][1][-1], new_pieces, d.geo[0][-1][0]) for d in kids)
++        if not bad and before_q is not None and router._pour_quality() > before_q:
++            bad = True
++            stats["pour_kept"] += 1
++        else:
++            stats["undone"] += 1 if bad else 0
++        if bad:
 +            rb.remove(items)
-+            items = rb.add(c.net, *c.geo)
-+            stats["undone"] += 1
++            items = rb.add(c.net, *old_geo)
++            router._q = None
 +        else:
 +            c.geo = (new_pieces, vias)
 +            stats["connections_shortened"] += 1
 +            stats["mm_saved"] += saved
 +            stats["corners_removed"] += corners
++        rb.uncommit(c.net, [it for d in set(router.owner.values()) if d.net == c.net and d is not c for it in d.items])
++        rb.commit(c.net, items)
 +        c.items = items
 +        for it in items:
 +            router.owner[it.m_Uuid.AsString()] = c
@@ -2353,10 +2617,10 @@ index 0000000..4d59b97
 +    return out
 diff --git a/python/commands/powerlab_router/model.py b/python/commands/powerlab_router/model.py
 new file mode 100644
-index 0000000..8fa2f73
+index 0000000..f2906cd
 --- /dev/null
 +++ b/python/commands/powerlab_router/model.py
-@@ -0,0 +1,686 @@
+@@ -0,0 +1,800 @@
 +"""Board side of the PowerLab router (pcbnew): obstacles, pad entry lanes, results as tracks.
 +
 +Clearances are KiCad's: the larger of the two net classes' clearances and the board
@@ -2387,6 +2651,9 @@ index 0000000..8fa2f73
 +VIA_TO_PAD = 0.25  # via ring to a pad edge (§3.5)
 +FINE_PITCH = 0.8  # pads closer than this are fine pitch: leave straight out (§3.4)
 +UNDER_BODY = 1.5  # extra cost (mm) for a lane that leaves a pad under its part
++DIAGONAL_ENTRY = 0.3  # extra cost (mm) for entering a pad that has axes at 45 degrees
++TEE_PAD_MM = 1.0  # a track joins its net's track no closer than this to a pad centre (§3.4)
++USED_LANE = 3.0  # extra cost (mm) for a lane another track of the net already leaves by
 +LANE_TRIES = 6  # exit lengths tried per lane, one grid cell apart
 +ERR = MM(0.005)
 +TYPES = {pcbnew.PCB_PAD_T: "Pad", pcbnew.PCB_TRACE_T: "Track", pcbnew.PCB_ARC_T: "Track",
@@ -2721,21 +2988,25 @@ index 0000000..8fa2f73
 +            if not pad.IsOnLayer(L):
 +                continue
 +            pts = [pt for outline, _h in _polys(_grown(pad, L, 0.0)) for pt in outline]
-+            # a round pad has no axis: every 45 degree direction goes straight to its centre
-+            for k in range(8 if is_round(pad, L) else 4):
-+                a = theta + (45 if is_round(pad, L) else 90) * k
++            # a round pad has no axis: every 45 degree direction goes straight to its centre.
++            # Other pads are entered along an axis, or at 45 degrees to their centre where
++            # they aren't fine pitch (as by hand: no extra bend just to come in square)
++            for k in range(8):
++                a = theta + 45 * k
++                if k % 2 and not is_round(pad, L) and fine:
++                    continue
 +                d8 = a / 45.0
 +                if abs(d8 - round(d8)) > 1e-3:
 +                    continue  # pad not at a multiple of 45 degrees
 +                d = int(round(d8)) % 8
 +                ux, uy = math.cos(math.radians(a)), math.sin(math.radians(a))
-+                penalty = 0.0
++                penalty = DIAGONAL_ENTRY if k % 2 and not is_round(pad, L) else 0.0
 +                if out_len > 0.05:
 +                    dot = (ux * out[0] + uy * out[1]) / out_len
 +                    if fine and dot < 0.7:
 +                        continue
 +                    if dot < -0.3:
-+                        penalty = UNDER_BODY  # under the part: fine for a module's edge pads
++                        penalty += UNDER_BODY  # under the part: fine for a module's edge pads
 +                extent = max((px - cx) * ux + (py - cy) * uy for px, py in pts)
 +                preferred = extent + max(w, 0.5 if fine else 0.3)
 +                # the lane is checked exactly (the grid is too coarse between fine-pitch pads);
@@ -2775,18 +3046,32 @@ index 0000000..8fa2f73
 +
 +    # --- one connection ----------------------------------------------------------------
 +    def route(self, net, pad_a, pad_b, blocked, via_ok, costs, margins=(3.0, 10.0, None), penalty=None,
-+              ignore=None, via_costs=None):
++              ignore=None, via_costs=None, tree=None, used=None):
 +        """`penalty`: per layer bytes of extra cost per cell; `ignore`: uuids of other nets'
 +        copper the exact lane checks may pass through (it's being ripped up); `via_costs`:
-+        lanes -> ({cell index: via cost}, via cost elsewhere)."""
++        lanes -> ({cell index: via cost}, via cost elsewhere).
++        `tree`: [(layer index, p, q)], the net's own tracks already joined to pad_b. The way
++        may end on one of them instead of at pad_b, as a person joins a track to the net's
++        track that is already there instead of running a second one beside it (info["tee"]
++        is then the index of that track). It joins at an angle, never along the track, and
++        not within TEE_PAD_MM of a pad (the pad is the junction there, §3.4).
++        `used`: {(pad uuid, layer index, direction)} lanes the net's tracks already leave by;
++        a second track there would lie on the first, so those lanes cost USED_LANE more."""
 +        g = self.grid
 +        la, lb = self.lanes(pad_a, blocked, net, ignore=ignore), self.lanes(pad_b, blocked, net, ignore=ignore)
 +        info = {"lanes": (len(la), len(lb)), "nodes": 0, "seconds": 0.0}
 +        if not la or not lb:
 +            info["fail"] = "no free entry lane"
 +            return None, info
++        if used:
++            for l in la + lb:
++                if (_uuid(l.pad), l.layer, l.direction) in used:
++                    l.cost += USED_LANE
 +        starts = [(l.cell[0], l.cell[1], l.layer, l.direction, l.cost) for l in la]
 +        goals = {(l.cell[0], l.cell[1], l.layer): ((l.direction + 4) % 8, l.cost) for l in lb}
++        tree_at = self._tree_goals(net, tree, blocked, goals) if tree else {}
++        for key in tree_at:
++            goals[key] = (tree_at[key][2], 0.0)
 +        back = [(l.cell[0], l.cell[1], l.layer, 0, 0) for l in lb]
 +        if (search.enclosed(blocked, via_ok, g.nx, g.ny, starts, goals)
 +                or search.enclosed(blocked, via_ok, g.nx, g.ny, back, {(l.cell[0], l.cell[1], l.layer): None for l in la})):
@@ -2795,6 +3080,8 @@ index 0000000..8fa2f73
 +        cells = [l.cell for l in la + lb]
 +        # the cheapest a way could be: the octilinear distance between the lane exits
 +        lower = min(math.dist(a.exit, b.exit) for a in la for b in lb)
++        if tree_at:
++            lower = min([lower] + [math.dist(a.exit, t[1]) for a in la for t in list(tree_at.values())[::8]])
 +        t0 = time.time()
 +        path = None
 +        vc = via_costs(la + lb) if via_costs else None
@@ -2842,7 +3129,8 @@ index 0000000..8fa2f73
 +            # connector), any 45 degree way is better than none
 +            plain = copy.copy(costs)
 +            plain.diagonal, plain.min_run_diag = 1.0, costs.min_run
-+            again, more = self.route(net, pad_a, pad_b, blocked, via_ok, plain, margins, penalty, ignore, via_costs)
++            again, more = self.route(net, pad_a, pad_b, blocked, via_ok, plain, margins, penalty, ignore, via_costs,
++                                     tree, used)
 +            more["nodes"] += info["nodes"]
 +            more["seconds"] = round(more["seconds"] + info["seconds"], 3)
 +            more["plain_diagonals"] = True
@@ -2853,8 +3141,40 @@ index 0000000..8fa2f73
 +        first = path[0]
 +        start = next(l for l in la if (l.cell, l.layer, l.direction) == ((first[0], first[1]), first[2], first[3]))
 +        last = path[-1]
-+        goal = next(l for l in lb if (l.cell, l.layer) == ((last[0], last[1]), last[2]))
++        key = (last[0], last[1], last[2])
++        if key in tree_at:  # joins the net's track
++            idx, _pt, _dirs = tree_at[key]
++            _L, p, q = tree[idx]
++            c = g.at(last[0], last[1])
++            e = _meet(c, search.DIRS[last[3]], p, q) or _pt
++            goal = Lane(None, last[2], (last[3] + 4) % 8, e, e, (last[0], last[1]), 0.0)
++            info["tee"] = idx
++        else:
++            goal = next(l for l in lb if (l.cell, l.layer) == ((last[0], last[1]), last[2]))
 +        return self._geometry(path, start, goal), info
++
++    def _tree_goals(self, net, tree, blocked, goals):
++        """{(i, j, layer): (track index, point on it, directions it may be joined from)}."""
++        g = self.grid
++        pads = [(T(p.GetPosition().x), T(p.GetPosition().y)) for p in self.pads if p.GetNetname() == net]
++        out = {}
++        for idx, (L, p, q) in enumerate(tree):
++            length = math.dist(p, q)
++            if length < 1e-6:
++                continue
++            d8 = math.degrees(math.atan2(q[1] - p[1], q[0] - p[0])) / 45.0
++            d = int(round(d8)) % 8 if abs(d8 - round(d8)) < 1e-3 else None
++            dirs = frozenset(k for k in range(8) if d is None or k % 4 != d % 4)
++            n = max(1, int(length / (g.pitch / 2)))
++            for s in range(n + 1):
++                x, y = p[0] + (q[0] - p[0]) * s / n, p[1] + (q[1] - p[1]) * s / n
++                if any(math.dist((x, y), c) < TEE_PAD_MM for c in pads):
++                    continue
++                i, j = g.cell(x, y)
++                if not (0 <= i < g.nx and 0 <= j < g.ny) or blocked[L][j * g.nx + i] or (i, j, L) in goals:
++                    continue
++                out.setdefault((i, j, L), (idx, (x, y), dirs))
++        return out
 +
 +    def _geometry(self, path, start, goal):
 +        """Grid path -> [(layer index, [points mm])], [via points], ending at both pad centres.
@@ -2878,8 +3198,10 @@ index 0000000..8fa2f73
 +        _align(rev, rvias, goal.exit)
 +        pieces = [(L, p[::-1]) for L, p in rev[::-1]]
 +        vias = rvias[::-1]
++        _square_middles(pieces, vias)
 +        pieces[0] = (pieces[0][0], [start.centre] + pieces[0][1])
-+        pieces[-1] = (pieces[-1][0], pieces[-1][1] + [goal.centre])
++        if goal.pad is not None:  # a pad; else the point where it joins the net's track
++            pieces[-1] = (pieces[-1][0], pieces[-1][1] + [goal.centre])
 +        return pieces, vias
 +
 +    def add(self, net, pieces, vias):
@@ -2982,6 +3304,62 @@ index 0000000..8fa2f73
 +        grown = _grown(item, L, self.edge_clearance - 0.001)
 +        grown.BooleanSubtract(self.outline)
 +        return grown.OutlineCount() > 0 and grown.Area() > MM(0.001) ** 2
++
++
++def _square_middles(pieces, vias, most=0.3):
++    """A straight run between two vias that both ends' alignment (_align) left a little
++    off a 45 degree multiple (pad -> via -> other layer -> via -> pad, every piece one run,
++    both pads off the grid): slide the two vias along the runs that reach them, by the
++    least that squares the middle run, so no track is a few degrees skew."""
++    def unit(a, b):
++        n = math.dist(a, b)
++        return ((b[0] - a[0]) / n, (b[1] - a[1]) / n) if n > 1e-9 else None
++    cross = lambda u, v: u[0] * v[1] - u[1] * v[0]
++    for k in range(1, len(pieces) - 1):
++        L, pts = pieces[k]
++        if len(pts) != 2:
++            continue
++        a, b = pts
++        r = (b[0] - a[0], b[1] - a[1])
++        ang = math.degrees(math.atan2(r[1], r[0]))
++        if abs(ang / 45.0 - round(ang / 45.0)) * 45.0 < 0.05:
++            continue
++        dm = (math.cos(math.radians(round(ang / 45.0) * 45)), math.sin(math.radians(round(ang / 45.0) * 45)))
++        before, after = pieces[k - 1][1], pieces[k + 1][1]
++        ua, ub = unit(before[-2], before[-1]), unit(after[1], after[0])
++        if ua is None or ub is None:
++            continue
++        # cross(r + tb*ub - ta*ua, dm) = 0, the smallest (ta, tb)
++        g = (-cross(ua, dm), cross(ub, dm))
++        gg = g[0] * g[0] + g[1] * g[1]
++        if gg < 1e-12:
++            continue
++        c = cross(r, dm)
++        ta, tb = -c * g[0] / gg, -c * g[1] / gg
++        if abs(ta) > most or abs(tb) > most:
++            continue
++        na = (a[0] + ta * ua[0], a[1] + ta * ua[1])
++        nb = (b[0] + tb * ub[0], b[1] + tb * ub[1])
++        if math.dist(before[-2], na) < 0.05 or math.dist(after[1], nb) < 0.05:
++            continue
++        before[-1], after[0] = na, nb
++        pieces[k] = (L, [na, nb])
++        vias[k - 1], vias[k] = na, nb
++
++
++def _meet(c, u, p, q):
++    """Where the line from c along u meets the track from p to q, or None (parallel, or
++    past the track's ends)."""
++    vx, vy = q[0] - p[0], q[1] - p[1]
++    det = -u[0] * vy + u[1] * vx
++    if abs(det) < 1e-12:
++        return None
++    rx, ry = p[0] - c[0], p[1] - c[1]
++    t = (-rx * vy + vx * ry) / det
++    s = (u[0] * ry - u[1] * rx) / det
++    if not -0.01 <= s <= 1.01:
++        return None
++    return (c[0] + t * u[0], c[1] + t * u[1])
 +
 +
 +def _loops(path):
@@ -3160,12 +3538,218 @@ index 0000000..96e3f70
 +        if lu > EPS and lv > EPS and abs(ux * vy - uy * vx) > 1e-3 * lu * lv:
 +            n += 1
 +    return n
+diff --git a/python/commands/powerlab_router/pours.py b/python/commands/powerlab_router/pours.py
+new file mode 100644
+index 0000000..8df2566
+--- /dev/null
++++ b/python/commands/powerlab_router/pours.py
+@@ -0,0 +1,200 @@
++"""After routing: pours round the power rails, and GND stitching vias (design rules §3.3, §3.5).
++
++Power polygons (§3.3, "power rails are copper areas, not traces"): every power rail with
++tracks gets a pour on each layer it runs on, drawn round its tracks and pads with a margin
++(POWER_MARGINS), above the GND pour, so it widens the rail wherever there is room and the
++GND pour flows round it. A pour that adds a DRC error is tried with a smaller margin, then
++left out. The track stays inside it, so the rail stays connected even
++where the pour can't fill. Pads join the pour with thermal reliefs; only the high-current
++nets the user names connect solid (§3.3, pour quality). A layer that already has a pour
++of that net is left alone.
++
++Stitching vias (§3.5): GND vias about `pitch` apart where every GND pour layer is filled
++round the via, kept clear of other nets (the router's via grid and the exact check), of
++the escape room at fine-pitch pins, and of the GND vias already there.
++"""
++
++import math
++
++import pcbnew
++
++from commands.powerlab_router.model import MM, T, _Occupancy, _polys
++
++POWER_MARGINS = (1.0, 0.5, 0.25)  # mm of pour beyond a power track's or pad's edge, tried in turn
++OUTLINE_ERR = 0.05  # mm: corner error of the pour outlines (fewer points than the copper)
++THERMAL_GAP = 0.3
++STITCH_SEARCH = 0.25  # mm steps when looking near a grid point for a free spot
++STITCH_FILL_MARGIN = 0.15  # mm of filled pour round a stitching via's pad, on every layer
++
++
++def _zones(board, net, L):
++    return [z for z in board.Zones() if not z.GetIsRuleArea() and z.GetNetname() == net and z.IsOnLayer(L)]
++
++
++def _gnd_quality(router):
++    """(minus the summed largest-piece share, pieces) of the pour nets' fill, all zones
++    refilled: like Router._pour_quality, but with every zone filled, so a higher-priority
++    pour of another net is cut out of the GND pour as KiCad does it."""
++    rb = router.rb
++    pcbnew.ZONE_FILLER(rb.board).Fill(rb.board.Zones())
++    count, share = 0, 0.0
++    for z in rb.board.Zones():
++        if z.GetIsRuleArea() or z.GetNetname() not in rb.pour_nets:
++            continue
++        for L in z.GetLayerSet().CuStack():
++            f = z.GetFilledPolysList(L)
++            areas = [f.Outline(i).Area() / 1e12 for i in range(f.OutlineCount())]
++            count += len([a for a in areas if a >= 2.0])
++            share += max(areas) / sum(areas) if areas else 1.0
++    return (-round(share / 0.02) * 0.02, count)
++
++
++def power_pours(router, nets, solid=(), margins=POWER_MARGINS, check=None):
++    """Pours round the power rails' tracks; returns {net: [layer names]} and what was skipped.
++
++    Not on a GND plane layer (the bottom of a 2-layer board, an inner layer with a GND
++    pour on more layers), where the GND pour is the return plane: rails go on the parts
++    layer (§3.3). There the rail's pour may divide the GND pour of that layer; the plane
++    stays whole, and the stitching vias tie the pieces to it. The report gives the GND
++    pour before and after (_gnd_quality).
++    `check()`: the board's DRC errors (a set). A pour that adds one (a pad whose thermal
++    spokes don't fit, a GND island it cuts off) is tried again with the next, smaller
++    margin, then left out."""
++    rb = router.rb
++    board = rb.board
++    if len(rb.layers) == 2:
++        plane = {rb.layers[-1]}
++    else:
++        plane = {L for L in rb.layers[1:-1] if any(_zones(board, n, L) for n in rb.pour_nets)}
++    before = _gnd_quality(router)
++    base = check() if check else None
++    solid = set(solid)
++    pour_zones = [z for z in board.Zones() if not z.GetIsRuleArea() and z.GetNetname() in rb.pour_nets]
++    priority = max([z.GetAssignedPriority() for z in pour_zones] + [0]) + 1
++    min_width = min([T(z.GetMinThickness()) for z in pour_zones] + [0.25])
++    clip = rb.outline.CloneDropTriangulation()
++    clip.Inflate(MM(-rb.edge_clearance), pcbnew.CORNER_STRATEGY_CHAMFER_ALL_CORNERS, MM(OUTLINE_ERR))
++    made, skipped = {}, {}
++
++    def place(net, info, L, items, margin, w):
++        sp = pcbnew.SHAPE_POLY_SET()
++        for it in items:
++            it.TransformShapeToPolygon(sp, L, MM(margin), MM(OUTLINE_ERR), pcbnew.ERROR_OUTSIDE)
++        sp.Simplify()
++        sp.BooleanIntersection(clip)
++        added = []
++        for i in range(sp.OutlineCount()):
++            z = pcbnew.ZONE(board)
++            z.SetLayer(L)
++            z.SetNet(info)
++            z.SetAssignedPriority(priority)
++            z.SetZoneName(f"{net} pour")
++            z.SetPadConnection(pcbnew.ZONE_CONNECTION_FULL if net in solid else pcbnew.ZONE_CONNECTION_THERMAL)
++            z.SetThermalReliefGap(MM(THERMAL_GAP))
++            z.SetThermalReliefSpokeWidth(MM(max(min_width, min(w, 0.5))))
++            z.SetMinThickness(MM(min_width))
++            z.SetIslandRemovalMode(pcbnew.ISLAND_REMOVAL_MODE_ALWAYS)
++            # copied into the zone's own outline: SetOutline() would keep a pointer to a
++            # polygon Python frees later
++            z.Outline().AddOutline(sp.Outline(i))
++            board.Add(z)
++            added.append(z)
++        return added
++
++    for net in nets:
++        tracks = [t for t in board.GetTracks() if t.GetNetname() == net and t.Type() != pcbnew.PCB_VIA_T]
++        pads = [p for p in rb.pads if p.GetNetname() == net]
++        info = board.FindNet(net)
++        if not tracks or info is None:
++            continue
++        w = rb.widths(net)[0]
++        for L in rb.layers:
++            on = [t for t in tracks if t.IsOnLayer(L)]
++            if not on:
++                continue
++            name = rb.layer_names[L]
++            if L in plane:
++                skipped.setdefault(net, []).append(f"{name}: the GND plane layer")
++                continue
++            if _zones(board, net, L):
++                skipped.setdefault(net, []).append(f"{name}: has a pour already")
++                continue
++            why = "no room"
++            for margin in margins:
++                added = place(net, info, L, on + [p for p in pads if p.IsOnLayer(L)], margin, w)
++                pcbnew.ZONE_FILLER(board).Fill(board.Zones())
++                if added and any(z.GetFilledPolysList(L).OutlineCount() for z in added):
++                    errors = check() - base if check else set()
++                    if not errors:
++                        made.setdefault(net, []).append(name)
++                        break
++                    why = "it would add DRC errors: " + ", ".join(sorted({kind for kind, _u in errors}))
++                for z in added:
++                    board.Remove(z)
++            else:
++                skipped.setdefault(net, []).append(f"{name}: {why}")
++    pcbnew.ZONE_FILLER(board).Fill(board.Zones())
++    after = _gnd_quality(router)
++    router._q = None
++    return {"added": {n: sorted(set(v)) for n, v in made.items() if v}, "skipped": skipped,
++            "pad_connection": {n: ("solid" if n in solid else "thermal reliefs") for n in made},
++            "gnd_pour": {"before": before, "after": after}}
++
++
++def stitching_vias(router, pitch=5.0):
++    """GND stitching vias on a `pitch` grid, each moved to a free spot nearby."""
++    rb = router.rb
++    board = rb.board
++    net = router.pour_net
++    layers = [L for L in rb.layers if _zones(board, net, L)] if net else []
++    if not net or len(layers) < 2:
++        return {"added": 0, "why": "no pour net with pours on two layers"}
++    pcbnew.ZONE_FILLER(board).Fill(board.Zones())
++    _cls, _w, vd, _name = key = rb.key(net)
++    # a fresh grid: the power pours added after routing are copper of other nets now
++    occ = _Occupancy(rb, key)
++    g = rb.grid
++    via_ok = occ.blocked(net)[1]
++    fills = []
++    for L in layers:
++        f = pcbnew.SHAPE_POLY_SET()
++        for z in _zones(board, net, L):
++            f.BooleanAdd(z.GetFilledPolysList(L))
++        f.Deflate(MM(vd / 2 + STITCH_FILL_MARGIN), pcbnew.CORNER_STRATEGY_ROUND_ALL_CORNERS, MM(0.01))
++        fills.append(f)
++    escape = [e > 0 for e in router.lab.escape_total] if getattr(router, "lab", None) else None
++    vias = [(T(t.GetPosition().x), T(t.GetPosition().y)) for t in board.GetTracks()
++            if t.Type() == pcbnew.PCB_VIA_T and t.GetNetname() == net]
++    spacing = 0.6 * pitch
++
++    def free(x, y):
++        i, j = g.cell(x, y)
++        if not (0 <= i < g.nx and 0 <= j < g.ny) or not via_ok[j * g.nx + i]:
++            return False
++        if escape is not None and any(e[j, i] for e in escape):
++            return False
++        if any(math.dist((x, y), v) < spacing for v in vias):
++            return False
++        p = pcbnew.VECTOR2I(MM(x), MM(y))
++        return all(f.Contains(p) for f in fills)
++
++    added = []
++    x0, y0, x1, y1 = g.x0 + pitch / 2, g.y0 + pitch / 2, g.x0 + g.nx * g.pitch, g.y0 + g.ny * g.pitch
++    reach = int(pitch / 2 / STITCH_SEARCH)
++    y = y0
++    while y < y1:
++        x = x0
++        while x < x1:
++            spots = sorted(((dx, dy) for dx in range(-reach, reach + 1) for dy in range(-reach, reach + 1)),
++                           key=lambda d: d[0] * d[0] + d[1] * d[1])
++            for dx, dy in spots:
++                v = (round(x + dx * STITCH_SEARCH, 3), round(y + dy * STITCH_SEARCH, 3))
++                if free(*v) and router._via_fits(net, v):
++                    items = rb.add(net, [], [v])
++                    rb.commit(net, items)
++                    vias.append(v)
++                    added.append(v)
++                    break
++            x += pitch
++        y += pitch
++    return {"added": len(added), "pitch_mm": pitch, "via": [vd, rb.widths(net)[2]]}
 diff --git a/python/commands/powerlab_router/router.py b/python/commands/powerlab_router/router.py
 new file mode 100644
-index 0000000..67b38c8
+index 0000000..9f405db
 --- /dev/null
 +++ b/python/commands/powerlab_router/router.py
-@@ -0,0 +1,1056 @@
+@@ -0,0 +1,1283 @@
 +"""The PowerLab router's main loop (plan §4.2-4.6).
 +
 +Connections are the edges of a minimum spanning tree over each net's pads. Groups are
@@ -3192,7 +3776,7 @@ index 0000000..67b38c8
 +
 +from commands.powerlab_router.costs import HUG, LabCosts, labels, pieces
 +from commands.powerlab_router.groups import GROUPS, classify, is_clock
-+from commands.powerlab_router.model import FINE_PITCH, MM, RouterBoard, _grown, _polys, is_round
++from commands.powerlab_router.model import FINE_PITCH, MM, USED_LANE, RouterBoard, _grown, _polys, is_round
 +from commands.powerlab_router import bus as river
 +from commands.powerlab_router.patterns import DIRS, bends, shapes
 +from commands.powerlab_router.search import Costs
@@ -3215,6 +3799,9 @@ index 0000000..67b38c8
 +BEND_PER_VIA = 2  # a via counts as this many corners when bus plans are compared
 +VIA_COLUMN_EXTRA = (0.0, 0.5, 1.0, 1.5)  # mm beyond the closest via column that are tried
 +POUR_BLOCK = 1  # the pour grid already keeps the zone's minimum width
++IMPROVE_DETOUR = 1.6  # a track this many times its straight distance gets a second look
++IMPROVE_BENDS = 6  # so does one with more corners than this
++IMPROVE_MAX = 15  # tracks looked at again, the worst first
 +MAX_RIPPED = 3
 +MAX_RIPS = 3
 +BUDGET = 2  # rip-ups per connection overall
@@ -3245,6 +3832,7 @@ index 0000000..67b38c8
 +        self.rips = 0  # times it ripped others up
 +        self.reason = None
 +        self.bus, self.bus_size, self.bus_rank = None, 0, 0  # see Router._buses
++        self.tee = None  # the connection whose track this one ends on (a T-junction), if any
 +
 +    def name(self):
 +        return f"{_name(self.a)}-{_name(self.b)}"
@@ -3280,6 +3868,10 @@ index 0000000..67b38c8
 +        self.rb = RouterBoard(board, pitch=pitch, pour_nets=pour_nets, rules=rules)
 +        self.costs = costs or Costs(layer_factor={1: 1.2} if len(self.rb.layers) == 2 else None)
 +        self.group_overrides = groups or {}
++
++    def is_power(self, net):
++        """Whether the net is in the power group (Power/GND/HV class, +*, VBUS*...)."""
++        return classify([net], lambda n: self.rb.netclass(n).GetName(), self.group_overrides)[net] == 0
 +
 +    def connections(self, nets):
 +        rb = self.rb
@@ -3480,12 +4072,23 @@ index 0000000..67b38c8
 +        blocked = cache[conn.net]
 +        return min(len(self.rb.lanes(p, blocked, conn.net, exact=False)) for p in (conn.a, conn.b))
 +
-+    def _penalty(self, conn, blocked, soft=None):
-+        """The lab costs, the history, and SOFT where copper would be ripped up."""
++    def _penalty(self, conn, blocked, soft=None, pour=True):
++        """The lab costs, the history, and SOFT where copper would be ripped up. With
++        pour=False without the pour's hug and sliver costs (the finishing pass checks the
++        pour on KiCad's fill instead)."""
 +        clocks = {c.net for c in self.owner.values() if is_clock(c.net)}
 +        clock_items = [it for c in set(self.owner.values()) if c.net in clocks for it in c.items]
 +        return self.lab.penalty(conn, blocked, self.hist, soft, SOFT, clocks | ({conn.net} if is_clock(conn.net) else set()),
-+                                clock_items)
++                                clock_items, pour=pour)
++
++    @staticmethod
++    def _free_end(conn, point):
++        """Whether the track end at `point` (a pad centre of conn) may leave its lane: any
++        pad that isn't fine pitch may be entered at 45 degrees (finish.py)."""
++        for pad in (conn.a, conn.b):
++            if math.dist(_xy(pad), point) < 1e-3:
++                return not _fine(pad)
++        return False
 +
 +    def _via_costs(self, conn):
 +        return lambda lanes: self.lab.via_costs(conn, lanes, self.costs.via)
@@ -3554,13 +4157,24 @@ index 0000000..67b38c8
 +                    if any(min(xs) - NEAR <= x <= max(xs) + NEAR and min(ys) - NEAR <= y <= max(ys) + NEAR
 +                           for x, y in (_xy(c.a), _xy(c.b))):
 +                        c.lanes = self._lanes(c, cache)
++        if log:
++            log({"phase": "keeping the pours whole"})
 +        repair = self._repair_pours(totals, log) if self.pour_net else None
-+        finish = None
++        finish = improve = None
 +        if self.finish:
 +            from commands.powerlab_router.finish import shortcut
 +            t0 = time.time()
++            if log:
++                log({"phase": "straightening"})
 +            finish = shortcut(self, [c for c in conns if c.items])
++            if log:
++                log({"phase": "second look at detours"})
++            improve = self._improve(conns, totals, log)
++            if improve["moved"]:
++                shortcut(self, improve.pop("changed"))
++            improve.pop("changed", None)
 +            finish["seconds"] = round(time.time() - t0, 1)
++        merged = self._merge_overlaps(nets)
 +        by_group = {}
 +        for c in conns:
 +            gr = by_group.setdefault(GROUPS[c.group], {"routed": 0, "left": 0})
@@ -3583,9 +4197,111 @@ index 0000000..67b38c8
 +            "pour_repair": repair,
 +            "shapes": dict(self.tidy_stats),
 +            "finish": finish,
++            "second_look": improve,
++            "overlaps_merged": merged,
++            "t_junctions": sum(1 for c in conns if c.items and c.tee is not None),
 +            "rules_not_understood": rb.rules.unsupported,
 +            "connections_list": conns,
 +        }
++
++    # --- a second look, and overlaps ----------------------------------------------------------
++    def _shape_score(self, c):
++        """Length, BEND per corner and the via cost per via: what a person would call a
++        worse track (a detour, a loop round something, extra corners)."""
++        pieces, vias = c.geo
++        return sum(math.dist(p, q) for _L, pts in pieces for p, q in zip(pts, pts[1:])) + \
++            BEND * sum(bends(pts) for _L, pts in pieces) + self.costs.via * len(vias)
++
++    def _improve(self, conns, totals, log=None):
++        """Route the worst tracks again on the finished board: those that go a long way
++        round (IMPROVE_DETOUR times the straight distance) or bend often. Copper routed
++        after them may leave a better way now, e.g. no U-turn round a via. The new track is
++        kept only if it scores better (_shape_score) and leaves the pour as whole."""
++        def octilinear(c):
++            (x0, y0), (x1, y1) = _xy(c.a), _xy(c.b)
++            dx, dy = abs(x1 - x0), abs(y1 - y0)
++            return max(dx, dy) + (math.sqrt(2) - 1) * min(dx, dy)
++        worst = []
++        for c in conns:
++            if not c.items or c.bus or any(d.tee is c and d.items for d in conns):
++                continue
++            length = sum(math.dist(p, q) for _L, pts in c.geo[0] for p, q in zip(pts, pts[1:]))
++            detour = length / max(octilinear(c), 0.5)
++            turns = sum(bends(pts) for _L, pts in c.geo[0])
++            if (detour > IMPROVE_DETOUR and length > 3.0) or turns > IMPROVE_BENDS:
++                worst.append((detour + 0.1 * turns, c))
++        moved, changed = 0, []
++        for _bad, c in sorted(worst, key=lambda w: -w[0])[:IMPROVE_MAX]:
++            before_q = self._pour_quality() if self.pour_net else None
++            old_geo, old_tee, old = c.geo, c.tee, self._shape_score(c)
++            self._unroute(c)
++            ok, _info = self._attempt(c, totals)
++            if ok and self._shape_score(c) < old - 0.5 and (before_q is None or self._pour_quality() <= before_q):
++                moved += 1
++                changed.append(c)
++                if log:
++                    log({"net": c.net, "connection": c.name(), "group": c.group, "ok": True,
++                         "event": f"routed again: score {old:.1f} -> {self._shape_score(c):.1f}"})
++                continue
++            if c.items:
++                self._unroute(c)
++            self._restore(c, old_geo)
++            c.tee = old_tee
++        return {"looked_at": min(len(worst), IMPROVE_MAX), "moved": moved, "changed": changed}
++
++    def _merge_overlaps(self, nets):
++        """Tracks of one net lying on each other on one layer (two tracks leaving a pad by
++        the same lane, a track drawn twice) become one: collinear overlapping segments are
++        merged into their union. Only the router's own copper is touched."""
++        rb = self.rb
++        nets = set(nets)
++        groups = {}
++        for t in rb.board.GetTracks():
++            if t.Type() != pcbnew.PCB_TRACE_T or t.GetNetname() not in nets or _uuid(t) not in rb.router_items:
++                continue
++            a, b = (T(t.GetStart().x), T(t.GetStart().y)), (T(t.GetEnd().x), T(t.GetEnd().y))
++            length = math.dist(a, b)
++            if length < 1e-4:
++                continue
++            ux, uy = (b[0] - a[0]) / length, (b[1] - a[1]) / length
++            if ux < -1e-9 or (abs(ux) < 1e-9 and uy < 0):
++                ux, uy = -ux, -uy
++            offset = round(-uy * a[0] + ux * a[1], 3)  # the line's distance from the origin
++            key = (t.GetNetname(), t.GetLayer(), round(ux, 4), round(uy, 4), offset)
++            (s0, p0), (s1, p1) = sorted(((ux * a[0] + uy * a[1], pcbnew.VECTOR2I(t.GetStart())),
++                                         (ux * b[0] + uy * b[1], pcbnew.VECTOR2I(t.GetEnd()))), key=lambda e: e[0])
++            groups.setdefault(key, []).append((s0, s1, t, p0, p1))
++        merged = 0
++        for (net, layer, ux, uy, offset), segs in groups.items():
++            if len(segs) < 2:
++                continue
++            segs.sort(key=lambda s: s[0])
++            runs, cur = [], [segs[0]]
++            for s in segs[1:]:
++                if s[0] < max(x[1] for x in cur) - 1e-4:  # overlaps (touching end to end is fine)
++                    cur.append(s)
++                else:
++                    runs.append(cur)
++                    cur = [s]
++            runs.append(cur)
++            for run in runs:
++                if len(run) < 2:
++                    continue
++                first = min(run, key=lambda s: s[0])
++                last = max(run, key=lambda s: s[1])
++                keep = max(run, key=lambda s: s[1] - s[0])[2]
++                start, end = pcbnew.VECTOR2I(first[3]), pcbnew.VECTOR2I(last[4])  # exact ends, not rebuilt
++                keep.SetStart(start)
++                keep.SetEnd(end)
++                keep.SetWidth(max(s[2].GetWidth() for s in run))
++                for s in run:
++                    if s[2] is not keep:
++                        rb.router_items.discard(_uuid(s[2]))
++                        rb.board.Delete(s[2])
++                        merged += 1
++        if merged:
++            rb._others = {}
++        return merged
 +
 +    # --- pours kept whole (§3.3) -----------------------------------------------------------
 +    def _pour_setup(self):
@@ -3676,7 +4392,7 @@ index 0000000..67b38c8
 +        first_q = self._pour_quality()
 +        if first_q <= before:
 +            return ok, info
-+        first = conn.geo
++        first, first_tee = conn.geo, conn.tee
 +        self._unroute(conn)
 +        self._add_history(self._shadow(first), layers=self._pour_layers(), amount=CUT)
 +        ok2, info2 = self._attempt(conn, totals)
@@ -3688,6 +4404,7 @@ index 0000000..67b38c8
 +            self._unroute(conn)
 +        totals["pour_cuts"] = totals.get("pour_cuts", 0) + 1
 +        self._restore(conn, first)  # nothing else moved meanwhile, so it fits
++        conn.tee = first_tee
 +        info["pour"] = "cuts the pour, no better way"
 +        return True, info
 +
@@ -3733,7 +4450,10 @@ index 0000000..67b38c8
 +                if not wall:
 +                    continue
 +                before = self._pour_quality()
++                # with the tracks that end on the wall's tracks; they go back after them
++                wall = self._dependents(wall)
 +                snapshot = {c: c.geo for c in wall}
++                tees = {c: c.tee for c in wall}
 +                for c in wall:
 +                    self._unroute(c)
 +                if self._pour_quality() >= before:  # not this wall
@@ -3741,9 +4461,14 @@ index 0000000..67b38c8
 +                        self._restore(c, snapshot[c])
 +                    continue
 +                changed = []
-+                for c in sorted(wall, key=lambda c: c.length):
++                for c in sorted(wall, key=lambda c: (self._depth(c), c.length)):
 +                    now = self._pour_quality()
-+                    if self._restore(c, snapshot[c], check=True) and self._pour_quality() <= now:
++                    parent = tees[c]
++                    # a track that ended on a moved track can't go back where it was
++                    if parent is not None and (parent.geo is not snapshot.get(parent, parent.geo) or not parent.items):
++                        pass
++                    elif self._restore(c, snapshot[c], check=True) and self._pour_quality() <= now:
++                        c.tee = parent
 +                        continue
 +                    if c.items:
 +                        self._unroute(c)
@@ -3752,8 +4477,9 @@ index 0000000..67b38c8
 +                    ok, _info = self._attempt(c, totals)
 +                    if ok:
 +                        changed.append(c)
-+                    elif self._restore(c, snapshot[c], check=True):
-+                        pass
++                    elif (parent is None or (parent.items and parent.geo is snapshot.get(parent, parent.geo))) \
++                            and self._restore(c, snapshot[c], check=True):
++                        c.tee = parent
 +                lost = [c for c in wall if not c.items]
 +                if lost or self._pour_quality() >= before:
 +                    for c in wall:  # back exactly as it was
@@ -3761,6 +4487,7 @@ index 0000000..67b38c8
 +                            self._unroute(c)
 +                    for c in wall:
 +                        self._restore(c, snapshot[c])
++                        c.tee = tees[c]
 +                    continue
 +                moved += len(changed)
 +                better = True
@@ -3838,6 +4565,75 @@ index 0000000..67b38c8
 +                out.append(t)
 +        return out
 +
++    # --- a net's tracks joined to each other (no second track beside the first) ----------------
++    def _routed(self, net, but=None):
++        return [c for c in set(self.owner.values()) if c.net == net and c.items and c is not but]
++
++    def _tree(self, conn):
++        """(tracks, owners, used lanes) for `conn`: the net's routed tracks already joined to
++        conn.b, which the search may end on (model.route's `tree`), with the connection each
++        belongs to; and the lanes the net's tracks leave its pads by. When only conn.a's side
++        has copper, a and b are swapped first."""
++        routed = self._routed(conn.net, conn)
++        if not routed:
++            return [], [], set()
++        parent = {}
++
++        def find(x):
++            while parent.setdefault(x, x) != x:
++                parent[x] = parent[parent[x]]
++                x = parent[x]
++            return x
++        for c in routed:
++            parent[find(_uuid(c.a))] = find(_uuid(c.b))
++        side = lambda pad: [c for c in routed if find(_uuid(c.a)) == find(_uuid(pad))]
++        near_b = side(conn.b)
++        if not near_b and side(conn.a):
++            conn.a, conn.b = conn.b, conn.a
++            near_b = side(conn.b)
++        tracks, owners = [], []
++        for c in near_b:
++            for L, pts in c.geo[0]:
++                for p, q in zip(pts, pts[1:]):
++                    tracks.append((L, p, q))
++                    owners.append(c)
++        used = set()
++        for c in routed:
++            used |= self._lanes_used(c)
++        return tracks, owners, used
++
++    @staticmethod
++    def _lanes_used(c):
++        """{(pad uuid, layer index, direction)}: the lanes c's track leaves its pads by."""
++        out = set()
++        pieces = c.geo[0]
++        for pad in (c.a, c.b):
++            centre = _xy(pad)
++            for L, pts in (pieces[0], pieces[-1]):
++                if len(pts) < 2:
++                    continue
++                if math.dist(pts[0], centre) < 1e-3:
++                    out.add((_uuid(pad), L, _direction(pts[0], pts[1])))
++                if math.dist(pts[-1], centre) < 1e-3:
++                    out.add((_uuid(pad), L, _direction(pts[-1], pts[-2])))
++        return out
++
++    def _dependents(self, conns):
++        """`conns` and every routed connection that ends on one of their tracks, and so on."""
++        out = list(conns)
++        while True:
++            more = [c for c in set(self.owner.values()) if c.items and c.tee in out and c not in out]
++            if not more:
++                return out
++            out += more
++
++    @staticmethod
++    def _depth(c):
++        n = 0
++        while c.tee is not None and n < 50:
++            c, n = c.tee, n + 1
++        return n
++
 +    def _attempt(self, conn, totals):
 +        """Route `conn` around everything; on success its copper is on the board and stamped."""
 +        rb = self.rb
@@ -3847,18 +4643,23 @@ index 0000000..67b38c8
 +                totals["retries"] += 1
 +                rb.remove(items)
 +                items = []
++            conn.tee = None
++            tree, owners, used = self._tree(conn)
 +            blocked, via_ok = rb.obstacles(conn.net, extra)
 +            penalty = self._penalty(conn, blocked)
 +            geo = self._draw(conn, blocked, via_ok, penalty) if self.draw else None
 +            if geo is not None:
 +                info = {"nodes": 0, "seconds": 0.0, "drawn": True}
-+            if geo is None or geo[1]:
++            if geo is None or geo[1] or tree:
 +                # a drawn shape with vias may only be the best of a few shapes: going round
-+                # on one layer needs more bends than they have; the search decides
++                # on one layer needs more bends than they have; the search decides. So it
++                # does when the net has a track to join: the shapes only go pin to pin
 +                found, sinfo = rb.route(conn.net, conn.a, conn.b, blocked, via_ok, self.costs,
-+                                        penalty=penalty, via_costs=self._via_costs(conn))
++                                        penalty=penalty, via_costs=self._via_costs(conn), tree=tree, used=used)
 +                if found is not None and (geo is None or sinfo.get("cost_mm", 1e18) < self._drawn_cost):
 +                    geo, info = found, sinfo
++                    if sinfo.get("tee") is not None:
++                        conn.tee = owners[sinfo["tee"]]
 +                elif geo is None:
 +                    info = sinfo
 +                else:
@@ -3897,7 +4698,8 @@ index 0000000..67b38c8
 +        out = []
 +        for k, (L, pts) in enumerate(pieces):
 +            lo = 1 if k == 0 else 0
-+            hi = len(pts) - 2 if k == len(pieces) - 1 else len(pts) - 1
++            # the last run ends in a pad's lane, or (a T-junction) on the net's track
++            hi = len(pts) - 2 if k == len(pieces) - 1 and conn.tee is None else len(pts) - 1
 +            if hi - lo < 1:
 +                out.append((L, pts))
 +                continue
@@ -3953,6 +4755,12 @@ index 0000000..67b38c8
 +        la, lb = rb.lanes(conn.a, blocked, net, exact=False), rb.lanes(conn.b, blocked, net, exact=False)
 +        if not la or not lb:
 +            return None
++        used = set()
++        for c in self._routed(net, conn):
++            used |= self._lanes_used(c)
++        for lane in la + lb:  # a lane another track of the net leaves by: the two would lie on each other
++            if (_uuid(lane.pad), lane.layer, lane.direction) in used:
++                lane.cost += USED_LANE
 +        _cls, w, vd, _n = rb.key(net)
 +        # a via costs in full here: weighed against a bend, a person draws the bend more often
 +        # (the hand-routed TestPCB has 23 vias, the router had 39)
@@ -4199,7 +5007,10 @@ index 0000000..67b38c8
 +        conn.rips += 1
 +        totals["ripups"] += 1
 +        self._q = None
++        # a track that ends on a ripped-up one would be left hanging: it goes too
++        victims = set(self._dependents(list(victims)))
 +        for v in victims:
++            v.tee = None if v.tee in victims else v.tee
 +            for it in v.items:
 +                self.owner.pop(_uuid(it), None)
 +            rb.remove(v.items)
@@ -4528,10 +5339,10 @@ index 0000000..2c99089
 +        return max(default, maybe)
 diff --git a/python/commands/powerlab_router/search.py b/python/commands/powerlab_router/search.py
 new file mode 100644
-index 0000000..2c85359
+index 0000000..a43d0f9
 --- /dev/null
 +++ b/python/commands/powerlab_router/search.py
-@@ -0,0 +1,188 @@
+@@ -0,0 +1,193 @@
 +"""Octilinear A* for the PowerLab router. No pcbnew, so it can be tested and timed anywhere.
 +
 +A state is (i, j, layer, direction, run): the cell, the direction it was entered in (0-7,
@@ -4586,7 +5397,8 @@ index 0000000..2c85359
 +    blocked: per layer, a flat sequence of nx*ny (truthy = no track centre here).
 +    via_ok: flat sequence of nx*ny (truthy = a through via fits here).
 +    starts: [(i, j, layer, direction, cost)] lane exits;
-+    goals: {(i, j, layer): (direction to arrive in, cost of that lane)}.
++    goals: {(i, j, layer): (direction to arrive in, cost of that lane)}; the direction may
++    also be a frozenset of directions (a point on the net's own track, joined at an angle).
 +    window: (i0, j0, i1, j1), inclusive.
 +    penalty: per layer, flat nx*ny bytes (cost per cell entered, in `costs.unit`), or None.
 +    via_cost: ({cell index: cost}, cost elsewhere[, pour cells]), or None for costs.via
@@ -4604,7 +5416,11 @@ index 0000000..2c85359
 +    wnx = i1 - i0 + 1
 +    cols, rows = np.meshgrid(np.arange(i0, i1 + 1), np.arange(j0, j1 + 1))
 +    hmap = np.full(cols.shape, np.inf)
-+    for gi, gj, _L in goals:
++    # points along a track are many and close together: every fourth is enough for the
++    # heuristic (it then errs by a cell or so, which costs nothing that matters)
++    lanes = [k for k, v in goals.items() if type(v[0]) is int]
++    along = [k for k, v in goals.items() if type(v[0]) is not int]
++    for gi, gj, _L in lanes + along[::4]:
 +        dx, dy = np.abs(cols - gi), np.abs(rows - gj)
 +        hmap = np.minimum(hmap, np.maximum(dx, dy) + (SQ2 - 1.0) * np.minimum(dx, dy))
 +    hl = (hmap * (pitch * min(factor) * costs.weight)).ravel().tolist()
@@ -4640,7 +5456,7 @@ index 0000000..2c85359
 +            break
 +        i, j, L, d, r = s
 +        goal = goals.get((i, j, L))
-+        if goal is not None and goal[0] == d:
++        if goal is not None and (goal[0] == d if type(goal[0]) is int else d in goal[0]):
 +            found = s
 +            break
 +        if d == FREE:
@@ -4662,7 +5478,7 @@ index 0000000..2c85359
 +                # it per cell made diagonals 30% cheaper through costly ground than a straight run
 +                nc += pen[nj * nx + ni] * unit * (SQ2 if k % 2 else 1.0)
 +            goal = goals.get((ni, nj, L))
-+            if goal is not None and goal[0] == k:
++            if goal is not None and (goal[0] == k if type(goal[0]) is int else k in goal[0]):
 +                nc += goal[1]  # the goal lane's own cost
 +            ns = (ni, nj, L, k, nr)
 +            if nc < best.get(ns, 1e18):
@@ -5157,8 +5973,26 @@ index 0000000..076167b
 +    report["sharp_corners_left"] = sharp_corners(board)
 +    report["thin_tracks_left"] = thin_tracks(board)
 +    return report
+diff --git a/python/commands/routing.py b/python/commands/routing.py
+index be3cf94..446ecbe 100644
+--- a/python/commands/routing.py
++++ b/python/commands/routing.py
+@@ -1875,6 +1875,13 @@ class RoutingCommands:
+ 
+             zone.SetMinThickness(int(min_width * scale))
+ 
++            # Pads join with thermal reliefs; solid only for high-current pours (PowerLab patch)
++            zone.SetPadConnection(
++                pcbnew.ZONE_CONNECTION_FULL
++                if params.get("padConnection") == "solid"
++                else pcbnew.ZONE_CONNECTION_THERMAL
++            )
++
+             # Set fill type
+             if fill_type == "hatched":
+                 zone.SetFillMode(pcbnew.ZONE_FILL_MODE_HATCH_PATTERN)
 diff --git a/python/kicad_api/ipc_backend.py b/python/kicad_api/ipc_backend.py
-index 6f9a813..827e3fa 100644
+index 6f9a813..5d40efc 100644
 --- a/python/kicad_api/ipc_backend.py
 +++ b/python/kicad_api/ipc_backend.py
 @@ -471,6 +471,30 @@ class IPCBoardAPI(BoardAPI):
@@ -5206,8 +6040,29 @@ index 6f9a813..827e3fa 100644
  
              # Apply changes
              commit = board.begin_commit()
+@@ -1387,6 +1417,7 @@ class IPCBoardAPI(BoardAPI):
+         priority: int = 0,
+         fill_mode: str = "solid",
+         name: str = "",
++        pad_connection: str = "thermal",
+     ) -> bool:
+         """
+         Add a copper pour zone to the board.
+@@ -1453,6 +1484,12 @@ class IPCBoardAPI(BoardAPI):
+             zone._proto.copper_settings.fill_mode = (
+                 ZoneFillMode.ZFM_HATCHED if fill_mode == "hatched" else ZoneFillMode.ZFM_SOLID
+             )
++            # Pads join with thermal reliefs; solid only for high-current pours (PowerLab patch)
++            from kipy.proto.board.board_types_pb2 import ZoneConnectionStyle
++
++            zone._proto.copper_settings.connection.zone_connection = (
++                ZoneConnectionStyle.ZCS_FULL if pad_connection == "solid" else ZoneConnectionStyle.ZCS_THERMAL
++            )
+ 
+             # Create outline polyline
+             outline = PolyLine()
 diff --git a/python/kicad_interface.py b/python/kicad_interface.py
-index c6ac305..a26a5d9 100644
+index c6ac305..03b6fdd 100644
 --- a/python/kicad_interface.py
 +++ b/python/kicad_interface.py
 @@ -558,6 +558,7 @@ class KiCADInterface(SchematicHandlersMixin):
@@ -5265,7 +6120,7 @@ index c6ac305..a26a5d9 100644
          "refill_zones",
          "import_svg_logo",
          "sync_schematic_to_board",
-@@ -1848,6 +1857,249 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -1848,6 +1857,257 @@ class KiCADInterface(SchematicHandlersMixin):
          state = self._dirty_state(board_path)
          return {"success": True, "boardPath": board_path, **state}
  
@@ -5427,14 +6282,18 @@ index c6ac305..a26a5d9 100644
 +                    "errorDetails": f"Differences from the saved file: {changed}. The router routes the saved "
 +                                    "file, so save in KiCad (Ctrl+S) and call powerlab_route again.",
 +                }
-+        started = powerlab_route.start(board_path, params, self._find_kicad_cli_static(), kboard is not None)
++        started = powerlab_route.start(board_path, params, self._find_kicad_cli_static(), kboard is not None,
++                                       powerlab_route.kicad_connection(kboard) if kboard is not None else None)
 +        if not started.get("success"):
 +            return started
++        live = kboard is not None and params.get("live", True) is not False
 +        return {
 +            "success": True,
-+            "message": "The PowerLab router is routing the saved board in the background",
++            "message": "The PowerLab router is routing the saved board in the background"
++                       + (", and KiCad shows its copper as it goes" if live else ""),
 +            "boardPath": board_path,
 +            "kicad_open": kboard is not None,
++            "live": live,
 +            "next_steps": (
 +                "Call powerlab_route_status to wait for it and see its progress; repeat until it says "
 +                "the run is finished. A 2-layer board with ~50 connections takes about 10-15 minutes. "
@@ -5452,7 +6311,9 @@ index c6ac305..a26a5d9 100644
 +            return {"success": False, "message": "No board", "errorDetails": "Pass boardPath"}
 +        board_path = os.path.abspath(str(board_path))
 +        if params.get("cancel"):
-+            return powerlab_route.cancel(board_path)
++            out = powerlab_route.cancel(board_path)
++            back = powerlab_route.put_back(board_path, self._live_kicad_board(board_path))
++            return {**out, "kicad": back} if back else out
 +        st = powerlab_route.wait(board_path, float(params.get("wait", 300)))
 +        state = st.get("state")
 +        if state == "none":
@@ -5468,8 +6329,10 @@ index c6ac305..a26a5d9 100644
 +                "next_steps": "Still routing: call powerlab_route_status again.",
 +            }
 +        if state in ("failed", "cancelled"):
++            back = powerlab_route.put_back(board_path, self._live_kicad_board(board_path))
 +            return {"success": False, "state": state, "message": f"The PowerLab router run {state}",
-+                    "errorDetails": st.get("error", ""), "board_unchanged": True}
++                    "errorDetails": st.get("error", ""), "board_unchanged": True,
++                    **({"kicad": back} if back else {})}
 +        report = powerlab_route.report(board_path) or {}
 +        if state == "applied":
 +            return {"success": True, "state": "applied", "message": "This run's result is already on the board",
@@ -5515,7 +6378,7 @@ index c6ac305..a26a5d9 100644
      def _handle_batch_move_components(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """Batch move wrapper that preserves the external-edit save guard."""
          if getattr(self, "session_backend", None) == "ipc" and not self._ipc_session_alive():
-@@ -5079,6 +5331,65 @@ print("ok")
+@@ -5079,6 +5339,65 @@ print("ok")
              logger.error(f"IPC route_arc_trace error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -5581,7 +6444,7 @@ index c6ac305..a26a5d9 100644
      def _ipc_add_via(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for add_via - adds via with real-time UI update"""
          try:
-@@ -5131,21 +5442,37 @@ print("ok")
+@@ -5131,21 +5450,37 @@ print("ok")
              net = params.get("net")
              clearance = params.get("clearance", 0.5)
              min_width = params.get("minWidth", 0.25)
@@ -5626,7 +6489,15 @@ index c6ac305..a26a5d9 100644
  
              success = self.ipc_board_api.add_zone(
                  points=formatted_points,
-@@ -5833,6 +6160,100 @@ print("ok")
+@@ -5156,6 +5491,7 @@ print("ok")
+                 priority=priority,
+                 fill_mode=fill_type,
+                 name=name,
++                pad_connection=params.get("padConnection", "thermal"),  # PowerLab patch
+             )
+ 
+             return {
+@@ -5833,6 +6169,100 @@ print("ok")
              logger.error(f"IPC set_footprint_type error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -5791,7 +6662,7 @@ index 2738ebc..7f0b245 100644
  
        if (result.success) {
 diff --git a/src/tools/freerouting.ts b/src/tools/freerouting.ts
-index d9942f7..6e8bb8a 100644
+index d9942f7..15fca85 100644
 --- a/src/tools/freerouting.ts
 +++ b/src/tools/freerouting.ts
 @@ -19,7 +19,7 @@ export function registerFreeroutingTools(server: McpServer, callKicadScript: Fun
@@ -5838,7 +6709,7 @@ index d9942f7..6e8bb8a 100644
      },
      async (args: any) => {
        const result = await callKicadScript("autoroute", args);
-@@ -75,6 +97,111 @@ export function registerFreeroutingTools(server: McpServer, callKicadScript: Fun
+@@ -75,6 +97,124 @@ export function registerFreeroutingTools(server: McpServer, callKicadScript: Fun
      },
    );
  
@@ -5893,17 +6764,30 @@ index d9942f7..6e8bb8a 100644
 +  // The PowerLab router (PowerLab patch): a local router that applies the lab rules
 +  server.tool(
 +    "powerlab_route",
-+    "Route signal nets with the PowerLab router instead of Freerouting. It runs on this computer in KiCad's Python and applies the METU Power Lab rules while routing: GND pours kept whole, no tracks under inductors or transformers, escape room at fine-pitch pins, rule-area keepouts and the .kicad_dru clearance rules, buses routed as parallel runs, few corners and vias, tracks entering pads straight at their centres. It routes the saved .kicad_pcb, so save in KiCad first. The chosen nets are routed from scratch: their unlocked tracks and vias are removed first; nets with locked copper (hand-routed) are left out. A run takes minutes (about 10-15 on a 2-layer board with ~50 connections), so it runs in the background: this call returns at once, then call powerlab_route_status until it reports the result. At the end the result goes into KiCad's open board and is saved there (no File > Revert), or into the board file when KiCad doesn't have it open. The board from before the run is kept; undo_autoroute puts it back.",
++    "Route the board with the PowerLab router. It runs on this computer in KiCad's Python and applies the METU Power Lab rules while routing: power rails first at their net-class width, then given copper pours round their tracks (power polygons); GND pours kept whole; no tracks under inductors or transformers; escape room at fine-pitch pins; rule-area keepouts and the .kicad_dru clearance rules; buses routed as parallel runs; few corners and vias; pads entered at their centres (straight, or at 45 degrees where the pad isn't fine pitch); a net's later tracks join its earlier ones instead of running beside them; and GND stitching vias at the end. It routes the saved .kicad_pcb, so save in KiCad first. Default-class nets are routed from scratch (their unlocked tracks and vias are removed first); other nets only if they have no tracks yet; nets with locked copper (hand-routed) are left out. A run takes minutes (about 10-15 on a 2-layer board with ~50 connections), so it runs in the background: this call returns at once, then call powerlab_route_status until it reports the result. With the board open in KiCad, KiCad shows the copper as it is routed (pours unfilled meanwhile); at the end the result goes into KiCad's open board, the zones are refilled and it is saved there (no File > Revert). Without KiCad it goes into the board file. The board from before the run is kept; undo_autoroute puts it back.",
 +    {
 +      boardPath: z.string().optional().describe("Path to .kicad_pcb file (default: current board)"),
 +      nets: z
 +        .array(z.string())
 +        .optional()
-+        .describe("Nets to route (default: every net of the Default net class). Power, gate-drive and other hand-routed nets should be locked or left out."),
++        .describe("Nets to route (default: every Default-class net, plus the other nets that have no tracks yet). Gate-drive and other hand-routed nets should be locked or left out."),
 +      pourNets: z
 +        .array(z.string())
 +        .optional()
 +        .describe("Nets that connect through their copper pours and are never routed (default: ['GND']). The router keeps these pours whole."),
++      live: z.boolean().optional().describe("Show the copper in KiCad while routing, when KiCad has the board open (default true)"),
++      powerPours: z
++        .boolean()
++        .optional()
++        .describe("Give each routed power rail (Power/HV class, +*, VBUS*...) a copper pour round its tracks, above the GND pour (default true)"),
++      solidPourNets: z
++        .array(z.string())
++        .optional()
++        .describe("High-current power nets whose pours connect pads solid; every other pour uses thermal reliefs (default: none)"),
++      stitchPitch: z
++        .number()
++        .optional()
++        .describe("GND stitching vias about this far apart where both layers have the GND pour, in mm (default 5; 0: none)"),
 +      gridPitch: z.number().optional().describe("Routing grid in mm (default 0.1)"),
 +      turnCost: z.number().optional().describe("Cost of a corner, in mm of track (default 1.5). Higher: fewer corners, longer tracks."),
 +      viaCost: z.number().optional().describe("Cost of a via, in mm of track (default 4.0). Higher: fewer vias, longer tracks."),
@@ -5964,3 +6848,19 @@ index 902f7b1..3a1ef9b 100644
    },
    {
      name: "validation",
+diff --git a/src/tools/routing.ts b/src/tools/routing.ts
+index 27f6b90..c1c90e1 100644
+--- a/src/tools/routing.ts
++++ b/src/tools/routing.ts
+@@ -148,6 +148,11 @@ export function registerRoutingTools(server: McpServer, callKicadScript: Functio
+         .describe(
+           "Array of {x, y} points defining the pour boundary. If omitted, the board outline is used.",
+         ),
++      priority: z.number().optional().describe("Zone priority: higher fills first (a power pour above the GND pour)"),
++      padConnection: z
++        .enum(["thermal", "solid"])
++        .optional()
++        .describe("How pads join the pour: thermal reliefs (default; GND and signal pours) or solid (only high-current power pours)"),
+     },
+     async (args: any) => {
+       const result = await callKicadScript("add_copper_pour", args);
