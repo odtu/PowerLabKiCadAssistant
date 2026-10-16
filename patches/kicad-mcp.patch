@@ -1084,18 +1084,346 @@ index 0000000..acab7e9
 @@ -0,0 +1,2 @@
 +"""PowerLab router (PowerLab patch): routes by the lab rules, see docs/powerlab-router-plan.md
 +in odtu/PowerLabKiCadAssistant. Milestone 0: grid, search and pad entry lanes."""
+diff --git a/python/commands/powerlab_router/costs.py b/python/commands/powerlab_router/costs.py
+new file mode 100644
+index 0000000..1dd02bc
+--- /dev/null
++++ b/python/commands/powerlab_router/costs.py
+@@ -0,0 +1,320 @@
++"""The lab rules as search costs (plan §4.4, milestone 3).
++
++Per-cell penalties, in units of Costs.unit (0.1 mm of track), composed per connection:
++- Pours stay whole (§3.3): on layers with a pour, a cell costs more the farther it is from
++  copper or the board edge (up to HUG_MM away). Tracks then hug pads, edges and each
++  other, and run in bundles, instead of cutting through the open pour. Learnt from the
++  hand-routed TestPCB, whose GND pours stayed larger and in fewer pieces.
++- Thermal spokes of pour-net pads stay clear, so the pad keeps its connection.
++- No tracks under inductors, transformers or chokes, on any layer (§3.4), except the
++  part's own nets.
++- Escape room: 1.5 mm in front of every fine-pitch pin stays free of other nets' tracks
++  (§3.4).
++- Switching nets and clocks keep off a layer where that area has a power pour (§3.4).
++- Clocks: 3W from other tracks (§3.4), and not along the board edge.
++Via costs: a via near the connection's own pins (an escape via, as in the hand routing)
++costs less; on clocks and switching nets a via costs more (§3.4, §3.5).
++"""
++
++import math
++
++import numpy as np
++import pcbnew
++from PIL import Image, ImageDraw
++
++from commands.powerlab_router.model import _grown, _polys
++
++T = pcbnew.ToMM
++
++HUG = 3  # units per cell far from copper (0.3 mm per 0.1 mm cell)
++HUG_MM = 1.0  # beyond this distance from copper a cell costs the full HUG
++SPOKES = 20
++MAGNETICS = 120
++MAGNETICS_MARGIN = 0.3  # mm around the courtyard: half a track and some
++ESCAPE = 20
++ESCAPE_MM = 1.5
++POWER_LAYER = 60  # switching net on a layer with a power pour there
++CLOCK_3W = 30
++CLOCK_EDGE = 30
++CLOCK_EDGE_MM = 1.0
++ESCAPE_VIA_MM = 1.2  # a via this close to the connection's own pin is an escape via
++ESCAPE_VIA_FACTOR = 0.5
++FAST_VIA_FACTOR = 3.0
++MAGNETIC_REFS = ("L", "T", "FL")
++MAGNETIC_WORDS = ("inductor", "transformer", "choke", "coil")
++
++
++def _xy(item):
++    p = item.GetPosition()
++    return (T(p.x), T(p.y))
++
++
++def _rect(c, u, a, b, half):
++    """Polygon of a band from a to b (distances along unit u from c), half-width `half`."""
++    nx, ny = -u[1] * half, u[0] * half
++    x0, y0 = c[0] + u[0] * a, c[1] + u[1] * a
++    x1, y1 = c[0] + u[0] * b, c[1] + u[1] * b
++    return ([(x0 + nx, y0 + ny), (x1 + nx, y1 + ny), (x1 - nx, y1 - ny), (x0 - nx, y0 - ny)], [])
++
++
++def _dilate(mask, steps):
++    """Distance in cells (capped at `steps`) from the True cells, 8-connected."""
++    dist = np.full(mask.shape, steps, np.uint8)
++    frontier = mask.copy()
++    dist[frontier] = 0
++    seen = frontier.copy()
++    for k in range(1, steps):
++        grown = frontier.copy()
++        grown[1:, :] |= frontier[:-1, :]
++        grown[:-1, :] |= frontier[1:, :]
++        grown[:, 1:] |= frontier[:, :-1]
++        grown[:, :-1] |= frontier[:, 1:]
++        grown[1:, 1:] |= frontier[:-1, :-1]
++        grown[:-1, :-1] |= frontier[1:, 1:]
++        grown[1:, :-1] |= frontier[:-1, 1:]
++        grown[:-1, 1:] |= frontier[1:, :-1]
++        new = grown & ~seen
++        if not new.any():
++            break
++        dist[new] = k
++        seen |= new
++        frontier = new
++    return dist
++
++
++def labels(free, min_cells, block=3):
++    """(label per block, {label: size}) for the pieces of at least `min_cells`; blocks
++    of other pieces and blocked ones are 0. See pieces()."""
++    ny, nx = (free.shape[0] // block) * block, (free.shape[1] // block) * block
++    coarse = free[:ny, :nx].reshape(ny // block, block, nx // block, block).all(axis=(1, 3))
++    need = max(1, min_cells // (block * block))
++    arr = coarse.astype(np.uint8) * 255
++    out = np.zeros(coarse.shape, np.int32)
++    sizes = {}
++    for _ in range(5000):
++        ys, xs = np.nonzero(arr == 255)
++        if not len(ys):
++            break
++        im = Image.frombytes("L", (arr.shape[1], arr.shape[0]), arr.tobytes())
++        ImageDraw.floodfill(im, (int(xs[0]), int(ys[0])), 100)
++        piece = np.asarray(im) == 100
++        n = int(piece.sum())
++        if n >= need:
++            label = len(sizes) + 1
++            out[piece] = label
++            sizes[label] = n
++        arr[piece] = 0
++    return out, sizes
++
++
++def pieces(free, min_cells, block=3, sizes=False):
++    """How many pieces of at least `min_cells` the True cells of `free` make (with
++    sizes=True: their sizes, largest first). Counted on blocks of `block` x `block` cells
++    that are free throughout: a neck narrower than a block (0.3 mm on the 0.1 mm grid)
++    doesn't join a pour (minimum pour width, §3.3)."""
++    ny, nx = (free.shape[0] // block) * block, (free.shape[1] // block) * block
++    coarse = free[:ny, :nx].reshape(ny // block, block, nx // block, block).all(axis=(1, 3))
++    need = max(1, min_cells // (block * block))
++    arr = coarse.astype(np.uint8) * 255
++    count, found = 0, []
++    for _ in range(5000):
++        ys, xs = np.nonzero(arr == 255)
++        if not len(ys):
++            break
++        im = Image.frombytes("L", (arr.shape[1], arr.shape[0]), arr.tobytes())
++        ImageDraw.floodfill(im, (int(xs[0]), int(ys[0])), 100)
++        piece = np.asarray(im) == 100
++        n = int(piece.sum())
++        if n >= need:
++            count += 1
++            found.append(n)
++        arr[piece] = 0
++    return sorted(found, reverse=True) if sizes else count
++
++
++def is_magnetic(fp):
++    ref = fp.GetReference().upper()
++    lib = fp.GetFPIDAsString().lower()
++    if any(w in lib for w in MAGNETIC_WORDS):
++        return True
++    return any(ref.startswith(p) and ref[len(p):len(p) + 1].isdigit() for p in MAGNETIC_REFS)
++
++
++class LabCosts:
++    def __init__(self, router):
++        self.router = router
++        rb = self.rb = router.rb
++        g = rb.grid
++        self.shape = (g.ny, g.nx)
++        self.n = len(rb.layers)
++        pour_zones = [z for z in rb.board.Zones() if not z.GetIsRuleArea() and z.GetNetname() in rb.pour_nets]
++        self.pour_layer = [any(z.IsOnLayer(L) for z in pour_zones) for L in rb.layers]
++        self.spokes = self._spokes(pour_zones)
++        self.magnetic = self._magnetics()  # [(nets of the part, [mask per layer])]
++        self.escape_total, self.escape_own = self._escape_room()
++        self.power_pour = self._power_pours()
++        self.edge_band = [~rb.inside(CLOCK_EDGE_MM)] * self.n
++
++    # --- static maps -----------------------------------------------------------------
++    def _zeros(self):
++        return [np.zeros(self.shape, np.int32) for _ in range(self.n)]
++
++    def _spokes(self, zones):
++        rb = self.rb
++        w = max(rb.widths(n)[0] for n in [""] + list(rb.pour_nets))
++        out = self._zeros()
++        for i, L in enumerate(rb.layers):
++            shapes = []
++            for z in zones:
++                if not z.IsOnLayer(L):
++                    continue
++                gap, spoke = T(z.GetThermalReliefGap()), T(z.GetThermalReliefSpokeWidth())
++                for p in rb.pads:
++                    if p.GetNetname() != z.GetNetname() or not p.IsOnLayer(L):
++                        continue
++                    c = _xy(p)
++                    pts = [pt for o, _h in _polys(_grown(p, L, 0.0)) for pt in o]
++                    for k in range(4):
++                        a = math.radians(p.GetOrientation().AsDegrees() + 90 * k)
++                        u = (math.cos(a), math.sin(a))
++                        ext = max((x - c[0]) * u[0] + (y - c[1]) * u[1] for x, y in pts)
++                        shapes.append(_rect(c, u, ext, ext + gap + rb.min_clearance + w / 2 + 0.2,
++                                            spoke / 2 + rb.min_clearance + w / 2))
++            out[i] += rb.grid.raster(shapes).astype(np.int32) * SPOKES
++        return out
++
++    def _magnetics(self):
++        rb = self.rb
++        out = []
++        for fp in rb.board.GetFootprints():
++            if not is_magnetic(fp):
++                continue
++            nets = {p.GetNetname() for p in fp.Pads() if p.GetNetname()}
++            polys = []
++            fp.BuildCourtyardCaches()
++            for side in (pcbnew.F_CrtYd, pcbnew.B_CrtYd):
++                # grown, so a track's own width stays off the body too
++                sp = fp.GetCourtyard(side).CloneDropTriangulation()
++                sp.Inflate(pcbnew.FromMM(MAGNETICS_MARGIN), pcbnew.CORNER_STRATEGY_ROUND_ALL_CORNERS,
++                           pcbnew.FromMM(0.01))
++                polys += _polys(sp)
++            if not polys:  # no courtyard: the body's box
++                bb = fp.GetBoundingBox(False)
++                polys = [([(T(bb.GetLeft()), T(bb.GetTop())), (T(bb.GetRight()), T(bb.GetTop())),
++                           (T(bb.GetRight()), T(bb.GetBottom())), (T(bb.GetLeft()), T(bb.GetBottom()))], [])]
++            mask = rb.grid.raster(polys)
++            out.append((nets, mask))
++        return out
++
++    def _escape_room(self):
++        """Lanes in front of fine-pitch pins: per layer the count, and per net its own."""
++        rb = self.rb
++        total = self._zeros()
++        own = {}
++        for fp in rb.board.GetFootprints():
++            body = fp.GetBoundingBox(False).GetCenter()
++            for p in fp.Pads():
++                c = _xy(p)
++                if not any(1e-3 < math.dist(c, _xy(q)) < 0.8 for q in fp.Pads()):
++                    continue
++                out = (c[0] - T(body.x), c[1] - T(body.y))
++                n = math.hypot(*out)
++                if n < 0.05:
++                    continue
++                # the pad axis closest to straight out of the part
++                best = None
++                for k in range(4):
++                    a = math.radians(p.GetOrientation().AsDegrees() + 90 * k)
++                    u = (math.cos(a), math.sin(a))
++                    dot = (u[0] * out[0] + u[1] * out[1]) / n
++                    if best is None or dot > best[0]:
++                        best = (dot, u)
++                u = best[1]
++                for i, L in enumerate(rb.layers):
++                    if not p.IsOnLayer(L) and p.GetAttribute() != pcbnew.PAD_ATTRIB_PTH:
++                        continue
++                    pts = [pt for o, _h in _polys(_grown(p, L if p.IsOnLayer(L) else rb.layers[0], 0.0)) for pt in o]
++                    ext = max((x - c[0]) * u[0] + (y - c[1]) * u[1] for x, y in pts)
++                    width = min(T(p.GetSizeX()), T(p.GetSizeY()))
++                    m = rb.grid.raster([_rect(c, u, ext, ext + ESCAPE_MM, width / 2)]).astype(np.int32)
++                    total[i] += m
++                    mine = own.setdefault(p.GetNetname(), self._zeros())
++                    mine[i] += m
++        return total, own
++
++    def _power_pours(self):
++        """Per layer, cells within 1 mm of a power net's pour (not the pour nets)."""
++        rb = self.rb
++        out = []
++        for L in rb.layers:
++            polys = []
++            for z in rb.board.Zones():
++                n = z.GetNetname()
++                if z.GetIsRuleArea() or not n or n in rb.pour_nets or not z.IsOnLayer(L):
++                    continue
++                if rb.netclass(n).GetName().lower() not in ("power", "hv"):
++                    continue
++                sp = z.GetFilledPolysList(L).CloneDropTriangulation()
++                sp.Inflate(pcbnew.FromMM(1.0), pcbnew.CORNER_STRATEGY_ROUND_ALL_CORNERS, pcbnew.FromMM(0.01))
++                polys += _polys(sp)
++            out.append(rb.grid.raster(polys))
++        return out
++
++    # --- per connection ------------------------------------------------------------------
++    def penalty(self, conn, blocked, hist, soft=None, soft_cost=0, clock_nets=(), clock_items=()):
++        """Per layer bytes for the search."""
++        rb = self.rb
++        g = rb.grid
++        fast = conn.group == 1  # switching and clocks
++        steps = max(1, int(round(HUG_MM / g.pitch)))
++        out = []
++        for i in range(self.n):
++            p = hist[i].astype(np.int32) + self.spokes[i]
++            if self.pour_layer[i]:
++                hard = np.frombuffer(blocked[i], np.uint8).reshape(self.shape).astype(bool)
++                dist = _dilate(hard, steps + 1)
++                p += (np.minimum(dist.astype(np.int32), steps) * HUG) // steps
++            for nets, mask in self.magnetic:
++                if conn.net not in nets:
++                    p += mask * MAGNETICS
++            esc = self.escape_total[i]
++            mine = self.escape_own.get(conn.net)
++            p += (esc - (mine[i] if mine is not None else 0) > 0) * ESCAPE
++            if fast:
++                p += self.power_pour[i] * POWER_LAYER
++            if conn.net in clock_nets:
++                p += self.edge_band[i] * CLOCK_EDGE
++            if soft is not None:
++                p += soft[i] * soft_cost
++            out.append(p)
++        if clock_items and conn.net not in clock_nets:
++            out = [p + m * CLOCK_3W for p, m in zip(out, self._near_clocks(clock_items, conn))]
++        return [np.clip(p, 0, 255).astype(np.uint8).tobytes() for p in out]
++
++    def _near_clocks(self, items, conn):
++        rb = self.rb
++        w = rb.widths(conn.net)[0]
++        masks = []
++        for L in rb.layers:
++            polys = []
++            for it in items:
++                if it.IsOnLayer(L):
++                    width = T(it.GetWidth()) if it.Type() == pcbnew.PCB_TRACE_T else 0.3
++                    polys += _polys(_grown(it, L, 3 * width + w / 2))
++            masks.append(rb.grid.raster(polys).astype(np.int32))
++        return masks
++
++    def via_costs(self, conn, lanes, base):
++        """{cell index: via cost} near the connection's own pins (escape vias), and the
++        cost elsewhere."""
++        g = self.rb.grid
++        elsewhere = base * (FAST_VIA_FACTOR if conn.group == 1 else 1.0)
++        near = {}
++        r = int(round(ESCAPE_VIA_MM / g.pitch))
++        for lane in lanes:
++            ci, cj = lane.cell
++            for dj in range(-r, r + 1):
++                for di in range(-r, r + 1):
++                    if di * di + dj * dj <= r * r:
++                        near[(cj + dj) * g.nx + ci + di] = elsewhere * ESCAPE_VIA_FACTOR
++        return near, elsewhere
 diff --git a/python/commands/powerlab_router/finish.py b/python/commands/powerlab_router/finish.py
 new file mode 100644
-index 0000000..1d92576
+index 0000000..cc77d17
 --- /dev/null
 +++ b/python/commands/powerlab_router/finish.py
-@@ -0,0 +1,144 @@
+@@ -0,0 +1,175 @@
 +"""Shortcut pass after routing (plan §4.7; the method of track_opt.py in the lab's
 +InductiveEncoder project).
 +
 +For each run of a connection's track on one layer, from each point jump to the farthest
 +later point that a clear straight segment, or a straight + 45 degree dogleg, reaches, if
-+that is shorter or as long with fewer corners.
++that is cheaper, or as cheap with fewer corners. Cheaper by the same costs the search
++used (length plus the lab costs per cell), so a shortcut never cuts under an inductor,
++through a pour or across a pin's escape room just because it is shorter.
 +Detours, staircases and the small zigzags where a path joins a pad's lane disappear.
 +- The lanes stay: the first and last segments into the pads aren't touched, and every
 +  corner still turns by 45 degrees at most (design rules §3.4).
@@ -1159,20 +1487,26 @@ index 0000000..1d92576
 +    return sum(math.dist(a, b) for a, b in zip(pts, pts[1:]))
 +
 +
-+def _shorten(clear, pts, lo, hi):
++def _shorten(clear, pts, lo, hi, cost=None):
 +    """Shortcut pts[lo..hi]; segments before lo and after hi stay. `clear(a, b)` says
-+    whether a segment keeps its clearance."""
++    whether a segment keeps its clearance; `cost(a, b)` what it costs (default: length)."""
++    cost = cost or math.dist
++
++    def total(ps):
++        return sum(cost(a, b) for a, b in zip(ps, ps[1:]))
++
 +    out = pts[:lo + 1]
 +    i = lo
 +    while i < hi:
 +        done = False
 +        for j in range(hi, i + 1, -1):
-+            old = _length(pts[i:j + 1])
++            old = total(pts[i:j + 1])
 +            for mids in _candidates(pts[i], pts[j]):
 +                new = [pts[i]] + mids
-+                # shorter, or as long with fewer corners (a staircase of 45 and 90 degree
++                # cheaper, or as cheap with fewer corners (a staircase of 45 and 90 degree
 +                # steps is as long as one dogleg)
-+                if _length(new) > old + 0.01 or (_length(new) > old - 0.01 and len(new) >= j - i + 1):
++                c = total(new)
++                if c > old + 0.01 or (c > old - 0.01 and len(new) >= j - i + 1):
 +                    continue
 +                if any(math.dist(a, b) < MIN_SEGMENT for a, b in zip(new, new[1:])):
 +                    continue
@@ -1197,10 +1531,33 @@ index 0000000..1d92576
 +def shortcut(router, conns):
 +    """Shorten the routed connections in place; returns a summary."""
 +    rb = router.rb
++    g = rb.grid
 +    stats = {"connections_shortened": 0, "mm_saved": 0.0, "corners_removed": 0, "undone": 0}
 +    for c in conns:
 +        pieces, vias = c.geo
 +        w = rb.widths(c.net)[0]
++        blocked = rb.obstacles(c.net)[0]
++        penalty = router._penalty(c, blocked)
++        unit = router.costs.unit
++        factor = router.costs.layer_factor
++
++        def cost_on(L):
++            pen = penalty[L] if penalty is not None else None
++
++            def cost(a, b):
++                d = math.dist(a, b)
++                total = d * factor.get(L, 1.0)
++                if pen is None or d < EPS:
++                    return total
++                n = max(1, int(d / (g.pitch / 2)))
++                for k in range(n):
++                    x = a[0] + (b[0] - a[0]) * (k + 0.5) / n
++                    y = a[1] + (b[1] - a[1]) * (k + 0.5) / n
++                    i, j = g.cell(x, y)
++                    if 0 <= i < g.nx and 0 <= j < g.ny:
++                        total += pen[j * g.nx + i] * unit * (d / n) / g.pitch
++                return total
++            return cost
 +        new_pieces, saved, corners = [], 0.0, 0
 +        for k, (L, pts) in enumerate(pieces):
 +            lo = 1 if k == 0 else 0
@@ -1209,7 +1566,7 @@ index 0000000..1d92576
 +                new_pieces.append((L, pts))
 +                continue
 +            layer = rb.layers[L]
-+            new = _corners(_shorten(lambda a, b: rb.clear(c.net, layer, a, b, w), pts, lo, hi))
++            new = _corners(_shorten(lambda a, b: rb.clear(c.net, layer, a, b, w), pts, lo, hi, cost_on(L)))
 +            saved += _length(pts) - _length(new)
 +            corners += len(pts) - len(new)
 +            new_pieces.append((L, new))
@@ -1290,10 +1647,10 @@ index 0000000..766ed64
 +        return out
 diff --git a/python/commands/powerlab_router/groups.py b/python/commands/powerlab_router/groups.py
 new file mode 100644
-index 0000000..d916577
+index 0000000..4d59b97
 --- /dev/null
 +++ b/python/commands/powerlab_router/groups.py
-@@ -0,0 +1,68 @@
+@@ -0,0 +1,75 @@
 +"""Routing groups in the lab order (design rules §3.4; plan §5). No pcbnew.
 +
 +Power first, then switching and clocks, differential pairs, sensitive analog, and the
@@ -1312,6 +1669,13 @@ index 0000000..d916577
 +             "*clk*", "*sck*", "*xtal*", "*osc*")
 +ANALOG = ("*sense*", "*sens_*", "*sns*", "*isen*", "*ref*", "*adc*", "*ain*", "*sensor*", "*kelvin*")
 +PAIR_SUFFIXES = (("_p", "_n"), ("+", "-"), ("_h", "_l"), ("_dp", "_dn"), ("usb_dp", "usb_dn"))
++
++
++CLOCKS = ("*clk*", "*sck*", "*xtal*", "*osc*")
++
++
++def is_clock(net):
++    return _match(_short(net), CLOCKS)
 +
 +
 +def _short(net):
@@ -1364,10 +1728,10 @@ index 0000000..d916577
 +    return out
 diff --git a/python/commands/powerlab_router/model.py b/python/commands/powerlab_router/model.py
 new file mode 100644
-index 0000000..dbafd9a
+index 0000000..7a5a506
 --- /dev/null
 +++ b/python/commands/powerlab_router/model.py
-@@ -0,0 +1,614 @@
+@@ -0,0 +1,631 @@
 +"""Board side of the PowerLab router (pcbnew): obstacles, pad entry lanes, results as tracks.
 +
 +Clearances are KiCad's: the larger of the two net classes' clearances and the board
@@ -1774,9 +2138,10 @@ index 0000000..dbafd9a
 +
 +    # --- one connection ----------------------------------------------------------------
 +    def route(self, net, pad_a, pad_b, blocked, via_ok, costs, margins=(3.0, 10.0, None), penalty=None,
-+              ignore=None):
++              ignore=None, via_costs=None):
 +        """`penalty`: per layer bytes of extra cost per cell; `ignore`: uuids of other nets'
-+        copper the exact lane checks may pass through (it's being ripped up)."""
++        copper the exact lane checks may pass through (it's being ripped up); `via_costs`:
++        lanes -> ({cell index: via cost}, via cost elsewhere)."""
 +        g = self.grid
 +        la, lb = self.lanes(pad_a, blocked, net, ignore=ignore), self.lanes(pad_b, blocked, net, ignore=ignore)
 +        info = {"lanes": (len(la), len(lb)), "nodes": 0, "seconds": 0.0}
@@ -1791,8 +2156,11 @@ index 0000000..dbafd9a
 +            info["fail"] = "closed pocket"
 +            return None, info
 +        cells = [l.cell for l in la + lb]
++        # the cheapest a way could be: the octilinear distance between the lane exits
++        lower = min(math.dist(a.exit, b.exit) for a in la for b in lb)
 +        t0 = time.time()
 +        path = None
++        vc = via_costs(la + lb) if via_costs else None
 +        for margin in margins:
 +            if margin is None:
 +                window = (0, 0, g.nx - 1, g.ny - 1)
@@ -1800,16 +2168,20 @@ index 0000000..dbafd9a
 +                m = int(margin / g.pitch)
 +                window = (max(0, min(c[0] for c in cells) - m), max(0, min(c[1] for c in cells) - m),
 +                          min(g.nx - 1, max(c[0] for c in cells) + m), min(g.ny - 1, max(c[1] for c in cells) + m))
-+            path, stats = search.search(blocked, via_ok, g.nx, g.ny, g.pitch, starts, goals, window, costs,
-+                                        max_nodes=costs.node_limit(math.dist(la[0].centre, lb[0].centre)),
-+                                        penalty=penalty)
++            found, stats = search.search(blocked, via_ok, g.nx, g.ny, g.pitch, starts, goals, window, costs,
++                                         max_nodes=costs.node_limit(math.dist(la[0].centre, lb[0].centre)),
++                                         penalty=penalty, via_cost=vc)
 +            info["nodes"] += stats["nodes"]
-+            if path:
++            if found and (path is None or stats["cost_mm"] < info["cost_mm"]):
++                path = found
 +                info["window_mm"] = margin
 +                info["cost_mm"] = stats["cost_mm"]
++            # a way much dearer than its length paid for something (an inductor, a pour, a
++            # rip-up): a bigger window may have one around it
++            if path and info["cost_mm"] <= 2.0 * lower + 3.0 * costs.via:
 +                break
 +            if stats.get("limit"):
-+                info["limit"] = True  # gave up: a bigger window won't be cheaper
++                info["limit"] = not path  # gave up: a bigger window won't be cheaper
 +                break
 +        info["seconds"] = round(time.time() - t0, 3)
 +        if not path:
@@ -1824,7 +2196,7 @@ index 0000000..dbafd9a
 +    def _geometry(self, path, start, goal):
 +        """Grid path -> [(layer index, [points mm])], [via points], ending at both pad centres.
 +        The first and last straight runs are moved onto the pads' axes, so the entry is exact
-+        even when the pad centre isn't on the grid."""
++        even when the pad centre isn't on the grid (see _align)."""
 +        g = self.grid
 +        pieces, vias = [], []
 +        cur_layer, pts = path[0][2], [g.at(path[0][0], path[0][1])]
@@ -1836,21 +2208,15 @@ index 0000000..dbafd9a
 +            else:
 +                pts.append(g.at(b[0], b[1]))
 +        pieces.append((cur_layer, pts))
-+        pieces = [(L, _corners(p)) for L, p in pieces]
-+        L0, p0 = pieces[0]
-+        if len(p0) == 1 and vias:
-+            vias[0] = start.exit
-+            p0 = [start.centre, start.exit]
-+        else:
-+            p0 = [start.centre] + _snap_end(p0, start.exit)
-+        pieces[0] = (L0, p0)
-+        Ln, pn = pieces[-1]
-+        if len(pn) == 1 and vias:
-+            vias[-1] = goal.exit
-+            pn = [goal.exit, goal.centre]
-+        else:
-+            pn = _snap_end(pn[::-1], goal.exit)[::-1] + [goal.centre]
-+        pieces[-1] = (Ln, pn)
++        pieces = [[L, _corners(p)] for L, p in pieces]
++        _align(pieces, vias, start.exit)
++        rev = [[L, p[::-1]] for L, p in pieces[::-1]]
++        rvias = vias[::-1]
++        _align(rev, rvias, goal.exit)
++        pieces = [(L, p[::-1]) for L, p in rev[::-1]]
++        vias = rvias[::-1]
++        pieces[0] = (pieces[0][0], [start.centre] + pieces[0][1])
++        pieces[-1] = (pieces[-1][0], pieces[-1][1] + [goal.centre])
 +        return pieces, vias
 +
 +    def add(self, net, pieces, vias):
@@ -1968,6 +2334,21 @@ index 0000000..dbafd9a
 +    return out
 +
 +
++def _align(pieces, vias, exact, k=0):
++    """Make piece k start at `exact` (off the grid) without bending any run: the first
++    corner slides along the second run. A run that ends at a via moves whole, via and
++    all, and the next piece is lined up from the moved via."""
++    L, pts = pieces[k]
++    if len(pts) >= 3 or k == len(pieces) - 1:
++        pieces[k][1] = _snap_end(pts, exact)
++        return
++    off = (exact[0] - pts[0][0], exact[1] - pts[0][1])
++    moved = [(x + off[0], y + off[1]) for x, y in pts]
++    pieces[k][1] = moved
++    vias[k] = moved[-1]
++    _align(pieces, vias, moved[-1], k + 1)
++
++
 +def _snap_end(pts, exact):
 +    """Replace pts[0] (a grid cell) by `exact` and move the first corner so the first run
 +    keeps its direction and the second run still reaches its far end."""
@@ -1984,10 +2365,10 @@ index 0000000..dbafd9a
 +    return [exact, corner] + pts[2:]
 diff --git a/python/commands/powerlab_router/router.py b/python/commands/powerlab_router/router.py
 new file mode 100644
-index 0000000..32dcb32
+index 0000000..addf917
 --- /dev/null
 +++ b/python/commands/powerlab_router/router.py
-@@ -0,0 +1,330 @@
+@@ -0,0 +1,508 @@
 +"""The PowerLab router's main loop (plan §4.2-4.6).
 +
 +Connections are the edges of a minimum spanning tree over each net's pads. Groups are
@@ -2012,7 +2393,8 @@ index 0000000..32dcb32
 +import numpy as np
 +import pcbnew
 +
-+from commands.powerlab_router.groups import GROUPS, classify
++from commands.powerlab_router.costs import LabCosts, labels, pieces
++from commands.powerlab_router.groups import GROUPS, classify, is_clock
 +from commands.powerlab_router.model import FINE_PITCH, MM, RouterBoard, _grown, _polys
 +from commands.powerlab_router.search import Costs
 +
@@ -2021,7 +2403,10 @@ index 0000000..32dcb32
 +NEAR = 3.0  # mm: lane counts are refreshed for pads this close to new copper
 +SOFT = 10  # penalty units (Costs.unit mm) per cell of copper that would be ripped up
 +HISTORY = 4  # penalty units added per rip-up to the cells fought over
-+SPOKES = 20  # penalty units per cell in front of a pour-net pad's thermal spokes
++CUT = 60  # penalty units on cells where a track cut a pour in pieces
++POUR_PIECE_MM2 = 2.0  # pour pieces smaller than this don't count
++REPAIR_ROUNDS = 3  # passes of the pour repair after routing
++POUR_BLOCK = 1  # the pour grid already keeps the zone's minimum width
 +MAX_RIPPED = 3
 +MAX_RIPS = 3
 +BUDGET = 2  # rip-ups per connection overall
@@ -2097,47 +2482,15 @@ index 0000000..32dcb32
 +        blocked = cache[conn.net]
 +        return min(len(self.rb.lanes(p, blocked, conn.net, exact=False)) for p in (conn.a, conn.b))
 +
-+    def _penalty(self, soft=None):
-+        """History cost per cell, plus SOFT where copper would be ripped up."""
-+        if soft is None:
-+            return self._hist_bytes
-+        out = []
-+        for h, s in zip(self.hist, soft):
-+            out.append(np.minimum(h.astype(np.int32) + s * SOFT, 255).astype(np.uint8).tobytes())
-+        return out
++    def _penalty(self, conn, blocked, soft=None):
++        """The lab costs, the history, and SOFT where copper would be ripped up."""
++        clocks = {c.net for c in self.owner.values() if is_clock(c.net)}
++        clock_items = [it for c in set(self.owner.values()) if c.net in clocks for it in c.items]
++        return self.lab.penalty(conn, blocked, self.hist, soft, SOFT, clocks | ({conn.net} if is_clock(conn.net) else set()),
++                                clock_items)
 +
-+    def _spokes(self):
-+        """Cells in front of the thermal spokes of pour-net pads on layers with that pour:
-+        a track there cuts the pour off from the spoke (DRC "starved thermal")."""
-+        rb = self.rb
-+        w = max(rb.widths(n)[0] for n in [""] + list(rb.pour_nets))
-+        zones = [z for z in rb.board.Zones() if not z.GetIsRuleArea() and z.GetNetname() in rb.pour_nets]
-+        out = []
-+        for L in rb.layers:
-+            shapes = []
-+            for z in zones:
-+                if not z.IsOnLayer(L):
-+                    continue
-+                gap, spoke = T(z.GetThermalReliefGap()), T(z.GetThermalReliefSpokeWidth())
-+                for p in rb.pads:
-+                    if p.GetNetname() != z.GetNetname() or not p.IsOnLayer(L):
-+                        continue
-+                    cx, cy = _xy(p)
-+                    pts = [pt for o, _h in _polys(_grown(p, L, 0.0)) for pt in o]
-+                    theta = p.GetOrientation().AsDegrees()
-+                    for k in range(4):
-+                        a = math.radians(theta + 90 * k)
-+                        ux, uy = math.cos(a), math.sin(a)
-+                        ext = max((px - cx) * ux + (py - cy) * uy for px, py in pts)
-+                        e = ext + gap + rb.min_clearance + w / 2 + 0.2
-+                        half = spoke / 2 + rb.min_clearance + w / 2
-+                        nx_, ny_ = -uy * half, ux * half
-+                        x0, y0 = cx + ux * ext, cy + uy * ext
-+                        x1, y1 = cx + ux * e, cy + uy * e
-+                        shapes.append(([(x0 + nx_, y0 + ny_), (x1 + nx_, y1 + ny_), (x1 - nx_, y1 - ny_),
-+                                        (x0 - nx_, y0 - ny_)], []))
-+            out.append(rb.grid.raster(shapes).astype(np.uint8) * SPOKES)
-+        return out
++    def _via_costs(self, conn):
++        return lambda lanes: self.lab.via_costs(conn, lanes, self.costs.via)
 +
 +    def run(self, nets, log=None):
 +        rb = self.rb
@@ -2145,8 +2498,10 @@ index 0000000..32dcb32
 +        conns = self.connections(nets)
 +        pending = list(conns)
 +        g = rb.grid
-+        self.hist = self._spokes()  # the base cost; rip-ups add to it
-+        self._hist_bytes = [h.tobytes() for h in self.hist]
++        self.hist = [np.zeros((g.ny, g.nx), np.uint8) for _ in rb.layers]  # rip-ups add to it
++        self.lab = LabCosts(self)
++        self._q = None
++        self._pour_setup()
 +        self.owner = {}  # copper uuid -> connection
 +        totals = {"nodes": 0, "search_s": 0.0, "retries": 0, "exact_left": 0, "ripups": 0, "ripped": 0}
 +        budget = BUDGET * len(conns)
@@ -2162,8 +2517,10 @@ index 0000000..32dcb32
 +            else:
 +                conn = min(here, key=lambda c: c.length)
 +            pending.remove(conn)
-+            ok, info = self._attempt(conn, totals)
++            ok, info = self._route_whole(conn, totals)
 +            event = "routed" if ok else info.get("fail", "no path")
++            if info.get("pour"):
++                event += f" ({info['pour']})"
 +            victims = []
 +            if not ok and self.ripup and conn.rips < MAX_RIPS and totals["ripups"] < budget:
 +                victims, why, routed = self._rip_up(conn, totals)
@@ -2172,7 +2529,7 @@ index 0000000..32dcb32
 +                elif not victims:
 +                    event += f"; no rip-up ({why})"
 +                if victims:
-+                    ok, info2 = self._attempt(conn, totals)
++                    ok, info2 = self._route_whole(conn, totals)
 +                    event = f"ripped up {len(victims)}: " + ", ".join(v.name() for v in victims) + \
 +                            ("; routed" if ok else "; " + info2.get("fail", "no path"))
 +                    pending += victims
@@ -2188,6 +2545,7 @@ index 0000000..32dcb32
 +                    if any(min(xs) - NEAR <= x <= max(xs) + NEAR and min(ys) - NEAR <= y <= max(ys) + NEAR
 +                           for x, y in (_xy(c.a), _xy(c.b))):
 +                        c.lanes = self._lanes(c, cache)
++        repair = self._repair_pours(totals, log) if self.pour_net else None
 +        finish = None
 +        if self.finish:
 +            from commands.powerlab_router.finish import shortcut
@@ -2209,12 +2567,207 @@ index 0000000..32dcb32
 +            "nodes": totals["nodes"],
 +            "retries": totals["retries"],
 +            "ripups": totals["ripups"],
++            "pour_cuts_kept": totals.get("pour_cuts", 0),
 +            "connections_ripped": totals["ripped"],
 +            "exact_violations_left": totals["exact_left"],
++            "pour_repair": repair,
 +            "finish": finish,
 +            "rules_not_understood": rb.rules.unsupported,
 +            "connections_list": conns,
 +        }
++
++    # --- pours kept whole (§3.3) -----------------------------------------------------------
++    def _pour_setup(self):
++        """Where the pour nets' pours could fill: the inside of their zone outlines, less
++        what other nets' copper keeps them from (the pour net's own grid, kept up to date)."""
++        rb = self.rb
++        zones = [z for z in rb.board.Zones() if not z.GetIsRuleArea() and z.GetNetname() in rb.pour_nets]
++        self.pour_net = zones[0].GetNetname() if zones else None
++        self.pour_area = []
++        for L in rb.layers:
++            polys = []
++            for z in zones:
++                if z.IsOnLayer(L):
++                    polys += _polys(z.Outline())
++            self.pour_area.append(rb.grid.raster(polys) if polys else None)
++        self.min_piece = int(POUR_PIECE_MM2 / rb.grid.pitch ** 2)
++        if self.pour_net:
++            # where the pour can be: a strip of the zone's minimum width, at the zone's
++            # clearance from other copper (not where a pour-net track would fit)
++            z = zones[0]
++            _cls, _w, vd, name = rb.key(self.pour_net)
++            self.pour_key = (rb.netclass(self.pour_net).GetName(), round(T(z.GetMinThickness()), 4), vd, name)
++            rb.occupancy(self.pour_key)  # built now, so commits keep it current
++
++    def _pour_free(self, i):
++        g = self.rb.grid
++        blocked = self.rb.occupancy(self.pour_key).blocked(self.pour_net)[0]
++        hard = np.frombuffer(blocked[i], np.uint8).reshape((g.ny, g.nx)).astype(bool)
++        return self.pour_area[i] & ~hard
++
++    def _route_whole(self, conn, totals):
++        """Route `conn`; if it cuts a pour into more pieces, try once more with the cut cells
++        expensive, and keep whichever leaves the pour in fewer pieces."""
++        if not self.pour_net:
++            return self._attempt(conn, totals)
++        before = self._pour_quality()
++        ok, info = self._attempt(conn, totals)
++        if not ok:
++            return ok, info
++        first_q = self._pour_quality()
++        if first_q <= before:
++            return ok, info
++        first = conn.geo
++        self._unroute(conn)
++        self._add_history(self._shadow(first), layers=self._pour_layers(), amount=CUT)
++        ok2, info2 = self._attempt(conn, totals)
++        if ok2:
++            q = self._pour_quality()
++            if q < first_q:
++                info2["pour"] = "rerouted so the pour stays whole" if q <= before else "rerouted, pour still cut"
++                return True, info2
++            self._unroute(conn)
++        totals["pour_cuts"] = totals.get("pour_cuts", 0) + 1
++        self._restore(conn, first)  # nothing else moved meanwhile, so it fits
++        info["pour"] = "cuts the pour, no better way"
++        return True, info
++
++    def _pour_quality(self):
++        """Smaller is better: (minus the summed share of each pour layer's largest piece,
++        rounded to 0.02 so a sliver doesn't count, then the number of pieces). Cached until
++        the copper changes."""
++        if self._q is not None:
++            return self._q
++        count, share = 0, 0.0
++        for i, area in enumerate(self.pour_area):
++            if area is None:
++                continue
++            sizes = pieces(self._pour_free(i), self.min_piece, block=POUR_BLOCK, sizes=True)
++            count += len(sizes)
++            share += sizes[0] / sum(sizes) if sizes else 1.0
++        self._q = (-round(share / 0.02) * 0.02, count)
++        return self._q
++
++    def _repair_pours(self, totals, log=None):
++        """After routing, break the walls that cut a pour into pieces. A wall is usually
++        several tracks, so taking out one at a time joins nothing: take out every connection
++        whose copper on that layer touches two of its pieces, check that the pour joins,
++        then put them back one by one. One that splits the pour again is routed again with
++        its old cells expensive. All or nothing per wall: if a connection would be lost or
++        the pour doesn't come out better, the wall goes back exactly as it was."""
++        start = self._pour_quality()
++        moved = tried = 0
++        for _round in range(REPAIR_ROUNDS):
++            better = False
++            for i in self._pour_layers():
++                wall = self._wall(i)
++                if not wall:
++                    continue
++                before = self._pour_quality()
++                snapshot = {c: c.geo for c in wall}
++                for c in wall:
++                    self._unroute(c)
++                if self._pour_quality() >= before:  # not this wall
++                    for c in wall:
++                        self._restore(c, snapshot[c])
++                    continue
++                changed = []
++                for c in sorted(wall, key=lambda c: c.length):
++                    now = self._pour_quality()
++                    if self._restore(c, snapshot[c], check=True) and self._pour_quality() <= now:
++                        continue
++                    if c.items:
++                        self._unroute(c)
++                    tried += 1
++                    self._add_history(self._shadow(snapshot[c]), layers=[i], amount=CUT)
++                    ok, _info = self._attempt(c, totals)
++                    if ok:
++                        changed.append(c)
++                    elif self._restore(c, snapshot[c], check=True):
++                        pass
++                lost = [c for c in wall if not c.items]
++                if lost or self._pour_quality() >= before:
++                    for c in wall:  # back exactly as it was
++                        if c.items:
++                            self._unroute(c)
++                    for c in wall:
++                        self._restore(c, snapshot[c])
++                    continue
++                moved += len(changed)
++                better = True
++                if log:
++                    for c in changed:
++                        log({"net": c.net, "connection": c.name(), "group": c.group, "ok": True,
++                             "event": "rerouted to keep the pour whole"})
++            if not better:
++                break
++        return {"before": start, "after": self._pour_quality(), "connections_tried": tried,
++                "connections_moved": moved}
++
++    def _wall(self, i):
++        """Connections whose copper on pour layer i touches two or more big pour pieces."""
++        rb = self.rb
++        lab, sizes = labels(self._pour_free(i), self.min_piece, block=POUR_BLOCK)
++        if len(sizes) < 2:
++            return []
++        out = []
++        L = rb.layers[i]
++        for c in {c for c in self.owner.values() if c.items}:
++            items = [it for it in c.items if it.IsOnLayer(L)]
++            if not items:
++                continue
++            polys = [p for it in items for p in _polys(_grown(it, L, 0.6))]
++            mask = rb.grid.raster(polys)
++            b = POUR_BLOCK
++            ny, nx = lab.shape[0] * b, lab.shape[1] * b
++            coarse = mask[:ny, :nx].reshape(lab.shape[0], b, lab.shape[1], b).any(axis=(1, 3))
++            if len(set(np.unique(lab[coarse])) - {0}) >= 2:
++                out.append(c)
++        return out
++
++    def _pour_layers(self):
++        return [i for i, a in enumerate(self.pour_area) if a is not None]
++
++    def _layers_of(self, conn):
++        return {L for L, _pts in conn.geo[0]} if conn.geo else set()
++
++    def _restore(self, conn, geo, check=False):
++        """Put `geo` back for `conn`. With check=True only if it still fits (the space may
++        have been taken meanwhile); returns whether it went back."""
++        items = self.rb.add(conn.net, *geo)
++        if check and self.rb.violations(conn.net, items):
++            self.rb.remove(items)
++            return False
++        self.rb.commit(conn.net, items)
++        conn.items, conn.geo = items, geo
++        for it in items:
++            self.owner[_uuid(it)] = conn
++        self._q = None
++        return True
++
++    def _unroute(self, conn):
++        self._q = None
++        rb = self.rb
++        for it in conn.items:
++            self.owner.pop(_uuid(it), None)
++        rb.remove(conn.items)
++        conn.items, conn.geo = [], None
++        left = [it for c in set(self.owner.values()) if c.net == conn.net for it in c.items]
++        rb.uncommit(conn.net, left)
++
++    def _shadow(self, geo):
++        """Temporary copper for a geometry, only to rasterise it (not on the board)."""
++        rb = self.rb
++        out = []
++        for L_idx, pts in geo[0]:
++            for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
++                t = pcbnew.PCB_TRACK(rb.board)
++                t.SetStart(pcbnew.VECTOR2I(MM(x0), MM(y0)))
++                t.SetEnd(pcbnew.VECTOR2I(MM(x1), MM(y1)))
++                t.SetWidth(MM(0.2))
++                t.SetLayer(rb.layers[L_idx])
++                out.append(t)
++        return out
 +
 +    def _attempt(self, conn, totals):
 +        """Route `conn` around everything; on success its copper is on the board and stamped."""
@@ -2226,7 +2779,8 @@ index 0000000..32dcb32
 +                rb.remove(items)
 +                items = []
 +            blocked, via_ok = rb.obstacles(conn.net, extra)
-+            geo, info = rb.route(conn.net, conn.a, conn.b, blocked, via_ok, self.costs, penalty=self._penalty())
++            geo, info = rb.route(conn.net, conn.a, conn.b, blocked, via_ok, self.costs,
++                                 penalty=self._penalty(conn, blocked), via_costs=self._via_costs(conn))
 +            totals["nodes"] += info["nodes"]
 +            totals["search_s"] += info["seconds"]
 +            if geo is None:
@@ -2243,6 +2797,7 @@ index 0000000..32dcb32
 +        conn.items, conn.geo = items, geo
 +        for it in items:
 +            self.owner[_uuid(it)] = conn
++        self._q = None
 +        return True, info
 +
 +    def _rip_up(self, conn, totals):
@@ -2266,7 +2821,8 @@ index 0000000..32dcb32
 +        for extra in (0.0,) + RETRY_MARGINS:
 +            blocked, via_ok, masks = rb.obstacles_soft(conn.net, soft, extra)
 +            geo, info = rb.route(conn.net, conn.a, conn.b, blocked, via_ok, self.costs,
-+                                 penalty=self._penalty(masks), ignore=ignore)
++                                 penalty=self._penalty(conn, blocked, masks), ignore=ignore,
++                                 via_costs=self._via_costs(conn))
 +            totals["nodes"] += info["nodes"]
 +            totals["search_s"] += info["seconds"]
 +            if geo is None:
@@ -2274,6 +2830,7 @@ index 0000000..32dcb32
 +            trial = rb.add(conn.net, *geo)
 +            hits = rb.violations(conn.net, trial)
 +            if not hits:  # the normal grid was too pessimistic: this way is free as it is
++                self._q = None
 +                rb.commit(conn.net, trial)
 +                conn.items, conn.geo = trial, geo
 +                for it in trial:
@@ -2296,6 +2853,7 @@ index 0000000..32dcb32
 +            return [], why, False
 +        conn.rips += 1
 +        totals["ripups"] += 1
++        self._q = None
 +        for v in victims:
 +            for it in v.items:
 +                self.owner.pop(_uuid(it), None)
@@ -2307,17 +2865,18 @@ index 0000000..32dcb32
 +            rb.uncommit(v.net, left)
 +        return sorted(victims, key=lambda c: c.length), "", False
 +
-+    def _add_history(self, items):
++    def _add_history(self, items, layers=None, amount=HISTORY):
 +        rb = self.rb
 +        for i, L in enumerate(rb.layers):
++            if layers is not None and i not in layers:
++                continue
 +            polys = []
 +            for it in items:
 +                if it.IsOnLayer(L):
 +                    polys += _polys(_grown(it, L, 0.2))
 +            if polys:
 +                cells = rb.grid.raster(polys)
-+                self.hist[i] = np.minimum(self.hist[i].astype(np.int32) + cells * HISTORY, 200).astype(np.uint8)
-+        self._hist_bytes = [h.tobytes() for h in self.hist]
++                self.hist[i] = np.minimum(self.hist[i].astype(np.int32) + cells * amount, 200).astype(np.uint8)
 diff --git a/python/commands/powerlab_router/rules.py b/python/commands/powerlab_router/rules.py
 new file mode 100644
 index 0000000..17932d6
@@ -2609,10 +3168,10 @@ index 0000000..17932d6
 +        return max(default, maybe)
 diff --git a/python/commands/powerlab_router/search.py b/python/commands/powerlab_router/search.py
 new file mode 100644
-index 0000000..fd5d49d
+index 0000000..36905f3
 --- /dev/null
 +++ b/python/commands/powerlab_router/search.py
-@@ -0,0 +1,165 @@
+@@ -0,0 +1,174 @@
 +"""Octilinear A* for the PowerLab router. No pcbnew, so it can be tested and timed anywhere.
 +
 +A state is (i, j, layer, direction, run): the cell, the direction it was entered in (0-7,
@@ -2629,6 +3188,8 @@ index 0000000..fd5d49d
 +import heapq
 +import math
 +
++import numpy as np
++
 +DIRS = ((1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1))
 +FREE = 8
 +SQ2 = math.sqrt(2.0)
@@ -2638,7 +3199,7 @@ index 0000000..fd5d49d
 +    """Costs in mm of track."""
 +
 +    def __init__(self, turn=0.4, via=4.0, layer_factor=None, min_run=2, unit=0.1, max_nodes=1_000_000,
-+                 nodes_per_mm=40_000, nodes_base=100_000):
++                 nodes_per_mm=40_000, nodes_base=100_000, weight=1.0):
 +        self.turn = turn
 +        # per search: give up instead of combing the whole board. A short connection that
 +        # needs many nodes won't find a way, so the limit grows with the distance.
@@ -2648,12 +3209,14 @@ index 0000000..fd5d49d
 +        self.via = via
 +        self.layer_factor = layer_factor or {}
 +        self.min_run = min_run
++        self.weight = weight
 +
 +    def node_limit(self, distance_mm):
 +        return int(min(self.max_nodes, self.nodes_base + self.nodes_per_mm * distance_mm))
 +
 +
-+def search(blocked, via_ok, nx, ny, pitch, starts, goals, window, costs, max_nodes=3_000_000, penalty=None):
++def search(blocked, via_ok, nx, ny, pitch, starts, goals, window, costs, max_nodes=3_000_000, penalty=None,
++           via_cost=None):
 +    """Cheapest path from any start lane to any goal lane.
 +
 +    blocked: per layer, a flat sequence of nx*ny (truthy = no track centre here).
@@ -2662,22 +3225,26 @@ index 0000000..fd5d49d
 +    goals: {(i, j, layer): (direction to arrive in, cost of that lane)}.
 +    window: (i0, j0, i1, j1), inclusive.
 +    penalty: per layer, flat nx*ny bytes (cost per cell entered, in `costs.unit`), or None.
++    via_cost: ({cell index: cost}, cost elsewhere), or None for costs.via everywhere.
 +    Returns (states from start to goal, stats); states is None when there's no path.
 +    """
 +    i0, j0, i1, j1 = window
 +    layers = len(blocked)
 +    factor = [costs.layer_factor.get(L, 1.0) for L in range(layers)]
 +    step = [pitch, pitch * SQ2] * 4
-+    goal_cells = [(i, j) for (i, j, _L) in goals]
++    # the heuristic for the whole window at once: octilinear distance to the nearest goal
++    # (times costs.weight: above 1 the search is greedier, faster, and at most that much
++    # dearer than the best way)
++    wnx = i1 - i0 + 1
++    cols, rows = np.meshgrid(np.arange(i0, i1 + 1), np.arange(j0, j1 + 1))
++    hmap = np.full(cols.shape, np.inf)
++    for gi, gj, _L in goals:
++        dx, dy = np.abs(cols - gi), np.abs(rows - gj)
++        hmap = np.minimum(hmap, np.maximum(dx, dy) + (SQ2 - 1.0) * np.minimum(dx, dy))
++    hl = (hmap * (pitch * min(factor) * costs.weight)).ravel().tolist()
 +
 +    def h(i, j):
-+        best = 1e18
-+        for gi, gj in goal_cells:
-+            dx, dy = abs(i - gi), abs(j - gj)
-+            v = (max(dx, dy) + (SQ2 - 1.0) * min(dx, dy)) * pitch
-+            if v < best:
-+                best = v
-+        return best
++        return hl[(j - j0) * wnx + i - i0]
 +
 +    openq = []
 +    best = {}
@@ -2692,7 +3259,8 @@ index 0000000..fd5d49d
 +    nodes = 0
 +    limit = False
 +    found = None
-+    min_run, turn, via, unit = costs.min_run, costs.turn, costs.via, costs.unit
++    min_run, turn, unit = costs.min_run, costs.turn, costs.unit
++    via_near, via_else = via_cost if via_cost is not None else ({}, costs.via)
 +    while openq:
 +        _f, c, s = heapq.heappop(openq)
 +        if s in done:
@@ -2736,7 +3304,7 @@ index 0000000..fd5d49d
 +                if L2 == L or blocked[L2][j * nx + i]:
 +                    continue
 +                ns = (i, j, L2, FREE, 0)
-+                nc = c + via
++                nc = c + via_near.get(j * nx + i, via_else)
 +                if nc < best.get(ns, 1e18):
 +                    best[ns] = nc
 +                    parent[ns] = s

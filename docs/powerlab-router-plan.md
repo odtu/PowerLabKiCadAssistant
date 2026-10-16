@@ -1,6 +1,6 @@
 # PowerLab router: design plan
 
-Status: milestones 0–2 done (results in §12–14). The router isn't a tool yet: its code is in the MCP patch (`python/commands/powerlab_router/`), and `tools/router_bench.py` runs it. Phase 1 (pad-centre entry and shortcuts in `clean_up_routing`) is on hold.
+Status: milestones 0–3 done (results in §12–15). The router isn't a tool yet: its code is in the MCP patch (`python/commands/powerlab_router/`), and `tools/router_bench.py` runs it. Phase 1 (pad-centre entry and shortcuts in `clean_up_routing`) is on hold.
 
 ## 1. Why
 
@@ -322,4 +322,70 @@ On the 27 nets both finished: 394.5 mm against 365.0 mm (+8%), 18 vias against 1
 - keep pours in one piece (cost for cutting a pour-net region off);
 - fewer vias, e.g. a rip-up search that may not add vias first;
 - speed: incremental lane counts, a coarse corridor search before the 0.1 mm one.
+
+## 15. Milestone 3 results (2026-10-16)
+
+**Goal, from the maintainer:** routing quality counts more than run time (a minute or two is fine), and the lab rules come first. The hand-routed TestPCB was given as an example to learn from, not to copy.
+
+**What the hand routing does well:** `tools/route_quality.py` (new) measured it. It is not the shortest: 625 mm of signal track. Its strength is the GND pours:
+- **Top pour:** 91% in one piece.
+- **Bottom pour:** 94% in one piece.
+
+How it gets there:
+- **Top layer:** only short fan-outs, with a via right at the pin.
+- **Bottom layer:** the long runs, packed together in parallel bundles.
+
+Milestone 2 left the top pour at 86% and the bottom at 83%; Freerouting leaves the top at 85%.
+
+**What was built:**
+- `costs.py`: the lab rules as per-cell search costs.
+  - **Pours stay whole (§3.3):** a cell costs more the farther it is from copper or the board edge, so tracks hug pads, edges and each other.
+  - **Thermal spokes** of pour-net pads stay clear.
+  - **No tracks under inductors, transformers or chokes** (§3.4), on any layer. The courtyard is grown by 0.3 mm, and the part's own nets are exempt.
+  - **Escape room:** 1.5 mm in front of fine-pitch pins (§3.4).
+  - **Switching nets and clocks** keep off layers with a power pour there (§3.4).
+  - **Clocks:** 3W from other tracks, and off the board edge (§3.4).
+  - **Vias:** half price near the connection's own pins (escape vias), 3× on clocks and switching nets (§3.4, §3.5).
+- **Pour checks** (`router.py`), measured on a grid of the pour net's own zone clearance and minimum width. It matches KiCad's fill: the largest-piece share is within 1–2%.
+  - **Per connection:** if a connection cuts a pour into pieces, it is routed again with the cut cells expensive. The better of the two ways is kept.
+  - **After routing:** a repair pass takes out the "walls" (every connection whose copper touches two pieces of a pour), checks that the pour joins, and puts them back one by one. Any that splits it again is rerouted. It is all or nothing per wall: if a connection would be lost or the pour doesn't improve, the wall goes back exactly as it was.
+- **Found and fixed on the way:**
+  - The shortcut pass only checked clearance, so it straightened tracks back under an inductor. It now uses the search costs.
+  - The search widened its window only when it found no way at all, so a way around an inductor outside the first window was never seen. A way much dearer than its length now also tries the next window.
+  - A run ending at a via was not moved onto the pad's axis with it, which gave 47–55° corners at off-grid pins. The whole run moves now, via included.
+  - Two bugs in the first wall repair could put tracks on top of each other (up to 30 shorts). The repair is now all or nothing.
+- **Speed:**
+  - The search's heuristic is computed once per window. It had been 410 of 1020 s.
+  - The pour measure is cached until the copper changes.
+  - `Costs.weight` allows a weighted A*.
+- **Tools and tests:**
+  - `tools/route_quality.py`: the quality report.
+  - The benchmark takes `LAYERS` and `WEIGHT`.
+  - New test: a track goes around an inductor, not under it.
+
+**TestPCB.** Pour cells: largest piece share, area in mm², number of pieces.
+
+| | Hand-routed | M2 | **M3 default** | Freerouting |
+|---|---|---|---|---|
+| Connections routed (of 52) | 52 | 51 | 50 | 51 |
+| New DRC errors | — | 2 starved thermal | **0** | 26 |
+| Signal length | 625 mm | 557 mm | 602 mm | 503 mm |
+| Vias | 23 | 33 | 41 | 15 |
+| Track ends off pad centre / at an angle | 12 / 11 | 2 / 1 | 2 / 1 | 22 / 37 |
+| Sharp corners (> 45° turn) | 2 | 0 | 0 | 0 |
+| Top GND pour | 91%, 808, 5 | 86%, 668, 8 | **93%, 818, 7** | 85%, 675, 14 |
+| Bottom GND pour | 94%, 949, 3 | 83%, 958, 3 | **94%, 911, 4** | 100%, 1110, 1 |
+
+**Time:** 458 s with three runs in parallel (863 s before the heuristic fix).
+
+**Tried:**
+- **Layer weights:** top 1.3× or 2× with bottom 1×, to copy the hand routing's "long runs on the bottom". The top pour came out larger but cut in two (58%). The default stays top 1×, bottom 1.2×.
+- **Weighted A\*:** 1.2 and 1.5 are faster, but cut a pour (58–62%). The default stays 1.0.
+
+**What this showed, and what's next:**
+- **Pours now match the hand routing, with no DRC errors.** But the result is fragile: a small change in costs or search weight cuts a pour in two. The wall repair rarely helps in the end (4 walls tried, 0 kept), and the per-connection check does most of the work. Next: make pour integrity part of the search itself, not checks afterwards, so it doesn't depend on order and luck.
+- **Fan-outs are untidy:** small hooks and doglegs between the ESP32 module and the left header, where the hand routing has short, even stubs. The quality report doesn't measure that yet. Next: a fan-out pattern (stub, then via or bend, the same for a whole pin row), and a "tidiness" measure.
+- **More vias than by hand** (41 against 23), and 2 connections left (`J1.A5` in its pocket, `ESP_TXD0`).
+- **Speed:** several minutes per board, against a target of 1–2. The search dominates: the costs make it explore more.
+- **Open question for the maintainers:** §3.4 says to keep bottom-layer tracks short on 2-layer boards. The hand-routed example puts long runs on the bottom in bundles and keeps the top for short fan-outs, and that is what keeps the pours whole. Should §3.4 say that instead?
 

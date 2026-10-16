@@ -1089,8 +1089,25 @@ class McpPatchTests(unittest.TestCase):
             pad.SetNet(nets[net])
             fp.Add(pad)
             board.Add(fp)
+        # an inductor between them, off the straight line: no track under it (§3.4)
+        coil = pcbnew.FOOTPRINT(board)
+        coil.SetReference("L1")
+        coil.SetPosition(P(10, 10))
+        box = pcbnew.PCB_SHAPE(coil, pcbnew.SHAPE_T_RECTANGLE)
+        box.SetStart(P(8, 4))
+        box.SetEnd(P(12, 16))
+        box.SetLayer(pcbnew.F_CrtYd)
+        box.SetWidth(mm(0.05))
+        coil.Add(box)
+        board.Add(coil)
         report = Router(board).run(["SIG"])
         self.assertEqual(report["routed"], 1, report["left"])
+        for t in board.GetTracks():
+            a, e = t.GetStart(), t.GetEnd()
+            for k in range(51):  # points along the track
+                x = pcbnew.ToMM(a.x + (e.x - a.x) * k / 50)
+                y = pcbnew.ToMM(a.y + (e.y - a.y) * k / 50)
+                self.assertFalse(7.9 < x < 12.1 and 3.9 < y < 16.1, "a track under the inductor")
         tracks = [t for t in board.GetTracks() if t.Type() == pcbnew.PCB_TRACE_T]
         ends = {(round(pcbnew.ToMM(p.x), 3), round(pcbnew.ToMM(p.y), 3)) for t in tracks for p in (t.GetStart(), t.GetEnd())}
         self.assertIn((5.0, 10.0), ends)  # pad centres
