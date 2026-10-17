@@ -226,6 +226,357 @@ index 16a4915..cef014b 100644
                      with open(output_path, "wb") as f:
                          f.write(image_bytes)
                      return {
+diff --git a/python/commands/dynamic_symbol_loader.py b/python/commands/dynamic_symbol_loader.py
+index 4fd6044..b205dd7 100644
+--- a/python/commands/dynamic_symbol_loader.py
++++ b/python/commands/dynamic_symbol_loader.py
+@@ -7,9 +7,11 @@ on-the-fly using TEXT MANIPULATION (not sexpdata) to preserve file formatting.
+ This enables access to all ~10,000+ KiCad symbols dynamically.
+ """
+ 
++import json
+ import logging
+ import os
+ import re
++import sys
+ import uuid
+ from pathlib import Path
+ from typing import Dict, List, Optional, Tuple
+@@ -32,6 +34,9 @@ logger = logging.getLogger("kicad_interface")
+ #: version costs nothing there and keeps the file loadable everywhere else.
+ _KICAD10_SCH_VERSION = 20260101
+ 
++#: Fields every placed symbol carries; the library's other fields are copied after them.
++_STANDARD_FIELDS = ("Reference", "Value", "Footprint", "Datasheet", "Description")
++
+ # Module-level caches shared across DynamicSymbolLoader instances.
+ # A fresh loader is created for every add_component call (see
+ # schematic_handlers), so instance-level caches never survive — every
+@@ -57,6 +62,24 @@ _SYMBOL_DIR_ENV_VARS = (
+ )
+ 
+ 
++def _kicad_path_variables() -> Dict[str, str]:
++    """User path variables from kicad_common.json (newest KiCad config first)."""
++    if sys.platform == "win32":
++        base = Path(os.environ.get("APPDATA", "")) / "kicad"
++    elif sys.platform == "darwin":
++        base = Path.home() / "Library" / "Preferences" / "kicad"
++    else:
++        base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "kicad"
++    for version in ("10.0", "9.0", "8.0"):
++        try:
++            with open(base / version / "kicad_common.json", encoding="utf-8") as f:
++                variables = (json.load(f).get("environment") or {}).get("vars") or {}
++            return {k: str(v) for k, v in variables.items() if v}
++        except (OSError, ValueError, AttributeError):
++            continue
++    return {}
++
++
+ def _symbol_dir_env_fingerprint() -> Tuple:
+     """The env-var inputs library discovery depends on.
+ 
+@@ -290,6 +313,13 @@ class DynamicSymbolLoader:
+                 # Fallback: try OS env
+                 if var in os.environ:
+                     return result.replace(f"${{{var}}}", os.environ[var])
++        # Any other ${VAR}: KiCad's own path variables (Preferences -> Configure
++        # Paths, e.g. ${METUPOWERLAB_SYMBOLS} or ${KICAD10_3RD_PARTY}) live in
++        # kicad_common.json, not in the process environment.
++        for var in re.findall(r"\$\{(\w+)\}", result):
++            value = os.environ.get(var) or _kicad_path_variables().get(var)
++            if value:
++                result = result.replace(f"${{{var}}}", value)
+         return result
+ 
+     def _extract_symbol_block(self, text: str, symbol_name: str) -> Optional[str]:
+@@ -968,6 +998,184 @@ class DynamicSymbolLoader:
+         except Exception:
+             return None
+ 
++    def _extract_lib_fields(
++        self, schematic_path: Path, library_name: str, symbol_name: str
++    ) -> List[Dict]:
++        """Return the injected lib symbol's fields in library order.
++
++        Each entry is ``{"name", "value", "show_name"}``. Unit sub-symbols carry
++        no properties, so every (property ...) in the block is a field of the
++        symbol itself.
++        """
++        try:
++            content = Path(schematic_path).read_text(encoding="utf-8")
++            lib_start = content.find("(lib_symbols")
++            if lib_start == -1:
++                return []
++            sym_start = content.find(
++                f'(symbol "{escape_sexpr_string(f"{library_name}:{symbol_name}")}"', lib_start
++            )
++            if sym_start == -1:
++                return []
++            sym_block = self._extract_paren_block(content, sym_start)
++            fields: List[Dict] = []
++            seen = set()
++            for m in re.finditer(
++                r"\(property\s+" + QUOTED_VALUE + r"\s+" + QUOTED_VALUE, sym_block
++            ):
++                name = unescape_sexpr_string(m.group(1))
++                if name in seen:
++                    continue
++                seen.add(name)
++                prop_block = self._extract_paren_block(sym_block, m.start())
++                prop_tokens = re.sub(QUOTED_VALUE, '""', prop_block)
++                fields.append(
++                    {
++                        "name": name,
++                        "value": unescape_sexpr_string(m.group(2)),
++                        "show_name": bool(re.search(r"\(show_name(\s+yes)?\)", prop_tokens)),
++                    }
++                )
++            return fields
++        except Exception:
++            return []
++
++    def sync_instance_fields(
++        self, schematic_path: Path, library_name: str, symbol_name: str
++    ) -> int:
++        """Give placed instances of a symbol the library fields they lack.
++
++        Repairs instances written before placement copied every library field:
++        each missing field is added with the library's value and visibility, and
++        a Value that is just the symbol's name becomes the library's Value. A
++        visible field is placed where the library puts it relative to the
++        Value, so ratings stay stacked under the instance's (possibly moved)
++        Value. Fields the instance already has are left as they are. Returns
++        the number of instances changed; the caller's file is rewritten only
++        when that is not zero.
++        """
++        lib_fields = self._extract_lib_fields(schematic_path, library_name, symbol_name)
++        if not lib_fields:
++            return 0
++        lib_value = next((f["value"] for f in lib_fields if f["name"] == "Value"), "")
++        lib_pos = self._extract_lib_property_positions(schematic_path, library_name, symbol_name)
++        content = Path(schematic_path).read_text(encoding="utf-8")
++
++        lib_start = content.find("(lib_symbols")
++        lib_end = (
++            lib_start + len(self._extract_paren_block(content, lib_start))
++            if lib_start != -1
++            else -1
++        )
++        lib_id = escape_sexpr_string(f"{library_name}:{symbol_name}")
++        spans = []
++        for m in re.finditer(r'\(lib_id\s+"' + re.escape(lib_id) + r'"\s*\)', content):
++            if lib_start <= m.start() < lib_end:
++                continue
++            start = content.rfind("(symbol", 0, m.start())
++            if start == -1:
++                continue
++            spans.append((start, start + len(self._extract_paren_block(content, start))))
++
++        def _fmt(n: float) -> str:
++            n = round(n, 3)
++            return str(int(n)) if float(n).is_integer() else str(n)
++
++        changed = 0
++        for start, end in reversed(spans):
++            block = content[start:end]
++            props = {
++                unescape_sexpr_string(m.group(1)): m
++                for m in re.finditer(r"\(property\s+" + QUOTED_VALUE + r"\s+" + QUOTED_VALUE, block)
++            }
++            new_block = block
++            value_match = props.get("Value")
++
++            missing = [
++                f
++                for f in lib_fields
++                if f["name"] not in props and not f["name"].startswith("ki_")
++            ]
++            if missing:
++                at = re.search(r"\(at\s+([-\d.]+)\s+([-\d.]+)(?:\s+([-\d.]+))?\)", block)
++                sx, sy = (float(at.group(1)), float(at.group(2))) if at else (0.0, 0.0)
++                # Anchor: the instance's Value position, angle and justification.
++                # Field angles are stored relative to the symbol, so a rating
++                # copies the Value's angle to read the same way on a rotated part.
++                vx, vy, vangle, justify = sx, sy, 0.0, ""
++                if value_match:
++                    vblock = self._extract_paren_block(block, value_match.start())
++                    vat = re.search(r"\(at\s+([-\d.]+)\s+([-\d.]+)(?:\s+([-\d.]+))?", vblock)
++                    if vat:
++                        vx, vy = float(vat.group(1)), float(vat.group(2))
++                        vangle = float(vat.group(3) or 0)
++                    jm = re.search(r"\(justify[^)]*\)", vblock)
++                    justify = jm.group(0) if jm else ""
++                # Ratings stack on the side of the Value away from the Reference:
++                # below it normally, above it where the Value sits above.
++                direction = 1.0
++                ref_match = props.get("Reference")
++                if ref_match:
++                    rat = re.search(
++                        r"\(at\s+[-\d.]+\s+([-\d.]+)",
++                        self._extract_paren_block(block, ref_match.start()),
++                    )
++                    if rat and float(rat.group(1)) > vy:
++                        direction = -1.0
++                lv = lib_pos.get("Value")
++                added = []
++                for f in missing:
++                    pos = lib_pos.get(f["name"])
++                    hidden = pos[4] if pos else True
++                    eff = pos[3] if pos else "(effects (font (size 1.27 1.27)))"
++                    angle = 0.0
++                    if hidden or not (pos and lv):
++                        px, py = sx, sy
++                    else:
++                        # Library y-up offset from the Value, drawn y-down.
++                        px = vx + (pos[0] - lv[0])
++                        py = vy + direction * abs(pos[1] - lv[1])
++                        angle = vangle
++                        eff = re.sub(r"\s*\(justify[^)]*\)", "", eff)
++                        if justify:
++                            eff = eff[:-1].rstrip() + f" {justify})"
++                    eff = re.sub(r"\s*\(hide\s+[^)]*\)", "", eff)
++                    added.append(
++                        f'    (property "{escape_sexpr_string(f["name"])}"'
++                        f' "{escape_sexpr_string(f["value"])}"\n'
++                        f"      (at {_fmt(px)} {_fmt(py)} {_fmt(angle)})\n"
++                        + ("      (hide yes)\n" if hidden else "")
++                        + f"      (show_name {'yes' if f['show_name'] else 'no'})\n"
++                        f"      (do_not_autoplace no)\n"
++                        f"      {eff}\n"
++                        f"    )"
++                    )
++                # After the last existing property, before the pins/instances.
++                last = max(props.values(), key=lambda m: m.start(), default=None)
++                if last is not None:
++                    insert_at = last.start() + len(self._extract_paren_block(block, last.start()))
++                else:
++                    insert_at = block.rfind(")")
++                new_block = block[:insert_at] + "\n" + "\n".join(added) + block[insert_at:]
++
++            # Value last: the insertions above used offsets into the original block.
++            if value_match and unescape_sexpr_string(value_match.group(2)) == symbol_name != lib_value:
++                vm = re.search(r'\(property\s+"Value"\s+' + QUOTED_VALUE, new_block)
++                if vm and lib_value:
++                    new_block = (
++                        new_block[: vm.start(1)]
++                        + escape_sexpr_string(lib_value)
++                        + new_block[vm.end(1) :]
++                    )
++
++            if new_block != block:
++                content = content[:start] + new_block + content[end:]
++                changed += 1
++
++        if changed:
++            Path(schematic_path).write_text(content, encoding="utf-8")
++        return changed
++
+     def create_component_instance(
+         self,
+         schematic_path: Path,
+@@ -1031,7 +1239,10 @@ class DynamicSymbolLoader:
+             else:
+                 dx, dy, text_ang, eff = fallback_dx, fallback_dy, fallback_angle, _DEFAULT_EFFECTS
+                 hidden = False
+-            rdx, rdy = self._rotate_offset(dx, dy, angle)
++            # Library coordinates are y-up, the schematic's are y-down: a
++            # Reference the library draws above the body (dy > 0) must land
++            # above it on the sheet, not below.
++            rdx, rdy = self._rotate_offset(dx, -dy, angle)
+             return round(x + rdx, 3), round(y + rdy, 3), text_ang, eff, hidden
+ 
+         # Reference/Value inherit the library's visibility. Power symbols
+@@ -1041,7 +1252,7 @@ class DynamicSymbolLoader:
+         # Footprint/Datasheet/Description stay hidden unconditionally, matching
+         # what eeschema writes on placement.
+         ref_x, ref_y, ref_a, ref_eff, ref_hide = _prop_at("Reference", 2.032, 0, 0)
+-        val_x, val_y, val_a, val_eff, val_hide = _prop_at("Value", 0, 2.54, 0)
++        val_x, val_y, val_a, val_eff, val_hide = _prop_at("Value", 0, -2.54, 0)
+         fp_x, fp_y, fp_a, fp_eff, _ = _prop_at("Footprint", 0, 0, 0)
+         ds_x, ds_y, ds_a, ds_eff, _ = _prop_at("Datasheet", 0, 0, 0)
+         desc_x, desc_y, desc_a, desc_eff, _ = _prop_at("Description", 0, 0, 0)
+@@ -1068,13 +1279,21 @@ class DynamicSymbolLoader:
+             return eff.strip() or "(effects (font (size 1.27 1.27)))"
+ 
+         def _property(
+-            name: str, value: str, px: float, py: float, pa: float, eff: str, hide: bool
++            name: str,
++            value: str,
++            px: float,
++            py: float,
++            pa: float,
++            eff: str,
++            hide: bool,
++            show_name: bool = False,
+         ) -> str:
+             """Build a KiCad-10 (property ...) block.
+ 
+-            Field order: at, [hide yes], show_name no, do_not_autoplace no, effects.
++            Field order: at, [hide yes], show_name, do_not_autoplace no, effects.
+             """
+             hide_line = "      (hide yes)\n" if hide else ""
++            show_name_token = "yes" if show_name else "no"
+             # Escape both: library property values legitimately contain quotes
+             # (power:GND's Description is `... global label with name "GND"`),
+             # and emitted raw the inner quote closes the token early, splitting
+@@ -1084,7 +1303,7 @@ class DynamicSymbolLoader:
+                 f' "{escape_sexpr_string(value)}"\n'
+                 f"      (at {_fmt(px)} {_fmt(py)} {_fmt(pa)})\n"
+                 f"{hide_line}"
+-                f"      (show_name no)\n"
++                f"      (show_name {show_name_token})\n"
+                 f"      (do_not_autoplace no)\n"
+                 f"      {_clean_effects(eff)}\n"
+                 f"    )"
+@@ -1118,15 +1337,37 @@ class DynamicSymbolLoader:
+                 or ""
+             )
+ 
+-        properties_str = "\n".join(
+-            [
+-                _property("Reference", reference, ref_x, ref_y, ref_a, ref_eff, ref_hide),
+-                _property("Value", value or symbol_name, val_x, val_y, val_a, val_eff, val_hide),
+-                _property("Footprint", footprint, fp_x, fp_y, fp_a, fp_eff, True),
+-                _property("Datasheet", ds_val, ds_x, ds_y, ds_a, ds_eff, True),
+-                _property("Description", desc_val, desc_x, desc_y, desc_a, desc_eff, True),
+-            ]
+-        )
++        # The Value comes from the library, as when KiCad places a symbol. The
++        # symbol's name is never a better Value: a library may name its symbols
++        # by part ("22 µF 100V") while their Value is "22 µF" and the rating sits
++        # in a field of its own. So the name, which callers pass when they have
++        # no value, is replaced by the library's Value too.
++        lib_fields = self._extract_lib_fields(schematic_path, library_name, symbol_name)
++        lib_value = next((f["value"] for f in lib_fields if f["name"] == "Value"), "")
++        if not value or (value == symbol_name and lib_value):
++            value = lib_value or symbol_name
++
++        property_blocks = [
++            _property("Reference", reference, ref_x, ref_y, ref_a, ref_eff, ref_hide),
++            _property("Value", value, val_x, val_y, val_a, val_eff, val_hide),
++            _property("Footprint", footprint, fp_x, fp_y, fp_a, fp_eff, True),
++            _property("Datasheet", ds_val, ds_x, ds_y, ds_a, ds_eff, True),
++            _property("Description", desc_val, desc_x, desc_y, desc_a, desc_eff, True),
++        ]
++        # Every other library field (MPN, manufacturer, ratings, distributor
++        # numbers, …) is copied onto the instance with the library's position and
++        # visibility, as KiCad does on placement. Without them the placed part
++        # shows only five fields in Symbol Properties and the BOM loses its data.
++        # ki_keywords / ki_fp_filters stay in the library symbol, like in KiCad.
++        for field in lib_fields:
++            name = field["name"]
++            if name in _STANDARD_FIELDS or name.startswith("ki_"):
++                continue
++            px, py, pa, eff, hidden = _prop_at(name, 0, 0, 0)
++            property_blocks.append(
++                _property(name, field["value"], px, py, pa, eff, hidden, field["show_name"])
++            )
++        properties_str = "\n".join(property_blocks)
+ 
+         # Per-pin uuids — KiCad writes a (pin "N" (uuid ...)) for every pin of the placed
+         # unit; their absence is a primary cause of editor crashes when the symbol is dragged.
 diff --git a/python/commands/freerouting.py b/python/commands/freerouting.py
 index 0c12af2..cedd101 100644
 --- a/python/commands/freerouting.py
@@ -5974,10 +6325,200 @@ index 0000000..076167b
 +    report["thin_tracks_left"] = thin_tracks(board)
 +    return report
 diff --git a/python/commands/routing.py b/python/commands/routing.py
-index be3cf94..446ecbe 100644
+index be3cf94..67ee134 100644
 --- a/python/commands/routing.py
 +++ b/python/commands/routing.py
-@@ -1875,6 +1875,13 @@ class RoutingCommands:
+@@ -92,12 +92,66 @@ def apply_netclass_to_project_settings(
+         value = props.get(key)
+         if value is not None:
+             cls[key] = float(value)
++    # Schematic styling: KiCad stores the wire width in mils and the colour as
++    # an rgba() string ("rgba(0, 0, 0, 0.000)" means "use the theme colour").
++    if props.get("wire_width") is not None:
++        cls["wire_width"] = int(props["wire_width"])
++    if props.get("schematic_color") is not None:
++        cls["schematic_color"] = props["schematic_color"]
+ 
+     return data
+ 
+ 
++def apply_netclass_patterns_to_project_settings(
++    data: Dict[str, Any], name: str, patterns: List[str]
++) -> Dict[str, Any]:
++    """Add net-name patterns (``*GND*``, ``+*``) for class ``name`` to
++    ``net_settings.netclass_patterns``, skipping ones already there. Pure."""
++    net_settings = data.setdefault("net_settings", {})
++    if not isinstance(net_settings.get("netclass_patterns"), list):
++        net_settings["netclass_patterns"] = []
++    existing = net_settings["netclass_patterns"]
++    for pattern in patterns:
++        entry = {"netclass": name, "pattern": pattern}
++        if entry not in existing:
++            existing.append(entry)
++    return data
++
++
++_NAMED_COLORS = {
++    "red": (255, 0, 0),
++    "blue": (0, 0, 255),
++    "green": (0, 160, 0),
++    "black": (0, 0, 0),
++}
++
++
++def parse_schematic_color(color: str) -> str:
++    """'#RRGGBB', 'rgb(r, g, b)', 'rgba(r, g, b, a)' or a basic colour name ->
++    KiCad's ``rgba(r, g, b, 1.000)`` string. Raises ValueError otherwise."""
++    text = color.strip().lower()
++    if text in _NAMED_COLORS:
++        r, g, b = _NAMED_COLORS[text]
++        a = 1.0
++    elif re.fullmatch(r"#[0-9a-f]{6}", text):
++        r, g, b = (int(text[i : i + 2], 16) for i in (1, 3, 5))
++        a = 1.0
++    else:
++        m = re.fullmatch(
++            r"rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+)\s*)?\)", text
++        )
++        if not m:
++            raise ValueError(f"unrecognised colour {color!r}; use #RRGGBB or rgb(r, g, b)")
++        r, g, b = (int(m.group(i)) for i in (1, 2, 3))
++        a = float(m.group(4)) if m.group(4) else 1.0
++    return f"rgba({r}, {g}, {b}, {a:.3f})"
++
++
+ def persist_netclass_to_project(
+-    pro_path: Optional[str], name: str, props: Dict[str, Any]
++    pro_path: Optional[str],
++    name: str,
++    props: Dict[str, Any],
++    patterns: Optional[List[str]] = None,
+ ) -> Dict[str, Any]:
+     """Read/modify/write ``pro_path`` so the net class definition survives a
+     reload (KiCad 7+ keeps it in the project file, not the board).
+@@ -117,6 +171,8 @@ def persist_netclass_to_project(
+         with open(pro_path, "r", encoding="utf-8") as handle:
+             data = json.load(handle)
+         apply_netclass_to_project_settings(data, name, props)
++        if patterns:
++            apply_netclass_patterns_to_project_settings(data, name, patterns)
+ 
+         directory = os.path.dirname(pro_path) or "."
+         fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=".netclass-", suffix=".kicad_pro")
+@@ -1625,11 +1681,15 @@ class RoutingCommands:
+     def create_netclass(self, params: Dict[str, Any]) -> Dict[str, Any]:
+         """Create a new net class with specified properties"""
+         try:
+-            if not self.board:
++            # Schematic-stage use: with projectPath the class goes straight into
++            # the project file, so no board needs to be loaded (wire colours and
++            # widths are set before there is any layout).
++            project_path = params.get("projectPath")
++            if not self.board and not project_path:
+                 return {
+                     "success": False,
+                     "message": "No board is loaded",
+-                    "errorDetails": "Load or create a board first",
++                    "errorDetails": "Load or create a board first, or pass projectPath",
+                 }
+ 
+             name = params.get("name")
+@@ -1643,6 +1703,18 @@ class RoutingCommands:
+             diff_pair_width = params.get("diffPairWidth")
+             diff_pair_gap = params.get("diffPairGap")
+             nets = params.get("nets", [])
++            patterns = params.get("patterns") or []
++            wire_width = params.get("wireWidth")
++            schematic_color = params.get("schematicColor")
++            if schematic_color:
++                try:
++                    schematic_color = parse_schematic_color(schematic_color)
++                except ValueError as exc:
++                    return {
++                        "success": False,
++                        "message": "Invalid schematicColor",
++                        "errorDetails": str(exc),
++                    }
+ 
+             if not name:
+                 return {
+@@ -1656,12 +1728,21 @@ class RoutingCommands:
+             # the project file up front so the durable write below runs even if a
+             # SWIG API (which shifted across KiCad 6->10) throws (issue #185).
+             pro_path = None
+-            try:
+-                board_path = self.board.GetFileName()
+-                if board_path and board_path.endswith(".kicad_pcb"):
+-                    pro_path = str(Path(board_path).with_suffix(".kicad_pro"))
+-            except Exception:
+-                pro_path = None
++            if project_path:
++                candidate = Path(project_path)
++                if candidate.is_dir():
++                    found = sorted(candidate.glob("*.kicad_pro"))
++                    candidate = found[0] if found else candidate / "missing.kicad_pro"
++                elif candidate.suffix != ".kicad_pro":
++                    candidate = candidate.with_suffix(".kicad_pro")
++                pro_path = str(candidate)
++            else:
++                try:
++                    board_path = self.board.GetFileName()
++                    if board_path and board_path.endswith(".kicad_pcb"):
++                        pro_path = str(Path(board_path).with_suffix(".kicad_pro"))
++                except Exception:
++                    pro_path = None
+ 
+             scale = 1000000  # mm to nm
+             net_class_values: Dict[str, Any] = {}
+@@ -1671,6 +1752,8 @@ class RoutingCommands:
+             # here is logged but must NOT skip the .kicad_pro persistence below,
+             # which is the deterministic, SWIG-independent part (issue #185).
+             try:
++                if not self.board:
++                    raise RuntimeError("no board loaded; project file only")
+                 # KiCad 6/7 returns NETCLASSES with .Find/.Add; KiCad 9/10 returns
+                 # a netclasses_map (SWIG-wrapped std::map) that is dict-like.
+                 net_classes = self.board.GetNetClasses()
+@@ -1743,8 +1826,9 @@ class RoutingCommands:
+                     "diffPairGap": _safe_get("GetDiffPairGap"),
+                 }
+             except Exception as exc:
+-                in_memory_warning = "in-memory NETCLASS update failed: %s" % exc
+-                logger.warning("create_netclass: %s", in_memory_warning)
++                if self.board:
++                    in_memory_warning = "in-memory NETCLASS update failed: %s" % exc
++                    logger.warning("create_netclass: %s", in_memory_warning)
+ 
+             # Persist the class DEFINITION (net_settings.classes) using the same
+             # normalized values as the live path, so the persisted class can never
+@@ -1759,8 +1843,11 @@ class RoutingCommands:
+                 "microvia_drill": uvia_drill,
+                 "diff_pair_width": diff_pair_width,
+                 "diff_pair_gap": diff_pair_gap,
++                # mm -> mils, KiCad's unit for schematic wire widths
++                "wire_width": round(wire_width / 0.0254) if wire_width is not None else None,
++                "schematic_color": schematic_color,
+             }
+-            persist = persist_netclass_to_project(pro_path, name, project_props)
++            persist = persist_netclass_to_project(pro_path, name, project_props, patterns)
+ 
+             warnings = [w for w in (in_memory_warning, persist.get("warning")) if w]
+             if in_memory_warning and not persist.get("persisted"):
+@@ -1774,7 +1861,12 @@ class RoutingCommands:
+             result = {
+                 "success": True,
+                 "message": f"Created net class: {name}",
+-                "netClass": {"name": name, "nets": nets, **net_class_values},
++                "netClass": {
++                    "name": name,
++                    "nets": nets,
++                    "patterns": patterns,
++                    **net_class_values,
++                },
+                 "persisted": persist.get("persisted", False),
+             }
+             if persist.get("projectFile"):
+@@ -1875,6 +1967,13 @@ class RoutingCommands:
  
              zone.SetMinThickness(int(min_width * scale))
  
@@ -5991,6 +6532,190 @@ index be3cf94..446ecbe 100644
              # Set fill type
              if fill_type == "hatched":
                  zone.SetFillMode(pcbnew.ZONE_FILL_MODE_HATCH_PATTERN)
+diff --git a/python/commands/schematic_batch.py b/python/commands/schematic_batch.py
+index 4f4fea6..e6aa8b6 100644
+--- a/python/commands/schematic_batch.py
++++ b/python/commands/schematic_batch.py
+@@ -29,6 +29,7 @@ from commands.schematic_text_utils import (
+     _move_property_in_block,
+ )
+ from commands.wire_manager import WireManager
++from utils.sexpr_format import QUOTED_VALUE, unescape_sexpr_string
+ 
+ logger = logging.getLogger("kicad_interface")
+ 
+@@ -127,7 +128,7 @@ class SchematicBatchCommands:
+ 
+                 library, sym_name = symbol.split(":", 1)
+                 reference = comp.get("reference", "X?")
+-                value = comp.get("value", sym_name)
++                value = comp.get("value") or ""
+                 footprint = comp.get("footprint", "")
+                 pos = comp.get("position", {})
+                 x = (pos.get("x", 0) if isinstance(pos, dict) else 0) + origin_x
+@@ -367,8 +368,29 @@ class SchematicBatchCommands:
+                     else (fd if fd is not None else default)
+                 )
+ 
+-            old_value = _field_value("Value", new_type)
+-            old_footprint = _field_value("Footprint", "")
++            # Only what was changed on the placed part carries over. A field that
++            # still holds the old library symbol's value (its MPN, rating,
++            # footprint, or the Value itself) belongs to the old part, and the
++            # new symbol's own library value takes its place: replacing a 10 k
++            # with a 22 k part must not keep "10 kOhm" and the 10 k's MPN.
++            old_lib_id = re.search(r'\(lib_id\s+' + QUOTED_VALUE, block_text)
++            old_lib_fields: Dict[str, str] = {}
++            old_sym = ""
++            if old_lib_id and ":" in old_lib_id.group(1):
++                old_lib, old_sym = unescape_sexpr_string(old_lib_id.group(1)).split(":", 1)
++                old_lib_fields = {
++                    f["name"]: f["value"]
++                    for f in loader._extract_lib_fields(sch_file, old_lib, old_sym)
++                }
++
++            def _edited(name):
++                value = _field_value(name, "")
++                if value == old_lib_fields.get(name) or (name == "Value" and value == old_sym):
++                    return ""
++                return value
++
++            old_value = _edited("Value")
++            old_footprint = _edited("Footprint")
+ 
+             loader.add_component(
+                 sch_file,
+@@ -387,6 +409,8 @@ class SchematicBatchCommands:
+             for fname, fdata in old_fields.items():
+                 if fname in ("Reference", "Value", "Footprint"):
+                     continue
++                if not _edited(fname):
++                    continue
+                 fields_to_restore[fname] = (
+                     fdata.get("value", "") if isinstance(fdata, dict) else str(fdata)
+                 )
+diff --git a/python/commands/schematic_handlers.py b/python/commands/schematic_handlers.py
+index ee10775..0fde965 100644
+--- a/python/commands/schematic_handlers.py
++++ b/python/commands/schematic_handlers.py
+@@ -263,7 +263,7 @@ class SchematicHandlersMixin:
+             comp_type = component.get("type", "R")
+             library = component.get("library", "Device")
+             reference = component.get("reference", "X?")
+-            value = component.get("value", comp_type)
++            value = component.get("value") or ""
+             footprint = component.get("footprint", "")
+             x = component.get("x", 0)
+             y = component.get("y", 0)
+diff --git a/python/commands/update_symbol_from_library.py b/python/commands/update_symbol_from_library.py
+index f876f4b..582a074 100644
+--- a/python/commands/update_symbol_from_library.py
++++ b/python/commands/update_symbol_from_library.py
+@@ -148,12 +148,13 @@ def update_schematic_symbols(
+     schematic_path: Path,
+     library_name: str,
+     only_symbols: set[str] | None = None,
++    sync_fields: bool = True,
+ ) -> dict[str, int]:
+     loader = DynamicSymbolLoader(project_path=schematic_path.parent)
+     content = schematic_path.read_text(encoding="utf-8")
+     rng = _lib_symbols_range(content)
+     if not rng:
+-        return {"updated": 0, "injected": 0, "skipped": 0}
++        return {"updated": 0, "injected": 0, "skipped": 0, "fields_synced": 0}
+ 
+     lib_start, lib_end = rng
+     targets = sorted(
+@@ -162,7 +163,7 @@ def update_schematic_symbols(
+     if only_symbols:
+         targets = [s for s in targets if s in only_symbols]
+     if not targets:
+-        return {"updated": 0, "injected": 0, "skipped": 0}
++        return {"updated": 0, "injected": 0, "skipped": 0, "fields_synced": 0}
+ 
+     updated = injected = skipped = 0
+     replacements: list[tuple[int, int, str, str]] = []
+@@ -197,7 +198,22 @@ def update_schematic_symbols(
+             content = content[:start] + new + content[end:]
+         schematic_path.write_text(prettify(content), encoding="utf-8")
+ 
+-    return {"updated": updated, "injected": injected, "skipped": skipped}
++    # Placed parts get the library fields they lack (KiCad's "Update/reset
++    # fields"): instances written by older placement code carried only five.
++    fields_synced = 0
++    if sync_fields:
++        for symbol_name in targets:
++            if not _MIRROR_SUFFIX.search(symbol_name):
++                fields_synced += loader.sync_instance_fields(
++                    schematic_path, library_name, symbol_name
++                )
++
++    return {
++        "updated": updated,
++        "injected": injected,
++        "skipped": skipped,
++        "fields_synced": fields_synced,
++    }
+ 
+ 
+ def update_symbol_from_library(params: dict[str, Any]) -> dict[str, Any]:
+@@ -210,6 +226,7 @@ def update_symbol_from_library(params: dict[str, Any]) -> dict[str, Any]:
+     only_symbols = set(params["symbols"]) if params.get("symbols") else None
+     backup_dir = Path(params["backupDir"]) if params.get("backupDir") else None
+     repair_mirror = bool(params.get("repairMirrorFromBackup", False))
++    sync_fields = bool(params.get("syncFields", True))
+ 
+     schematic_paths: list[Path] = []
+     if params.get("schematicPath"):
+@@ -230,7 +247,7 @@ def update_symbol_from_library(params: dict[str, Any]) -> dict[str, Any]:
+         }
+ 
+     results: list[dict[str, Any]] = []
+-    total_updated = total_injected = total_skipped = total_mirror = 0
++    total_updated = total_injected = total_skipped = total_mirror = total_synced = 0
+ 
+     for sch in schematic_paths:
+         if not sch.exists():
+@@ -239,12 +256,13 @@ def update_symbol_from_library(params: dict[str, Any]) -> dict[str, Any]:
+         mirror_restored = 0
+         if repair_mirror and backup_dir:
+             mirror_restored = repair_mirror_lib_symbols(sch, backup_dir / sch.name, library_name)
+-        counts = update_schematic_symbols(sch, library_name, only_symbols)
++        counts = update_schematic_symbols(sch, library_name, only_symbols, sync_fields)
+         total_updated += counts["updated"]
+         total_injected += counts["injected"]
+         total_skipped += counts["skipped"]
+         total_mirror += mirror_restored
+-        if counts["updated"] or counts["injected"] or mirror_restored:
++        total_synced += counts["fields_synced"]
++        if counts["updated"] or counts["injected"] or mirror_restored or counts["fields_synced"]:
+             results.append(
+                 {
+                     "schematic": str(sch),
+@@ -252,6 +270,7 @@ def update_symbol_from_library(params: dict[str, Any]) -> dict[str, Any]:
+                     "injected": counts["injected"],
+                     "skipped": counts["skipped"],
+                     "mirror_restored": mirror_restored,
++                    "fields_synced": counts["fields_synced"],
+                 }
+             )
+ 
+@@ -260,12 +279,14 @@ def update_symbol_from_library(params: dict[str, Any]) -> dict[str, Any]:
+         "message": (
+             f"Updated {len(results)} schematic(s): "
+             f"{total_updated} symbol(s) updated, {total_injected} injected, "
+-            f"{total_skipped} skipped, {total_mirror} mirror block(s) restored"
++            f"{total_skipped} skipped, {total_mirror} mirror block(s) restored, "
++            f"{total_synced} placed symbol(s) given missing library fields"
+         ),
+         "schematics_changed": len(results),
+         "updated": total_updated,
+         "injected": total_injected,
+         "skipped": total_skipped,
+         "mirror_restored": total_mirror,
++        "fields_synced": total_synced,
+         "results": results,
+     }
 diff --git a/python/kicad_api/ipc_backend.py b/python/kicad_api/ipc_backend.py
 index 6f9a813..5d40efc 100644
 --- a/python/kicad_api/ipc_backend.py
@@ -7085,7 +7810,7 @@ index 902f7b1..3a1ef9b 100644
    {
      name: "validation",
 diff --git a/src/tools/routing.ts b/src/tools/routing.ts
-index 27f6b90..c1c90e1 100644
+index 27f6b90..f242ce1 100644
 --- a/src/tools/routing.ts
 +++ b/src/tools/routing.ts
 @@ -148,6 +148,11 @@ export function registerRoutingTools(server: McpServer, callKicadScript: Functio
@@ -7100,3 +7825,440 @@ index 27f6b90..c1c90e1 100644
      },
      async (args: any) => {
        const result = await callKicadScript("add_copper_pour", args);
+@@ -395,9 +400,26 @@ export function registerRoutingTools(server: McpServer, callKicadScript: Functio
+   // Create netclass tool
+   server.tool(
+     "create_netclass",
+-    "Create a new net class with custom design rules, optionally assigning nets to it immediately.",
++    "Create or update a net class with custom design rules, optionally assigning nets to it immediately. " +
++      "Also sets the schematic wire style (schematicColor, wireWidth) and net-name patterns that put nets in the class " +
++      "(patterns, e.g. ['*GND*'] or ['+*', '-*', 'VBUS*']). Pass projectPath to write the project file without a loaded board (schematic stage).",
+     {
+       name: z.string().describe("Net class name"),
++      projectPath: z
++        .string()
++        .optional()
++        .describe(
++          "The .kicad_pro (or its folder). Writes the class into the project file; no board needs to be loaded",
++        ),
++      patterns: z
++        .array(z.string())
++        .optional()
++        .describe("Net-name patterns (wildcards * and ?) whose nets join this class, e.g. ['*GND*']"),
++      schematicColor: z
++        .string()
++        .optional()
++        .describe("Schematic wire colour: '#RRGGBB', 'rgb(r, g, b)', or red/blue/green/black"),
++      wireWidth: z.number().optional().describe("Schematic wire width in mm (default wires are 0.15 mm)"),
+       traceWidth: z.number().optional().describe("Default trace width in mm"),
+       clearance: z.number().optional().describe("Clearance in mm"),
+       viaDiameter: z.number().optional().describe("Via diameter in mm"),
+diff --git a/src/tools/schematic-batch.ts b/src/tools/schematic-batch.ts
+index dd067be..5e4ee2e 100644
+--- a/src/tools/schematic-batch.ts
++++ b/src/tools/schematic-batch.ts
+@@ -18,7 +18,10 @@ export function registerSchematicBatchTools(server: McpServer, callKicadScript:
+           z.object({
+             symbol: z.string().describe("'Library:SymbolName' (e.g., Device:R)"),
+             reference: z.string().describe("Reference designator (e.g., R1)"),
+-            value: z.string().optional(),
++            value: z
++              .string()
++              .optional()
++              .describe("Leave out to use the library symbol's Value (always, for part-per-symbol libraries)"),
+             footprint: z.string().optional(),
+             position: z.object({ x: z.number(), y: z.number() }).optional(),
+             rotation: z.number().optional(),
+@@ -75,7 +78,7 @@ export function registerSchematicBatchTools(server: McpServer, callKicadScript:
+   // Refresh lib_symbols cache from library (Update Symbol from Library)
+   server.tool(
+     "update_symbol_from_library",
+-    "Refresh embedded lib_symbols cache entries from a KiCad symbol library (equivalent to KiCad's Update Symbol from Library). Skips mirror-cache entries (__m0, __m90, …). Flattens (power) symbols for schematic format. Pass projectsDir to update all schematics in a folder, or schematicPath for one file.",
++    "Refresh embedded lib_symbols cache entries from a KiCad symbol library (equivalent to KiCad's Update Symbol from Library). Skips mirror-cache entries (__m0, __m90, …). Flattens (power) symbols for schematic format. Also gives placed instances the library fields they lack (MPN, ratings, …) and replaces a Value that is just the symbol's name with the library's Value (syncFields, default true). Pass projectsDir to update all schematics in a folder, or schematicPath for one file.",
+     {
+       projectsDir: z
+         .string()
+@@ -95,6 +98,13 @@ export function registerSchematicBatchTools(server: McpServer, callKicadScript:
+         .optional()
+         .default(false)
+         .describe("Restore __m* mirror-cache lib_symbols blocks from backupDir first"),
++      syncFields: z
++        .boolean()
++        .optional()
++        .default(true)
++        .describe(
++          "Add missing library fields to placed instances, and reset a Value equal to the symbol name to the library's Value",
++        ),
+       backupDir: z
+         .string()
+         .optional()
+@@ -170,7 +180,7 @@ export function registerSchematicBatchTools(server: McpServer, callKicadScript:
+   // Swap a symbol, preserving position/fields
+   server.tool(
+     "replace_schematic_component",
+-    "Replace a placed component's symbol with a different one (e.g. Device:R -> Device:R_Potentiometer), preserving its position, rotation, and field values (Value/Footprint/custom). Optionally override rotation with newRotation. Returns the new pin positions.",
++    "Replace a placed component's symbol with a different one (e.g. Device:R -> Device:R_Potentiometer), preserving its position, rotation, and the fields that were edited on the placed part (Value/Footprint/custom). Fields that still hold the old library symbol's values take the new symbol's library values, so a lab part replaced by another gets that part's Value, MPN and ratings. Optionally override rotation with newRotation. Returns the new pin positions.",
+     {
+       schematicPath: z.string().describe("Path to the .kicad_sch file"),
+       reference: z.string().describe("Reference of the component to replace (e.g., D1)"),
+diff --git a/src/tools/schematic.ts b/src/tools/schematic.ts
+index f2b7f4d..d93f9d8 100644
+--- a/src/tools/schematic.ts
++++ b/src/tools/schematic.ts
+@@ -37,7 +37,12 @@ export function registerSchematicTools(server: McpServer, callKicadScript: Funct
+         .string()
+         .describe("Symbol library:name reference (e.g., Device:R, EDA-MCP:ESP32-C3)"),
+       reference: z.string().describe("Component reference (e.g., R1, U1)"),
+-      value: z.string().optional().describe("Component value"),
++      value: z
++        .string()
++        .optional()
++        .describe(
++          "Component value. Leave it out to use the library symbol's Value (always, for parts from a part-per-symbol library); every other library field is copied onto the part as well.",
++        ),
+       footprint: z
+         .string()
+         .optional()
+diff --git a/tests/test_lab_symbol_fields.py b/tests/test_lab_symbol_fields.py
+new file mode 100644
+index 0000000..009b312
+--- /dev/null
++++ b/tests/test_lab_symbol_fields.py
+@@ -0,0 +1,302 @@
++"""
++Placed symbols carry every library field and the library's Value.
++
++A part-per-symbol library (one symbol per orderable part, as in the METU Power
++Lab library) names a symbol "22 uF 100V" while its Value is "22 uF" and the
++rating sits in a visible "Voltage Rating" field next to MPN, manufacturer and
++distributor fields. Placement used to write only Reference/Value/Footprint/
++Datasheet/Description and the symbol's *name* as Value, so the part lost its
++data and showed the rating glued to the value.
++"""
++
++import json
++import re
++import sys
++from pathlib import Path
++
++import pytest
++
++sys.path.insert(0, str(Path(__file__).parent.parent / "python"))
++
++LIB_SYMBOL = """    (symbol "Lab:22 uF 100V" (pin_numbers (hide yes)) (pin_names (offset 0.254)) (in_bom yes) (on_board yes)
++      (property "Reference" "C" (at 0.635 2.54 0)
++        (effects (font (size 1.27 1.27)) (justify left))
++      )
++      (property "Value" "22 uF" (at 0.635 -2.54 0)
++        (effects (font (size 1.27 1.27)) (justify left))
++      )
++      (property "Footprint" "Lab:2220" (at 0 0 0)
++        (effects (font (size 1.27 1.27)) (hide yes))
++      )
++      (property "Datasheet" "https://example.com/c.pdf" (at 0 0 0)
++        (effects (font (size 1.27 1.27)) (hide yes))
++      )
++      (property "Description" "Ceramic SMD Cap 2220" (at 0 0 0)
++        (effects (font (size 1.27 1.27)) (hide yes))
++      )
++      (property "Manufacturer Number" "C5750X7S2A226M" (at 0 0 0)
++        (effects (font (size 1.27 1.27)) (hide yes))
++      )
++      (property "Voltage Rating" "100V" (at 0.635 -4.318 0)
++        (show_name no)
++        (effects (font (size 1 1)) (justify left))
++      )
++      (property "Saturation Current" "3A" (at 0.635 -5.842 0)
++        (show_name yes)
++        (effects (font (size 1 1)) (justify left))
++      )
++      (property "ki_keywords" "cap capacitor" (at 0 0 0)
++        (effects (font (size 1.27 1.27)) (hide yes))
++      )
++      (symbol "22 uF 100V_1_1"
++        (pin passive line (at 0 5.08 270) (length 4.064)
++          (name "~" (effects (font (size 1.27 1.27))))
++          (number "1" (effects (font (size 1.27 1.27))))
++        )
++        (pin passive line (at 0 -5.08 90) (length 4.064)
++          (name "~" (effects (font (size 1.27 1.27))))
++          (number "2" (effects (font (size 1.27 1.27))))
++        )
++      )
++    )
++"""
++
++SCHEMATIC = (
++    '(kicad_sch (version 20250114) (generator "test")\n'
++    "  (uuid b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e)\n"
++    '  (paper "A4")\n'
++    "  (lib_symbols\n" + LIB_SYMBOL + "  )\n"
++    "  (sheet_instances (path \"/\" (page \"1\")))\n"
++    ")\n"
++)
++
++# An instance as the old placement code wrote it: five fields, name as Value.
++OLD_INSTANCE = """  (symbol (lib_id "Lab:22 uF 100V") (at 100 50 0) (unit 1)
++    (uuid "11111111-1111-1111-1111-111111111111")
++    (property "Reference" "C1" (at 103 49 0)
++      (effects (font (size 1.27 1.27)) (justify left))
++    )
++    (property "Value" "22 uF 100V" (at 103 60 0)
++      (effects (font (size 1.27 1.27)) (justify right))
++    )
++    (property "Footprint" "Lab:2220" (at 100 50 0) (hide yes)
++      (effects (font (size 1.27 1.27)))
++    )
++    (pin "1" (uuid "22222222-2222-2222-2222-222222222222"))
++    (pin "2" (uuid "33333333-3333-3333-3333-333333333333"))
++  )
++"""
++
++
++def _props(block: str) -> dict:
++    return {
++        m.group(1): m.group(2)
++        for m in re.finditer(r'\(property "([^"]*)" "([^"]*)"', block)
++    }
++
++
++def _instance_block(content: str) -> str:
++    start = content.index("(symbol (lib_id")
++    depth = 0
++    for i in range(start, len(content)):
++        if content[i] == "(":
++            depth += 1
++        elif content[i] == ")":
++            depth -= 1
++            if depth == 0:
++                return content[start : i + 1]
++    raise AssertionError("unterminated instance")
++
++
++@pytest.fixture
++def loader():
++    from commands.dynamic_symbol_loader import DynamicSymbolLoader
++
++    return DynamicSymbolLoader()
++
++
++@pytest.fixture
++def sch(tmp_path):
++    path = tmp_path / "lab.kicad_sch"
++    path.write_text(SCHEMATIC, encoding="utf-8")
++    return path
++
++
++@pytest.mark.unit
++class TestPlacementCopiesLibraryFields:
++    def _place(self, loader, sch, **kw):
++        loader.create_component_instance(
++            sch, "Lab", "22 uF 100V", reference="C1", x=100.33, y=50.8, **kw
++        )
++        return _instance_block(sch.read_text(encoding="utf-8"))
++
++    def test_value_comes_from_library_when_omitted(self, loader, sch):
++        assert _props(self._place(loader, sch))["Value"] == "22 uF"
++
++    def test_symbol_name_as_value_becomes_library_value(self, loader, sch):
++        block = self._place(loader, sch, value="22 uF 100V")
++        assert _props(block)["Value"] == "22 uF"
++
++    def test_explicit_value_still_wins(self, loader, sch):
++        assert _props(self._place(loader, sch, value="47 uF"))["Value"] == "47 uF"
++
++    def test_every_library_field_is_copied(self, loader, sch):
++        props = _props(self._place(loader, sch))
++        assert props["Manufacturer Number"] == "C5750X7S2A226M"
++        assert props["Voltage Rating"] == "100V"
++        assert props["Saturation Current"] == "3A"
++        assert props["Footprint"] == "Lab:2220"
++        assert "ki_keywords" not in props
++
++    def test_visibility_and_show_name_follow_the_library(self, loader, sch):
++        block = self._place(loader, sch)
++
++        def field(name):
++            start = block.index(f'(property "{name}"')
++            return block[start : block.index("(effects", start)]
++
++        assert "(hide yes)" in field("Manufacturer Number")
++        assert "(hide yes)" not in field("Voltage Rating")
++        assert "(show_name no)" in field("Voltage Rating")
++        assert "(show_name yes)" in field("Saturation Current")
++
++    def test_library_y_up_offsets_are_drawn_y_down(self, loader, sch):
++        block = self._place(loader, sch)
++
++        def y(name):
++            m = re.search(rf'\(property "{name}" "[^"]*"\s+\(at [-\d.]+ ([-\d.]+)', block)
++            return float(m.group(1))
++
++        # Library: Reference above the body (+2.54), Value and rating below.
++        assert y("Reference") < 50.8 < y("Value") < y("Voltage Rating")
++
++
++@pytest.mark.unit
++class TestSyncInstanceFields:
++    def _old_schematic(self, sch):
++        content = sch.read_text(encoding="utf-8")
++        content = content.replace("  (sheet_instances", OLD_INSTANCE + "  (sheet_instances")
++        sch.write_text(content, encoding="utf-8")
++
++    def test_missing_fields_added_and_value_reset(self, loader, sch):
++        self._old_schematic(sch)
++        assert loader.sync_instance_fields(sch, "Lab", "22 uF 100V") == 1
++        props = _props(_instance_block(sch.read_text(encoding="utf-8")))
++        assert props["Value"] == "22 uF"
++        assert props["Voltage Rating"] == "100V"
++        assert props["Manufacturer Number"] == "C5750X7S2A226M"
++        assert props["Datasheet"] == "https://example.com/c.pdf"
++        assert props["Reference"] == "C1"
++        assert "ki_keywords" not in props
++
++    def test_rating_stacks_under_the_moved_value(self, loader, sch):
++        self._old_schematic(sch)
++        loader.sync_instance_fields(sch, "Lab", "22 uF 100V")
++        block = _instance_block(sch.read_text(encoding="utf-8"))
++        start = block.index('(property "Voltage Rating"')
++        rating = block[start : block.index("\n    )", start)]
++        # Value sits at (103, 60), justified right; the library puts the rating
++        # 1.778 mm under the Value.
++        assert "(at 103 61.778 0)" in rating
++        assert "(justify right)" in rating
++        assert "(hide yes)" not in rating
++
++    def _rating(self, sch):
++        block = _instance_block(sch.read_text(encoding="utf-8"))
++        start = block.index('(property "Voltage Rating"')
++        return block[start : block.index("\n    )", start)]
++
++    def test_rating_follows_the_value_angle_on_a_rotated_part(self, loader, sch):
++        self._old_schematic(sch)
++        content = sch.read_text(encoding="utf-8")
++        content = content.replace("(at 100 50 0) (unit 1)", "(at 100 50 90) (unit 1)")
++        content = content.replace("(at 103 60 0)", "(at 103 60 90)")
++        sch.write_text(content, encoding="utf-8")
++        loader.sync_instance_fields(sch, "Lab", "22 uF 100V")
++        assert "(at 103 61.778 90)" in self._rating(sch)
++
++    def test_rating_stacks_upward_when_the_value_is_above(self, loader, sch):
++        self._old_schematic(sch)
++        content = sch.read_text(encoding="utf-8").replace(
++            '(property "Reference" "C1" (at 103 49 0)', '(property "Reference" "C1" (at 103 70 0)'
++        )
++        sch.write_text(content, encoding="utf-8")
++        loader.sync_instance_fields(sch, "Lab", "22 uF 100V")
++        assert "(at 103 58.222 0)" in self._rating(sch)
++
++    def test_second_run_changes_nothing(self, loader, sch):
++        self._old_schematic(sch)
++        loader.sync_instance_fields(sch, "Lab", "22 uF 100V")
++        before = sch.read_text(encoding="utf-8")
++        assert loader.sync_instance_fields(sch, "Lab", "22 uF 100V") == 0
++        assert sch.read_text(encoding="utf-8") == before
++
++    def test_edited_value_is_kept(self, loader, sch):
++        self._old_schematic(sch)
++        content = sch.read_text(encoding="utf-8").replace(
++            '(property "Value" "22 uF 100V" (at 103', '(property "Value" "DNP" (at 103'
++        )
++        sch.write_text(content, encoding="utf-8")
++        loader.sync_instance_fields(sch, "Lab", "22 uF 100V")
++        assert _props(_instance_block(sch.read_text(encoding="utf-8")))["Value"] == "DNP"
++
++
++@pytest.mark.unit
++def test_kicad_path_variables_resolve_library_uris(tmp_path, monkeypatch):
++    """${METUPOWERLAB_SYMBOLS}-style variables live in kicad_common.json."""
++    import commands.dynamic_symbol_loader as dsl
++
++    config = tmp_path / "kicad" / "10.0"
++    config.mkdir(parents=True)
++    (config / "kicad_common.json").write_text(
++        json.dumps({"environment": {"vars": {"LAB_SYMBOLS": "D:/Lab/symbols"}}}),
++        encoding="utf-8",
++    )
++    monkeypatch.setattr(dsl.sys, "platform", "win32")
++    monkeypatch.setenv("APPDATA", str(tmp_path))
++    monkeypatch.delenv("LAB_SYMBOLS", raising=False)
++    resolved = dsl.DynamicSymbolLoader()._resolve_sym_uri("${LAB_SYMBOLS}/Lab.kicad_sym")
++    assert resolved == "D:/Lab/symbols/Lab.kicad_sym"
++
++
++@pytest.mark.unit
++class TestNetclassSchematicStyle:
++    def test_wire_style_and_patterns_written(self):
++        from commands.routing import (
++            apply_netclass_patterns_to_project_settings,
++            apply_netclass_to_project_settings,
++            parse_schematic_color,
++        )
++
++        data = {"net_settings": {"classes": [], "netclass_patterns": None}}
++        apply_netclass_to_project_settings(
++            data,
++            "GND",
++            {"wire_width": 12, "schematic_color": parse_schematic_color("blue")},
++        )
++        apply_netclass_patterns_to_project_settings(data, "GND", ["*GND*", "*GND*"])
++        cls = data["net_settings"]["classes"][0]
++        assert cls["wire_width"] == 12
++        assert cls["schematic_color"] == "rgba(0, 0, 255, 1.000)"
++        assert data["net_settings"]["netclass_patterns"] == [
++            {"netclass": "GND", "pattern": "*GND*"}
++        ]
++
++    @pytest.mark.parametrize(
++        "text,expected",
++        [
++            ("#FF0000", "rgba(255, 0, 0, 1.000)"),
++            ("rgb(0, 0, 255)", "rgba(0, 0, 255, 1.000)"),
++            ("red", "rgba(255, 0, 0, 1.000)"),
++        ],
++    )
++    def test_colour_formats(self, text, expected):
++        from commands.routing import parse_schematic_color
++
++        assert parse_schematic_color(text) == expected
++
++    def test_bad_colour_rejected(self):
++        from commands.routing import parse_schematic_color
++
++        with pytest.raises(ValueError):
++            parse_schematic_color("reddish")
+diff --git a/tests/test_schematic_batch.py b/tests/test_schematic_batch.py
+index 7fd9dfa..4cebe47 100644
+--- a/tests/test_schematic_batch.py
++++ b/tests/test_schematic_batch.py
+@@ -399,7 +399,11 @@ class TestReplaceFieldRestore:
+         fake_loader_cls = type(
+             "FakeLoader",
+             (),
+-            {"__init__": lambda self, **kw: None, "add_component": fake_add_component},
++            {
++                "__init__": lambda self, **kw: None,
++                "add_component": fake_add_component,
++                "_extract_lib_fields": lambda self, *a: [],
++            },
+         )
+         monkeypatch.setattr(sb, "DynamicSymbolLoader", fake_loader_cls)
+         fake_pins = types.SimpleNamespace(
+diff --git a/tests/test_update_symbol_from_library.py b/tests/test_update_symbol_from_library.py
+index 6119fce..57ba624 100644
+--- a/tests/test_update_symbol_from_library.py
++++ b/tests/test_update_symbol_from_library.py
+@@ -274,6 +274,7 @@ def _mock_loader(block):
+     loader = MagicMock()
+     loader.extract_symbol_from_library.return_value = block
+     loader.project_path = None
++    loader.sync_instance_fields.return_value = 0
+     return loader
+ 
+ 
+@@ -492,4 +493,4 @@ class TestUpdateSchematicSymbols:
+         ):
+             result = update_schematic_symbols(sch, "Device")
+ 
+-        assert result == {"updated": 0, "injected": 0, "skipped": 0}
++        assert result == {"updated": 0, "injected": 0, "skipped": 0, "fields_synced": 0}
