@@ -35,6 +35,11 @@ def library_context():
         f"Before creating or changing any library symbol, footprint or 3D model, read "
         f"{os.path.join(path, STANDARDS)} and follow it exactly (naming, fields, reference "
         "prefixes, footprint pad and drawing rules, symbol style).",
+        "Draw a microcontroller, DSP, FPGA or any IC with more than about 40 pins as a "
+        "multi-unit symbol, one unit per function (power and ground, clock and reset, debug, "
+        "analog, comparators, GPIO/peripheral banks), never as one big block.",
+        "One symbol per orderable part: its Value is the plain value (22 µF) and ratings, MPN "
+        "and distributor numbers are fields of their own, never part of the Value.",
         "Put new or changed parts in that clone: symbols/<Library>.kicad_sym, "
         "footprints/<Library>.pretty/<Footprint>.kicad_mod, 3D models under "
         "3dmodels/powerlab.3dshapes/<Category>/<Subcategory>/, referenced as "
