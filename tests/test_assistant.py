@@ -1665,6 +1665,25 @@ class McpPatchTests(unittest.TestCase):
         self.assertEqual(top_only["in_keepouts"], [])
         loose = module.check(path, {"minGap": 0.4})
         self.assertEqual(loose["spacing"], [])
+        # a through pad of a bottom part is copper on top too: a top pad on it is a short
+        tht = pcbnew.FOOTPRINT(board)
+        tht.SetReference("Q9")
+        tht.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(5), pcbnew.FromMM(10)))
+        via = pcbnew.PAD(tht)
+        via.SetAttribute(pcbnew.PAD_ATTRIB_PTH)
+        via.SetLayerSet(pcbnew.PAD.PTHMask())
+        via.SetShape(pcbnew.PAD_SHAPE_CIRCLE)
+        via.SetSize(pcbnew.F_Cu, pcbnew.VECTOR2I(pcbnew.FromMM(0.6), pcbnew.FromMM(0.6)))
+        via.SetDrillSize(pcbnew.VECTOR2I(pcbnew.FromMM(0.3), pcbnew.FromMM(0.3)))
+        via.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(5), pcbnew.FromMM(10)))
+        via.SetNumber("1")
+        via.SetNet(board.FindNet("B"))
+        tht.Add(via)
+        board.Add(tht)
+        tht.Flip(tht.GetPosition(), pcbnew.FLIP_DIRECTION_LEFT_RIGHT)
+        pcbnew.SaveBoard(path, board)
+        out = module.check(path, {"refs": ["C1"]})
+        self.assertEqual([(t["refs"], t["short"]) for t in out["on_through_pads"]], [(["C1", "Q9"], True)])
 
     def test_placement_is_measured_in_reviews(self):
         """Reviews measure spacing and keep-outs and look close up, instead of judging a

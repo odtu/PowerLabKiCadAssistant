@@ -1389,10 +1389,10 @@ index 0000000..36e1a36
 +        self.timings.append(time.time() - t0)
 diff --git a/python/commands/part_spacing.py b/python/commands/part_spacing.py
 new file mode 100644
-index 0000000..174c372
+index 0000000..48d3d6d
 --- /dev/null
 +++ b/python/commands/part_spacing.py
-@@ -0,0 +1,284 @@
+@@ -0,0 +1,323 @@
 +"""
 +check_part_spacing (PowerLab patch): part-to-part spacing and keep-out areas, measured.
 +
@@ -1400,6 +1400,8 @@ index 0000000..174c372
 +checks can't see parts packed pad to pad. This measures what a person checks by eye:
 +- the gap between the pads of neighbouring parts on the same side (the lab rule: at least
 +  1 mm, 2 mm round fine-pitch ICs), and parts whose bodies overlap;
++- parts on the through pads of a part on the other side (thermal vias in a drain or exposed
++  pad, THT pins): copper on both sides, so a short when the nets differ;
 +- parts inside keep-out areas: the board's rule areas that keep out footprints or pads
 +  (on the side they are on), and areas given in the call (a circle or ring, a polygon),
 +  each for the top, the bottom or both sides;
@@ -1598,6 +1600,40 @@ index 0000000..174c372
 +                                "required_mm": need, "at": at})
 +    spacing.sort(key=lambda s: s["gap_mm"] - s["required_mm"])
 +
++    # --- through pads of parts on the other side (thermal vias in a drain pad, a THT pin) --
++    # They are copper on this side too: a part's pad over one of another net is a short, and
++    # over one of its own net solder runs into it.
++    through = []
++    thru_pads = []
++    for rb in refs:
++        B = info[rb]
++        for p in B["fp"].Pads():
++            if p.GetAttribute() in (pcbnew.PAD_ATTRIB_PTH, pcbnew.PAD_ATTRIB_NPTH):
++                thru_pads.append((rb, B["side"], p))
++    for ra in refs:
++        A = info[ra]
++        if only and ra not in only:
++            continue
++        L = pcbnew.B_Cu if A["side"] == "B" else pcbnew.F_Cu
++        for rb, side_b, p in thru_pads:
++            if rb == ra or side_b == A["side"]:
++                continue
++            sp = pcbnew.SHAPE_POLY_SET()
++            p.TransformShapeToPolygon(sp, L, 0, ERR, pcbnew.ERROR_INSIDE)
++            for pa, sa in A["pads"]:
++                g = _gap(sa, sp)
++                if g < min_gap:
++                    same = pa.GetNetname() == p.GetNetname() and pa.GetNetname() != ""
++                    through.append({"refs": [ra, rb], "side": A["side"], "gap_mm": round(g, 2),
++                                    "same_net": same, "short": g <= 0 and not same,
++                                    "at": {"x": round(_mm(p.GetPosition().x), 2), "y": round(_mm(p.GetPosition().y), 2)}})
++    seen, uniq = set(), []
++    for t in sorted(through, key=lambda t: (not t["short"], t["gap_mm"])):
++        k = (tuple(t["refs"]), t["same_net"])
++        if k not in seen:
++            seen.add(k); uniq.append(t)
++    through = uniq
++
 +    # --- keep-out areas -------------------------------------------------------------------
 +    areas = []
 +    zones = list(board.Zones()) + [z for fp in board.GetFootprints() for z in fp.Zones()]
@@ -1645,9 +1681,11 @@ index 0000000..174c372
 +            if out.OutlineCount() and out.Area() / 1e12 > 0.005:
 +                edge.append({"ref": ref, "side": A["side"], "required_mm": edge_gap})
 +
-+    ok = not (spacing or bodies or inside or edge)
++    ok = not (spacing or bodies or inside or edge or through)
++    shorts = sum(1 for t in through if t["short"])
 +    summary = (f"{len(spacing)} part pairs closer than the spacing rule, {len(bodies)} with overlapping bodies, "
-+               f"{len(inside)} parts in keep-out areas" + (f", {len(edge)} too close to the edge" if edge_gap else ""))
++               f"{len(inside)} parts in keep-out areas" + (f", {len(edge)} too close to the edge" if edge_gap else "")
++               + (f", {len(through)} parts on through pads of the other side ({shorts} shorts)" if through else ""))
 +    return {
 +        "success": True,
 +        "ok": ok,
@@ -1660,6 +1698,7 @@ index 0000000..174c372
 +        "in_keepouts": inside[:MAX_LISTED],
 +        "in_keepouts_count": len(inside),
 +        "near_edge": edge[:MAX_LISTED],
++        "on_through_pads": through[:MAX_LISTED],
 +        "note": "Net-tie parts are skipped. Reads the saved board file: save in KiCad first.",
 +    }
 +
@@ -8261,7 +8300,7 @@ index 2738ebc..dfb3b1d 100644
  
        if (result.success) {
 diff --git a/src/tools/component.ts b/src/tools/component.ts
-index d3737bc..11ef06d 100644
+index d3737bc..5752b9d 100644
 --- a/src/tools/component.ts
 +++ b/src/tools/component.ts
 @@ -803,6 +803,54 @@ export function registerComponentTools(server: McpServer, callKicadScript: Comma
@@ -8287,7 +8326,7 @@ index d3737bc..11ef06d 100644
 +  });
 +  server.tool(
 +    "check_part_spacing",
-+    "Measure part placement the way a person checks it close up. Library parts often have no courtyard, so DRC and check_courtyard_overlaps can't see parts packed pad to pad; this measures the pad-to-pad gap between neighbouring parts on the same side (default at least 1 mm, 2 mm round fine-pitch ICs), parts whose bodies overlap, parts inside keep-out areas (the board's rule areas that keep out footprints or pads, on their sides, plus circles, rings or polygons given here for either side), and optionally pads too close to the board edge. Net-tie parts are skipped. Reads the saved board file, so save first. Run it after placing each block and in every review.",
++    "Measure part placement the way a person checks it close up. Library parts often have no courtyard, so DRC and check_courtyard_overlaps can't see parts packed pad to pad; this measures the pad-to-pad gap between neighbouring parts on the same side (default at least 1 mm, 2 mm round fine-pitch ICs), parts whose bodies overlap, parts on the through pads of a part on the other side (thermal vias in a MOSFET or regulator pad, THT pins: a short when the nets differ), parts inside keep-out areas (the board's rule areas that keep out footprints or pads, on their sides, plus circles, rings or polygons given here for either side), and optionally pads too close to the board edge. Net-tie parts are skipped. Reads the saved board file, so save first. Run it after placing each block and in every review.",
 +    {
 +      boardPath: z.string().optional().describe("Path to .kicad_pcb file (default: current board)"),
 +      minGap: z.number().optional().describe("Smallest pad-to-pad gap between parts in mm (default 1.0)"),
