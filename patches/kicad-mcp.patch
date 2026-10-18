@@ -1389,17 +1389,18 @@ index 0000000..36e1a36
 +        self.timings.append(time.time() - t0)
 diff --git a/python/commands/part_spacing.py b/python/commands/part_spacing.py
 new file mode 100644
-index 0000000..48d3d6d
+index 0000000..f7123e4
 --- /dev/null
 +++ b/python/commands/part_spacing.py
-@@ -0,0 +1,323 @@
+@@ -0,0 +1,328 @@
 +"""
 +check_part_spacing (PowerLab patch): part-to-part spacing and keep-out areas, measured.
 +
 +The lab's library parts have no courtyard (by design), so KiCad's DRC and the courtyard
 +checks can't see parts packed pad to pad. This measures what a person checks by eye:
-+- the gap between the pads of neighbouring parts on the same side (the lab rule: at least
-+  1 mm, 2 mm round fine-pitch ICs), and parts whose bodies overlap;
++- the gap between the pads of neighbouring parts on the same side (minGap: 1 mm for hand
++  soldering, 0.5 mm for machine assembly; fineGap, 2 mm, round fine-pitch ICs for parts not
++  connected to them), and parts whose bodies overlap;
 +- parts on the through pads of a part on the other side (thermal vias in a drain or exposed
 +  pad, THT pins): copper on both sides, so a short when the nets differ;
 +- parts inside keep-out areas: the board's rule areas that keep out footprints or pads
@@ -1566,8 +1567,9 @@ index 0000000..48d3d6d
 +    fps = [fp for fp in board.GetFootprints() if len(fp.Pads()) or fp.GraphicalItems()]
 +    info = {}
 +    for fp in fps:
++        nets = {p.GetNetname() for p in fp.Pads() if p.GetNetname() and "GND" not in p.GetNetname().upper()}
 +        info[fp.GetReference()] = {"fp": fp, "side": _side(fp), "pads": _pad_polys(fp), "body": _body(fp),
-+                                   "fine": fine_pitch(fp), "tie": _net_tie(fp)}
++                                   "fine": fine_pitch(fp), "tie": _net_tie(fp), "nets": nets}
 +    refs = sorted(info)
 +
 +    # --- spacing -------------------------------------------------------------------------
@@ -1580,7 +1582,10 @@ index 0000000..48d3d6d
 +                continue
 +            if frozenset((ra, rb)) in allow or A["tie"] or B["tie"]:
 +                continue
-+            need = fine_gap if (A["fine"] or B["fine"]) else min_gap
++            # round a fine-pitch IC, only parts it isn't connected to keep the wide gap: its own
++            # decoupling caps and pin passives belong right at its pins (design rules §3.2)
++            own = A["nets"] & B["nets"]
++            need = fine_gap if ((A["fine"] or B["fine"]) and not own) else min_gap
 +            ba, bb = A["fp"].GetBoundingBox(False), B["fp"].GetBoundingBox(False)
 +            if not ba.GetInflated(pcbnew.FromMM(need + 0.1)).Intersects(bb):
 +                continue
@@ -8300,7 +8305,7 @@ index 2738ebc..dfb3b1d 100644
  
        if (result.success) {
 diff --git a/src/tools/component.ts b/src/tools/component.ts
-index d3737bc..5752b9d 100644
+index d3737bc..b33bc28 100644
 --- a/src/tools/component.ts
 +++ b/src/tools/component.ts
 @@ -803,6 +803,54 @@ export function registerComponentTools(server: McpServer, callKicadScript: Comma
@@ -8326,11 +8331,11 @@ index d3737bc..5752b9d 100644
 +  });
 +  server.tool(
 +    "check_part_spacing",
-+    "Measure part placement the way a person checks it close up. Library parts often have no courtyard, so DRC and check_courtyard_overlaps can't see parts packed pad to pad; this measures the pad-to-pad gap between neighbouring parts on the same side (default at least 1 mm, 2 mm round fine-pitch ICs), parts whose bodies overlap, parts on the through pads of a part on the other side (thermal vias in a MOSFET or regulator pad, THT pins: a short when the nets differ), parts inside keep-out areas (the board's rule areas that keep out footprints or pads, on their sides, plus circles, rings or polygons given here for either side), and optionally pads too close to the board edge. Net-tie parts are skipped. Reads the saved board file, so save first. Run it after placing each block and in every review.",
++    "Measure part placement the way a person checks it close up. Library parts often have no courtyard, so DRC and check_courtyard_overlaps can't see parts packed pad to pad; this measures the pad-to-pad gap between neighbouring parts on the same side (minGap, default 1 mm for hand soldering, 0.5 mm for machine assembly; 2 mm round fine-pitch ICs for parts not connected to them), parts whose bodies overlap, parts on the through pads of a part on the other side (thermal vias in a MOSFET or regulator pad, THT pins: a short when the nets differ), parts inside keep-out areas (the board's rule areas that keep out footprints or pads, on their sides, plus circles, rings or polygons given here for either side), and optionally pads too close to the board edge. Net-tie parts are skipped. Reads the saved board file, so save first. Run it after placing each block and in every review.",
 +    {
 +      boardPath: z.string().optional().describe("Path to .kicad_pcb file (default: current board)"),
-+      minGap: z.number().optional().describe("Smallest pad-to-pad gap between parts in mm (default 1.0)"),
-+      fineGap: z.number().optional().describe("Smallest gap round fine-pitch ICs (pin pitch under 0.8 mm) in mm (default 2.0)"),
++      minGap: z.number().optional().describe("Smallest pad-to-pad gap between parts in mm (default 1.0, for hand soldering; 0.5 for machine assembly)"),
++      fineGap: z.number().optional().describe("Smallest gap round fine-pitch ICs (pin pitch under 0.8 mm) for parts not connected to them, in mm (default 2.0); the IC's own decoupling caps and pin passives only need minGap"),
 +      refs: z.array(z.string()).optional().describe("Only pairs that include one of these parts (default: all)"),
 +      allowPairs: z
 +        .array(z.array(z.string()).length(2))
