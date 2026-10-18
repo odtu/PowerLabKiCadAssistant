@@ -24,19 +24,20 @@ Say in one line that you're starting the review, e.g. "Layout done. Reviewing it
 1. **DRC.** One plain command:
    `kicad-cli pcb drc --severity-all --all-track-errors --schematic-parity --refill-zones --format json -o <views>\drc-NN.json <board>.kicad_pcb`
    (`<views>` is the views folder named in the panel instructions; NN is the round). Read the report with Read or Grep. Every error is a finding. Judge the warnings: some are real problems (silkscreen on pads), some are accepted (a footprint that differs from the library on purpose).
-2. **Views.** Render and look at them as `powerlab-visual-review` says: placement, each copper layer on its own, and the 3D top (bottom too if parts are there). Numbered names in the views folder.
-3. **Check.** Go block by block (power input, each converter, MCU, connectors, …) and write one short line per block as you go. For every rule that could apply:
+2. **Placement, measured.** `check_part_spacing` with the keep-out areas from `design-requirements.md` as `keepouts` (both sides unless the requirement allows one), and `edgeGap` when the requirements give an edge distance. The lab's parts have no courtyard, so DRC can't see crowding: this tool is the check. Every pair closer than the rule and every part in a keep-out is a finding.
+3. **Views.** Render and look at them as `powerlab-visual-review` says: placement, each copper layer on its own, and the 3D top (bottom too if parts are there). Then a close-up (`region`) of every block: crowding, pad entries and odd routing only show close up. Numbered names in the views folder.
+4. **Check.** Go block by block (power input, each converter, MCU, connectors, …) and write one short line per block as you go. For every rule that could apply:
    - **Measure, don't estimate.** Distances with `get_pad_position` / `get_component_pads`, widths and layers with `query_traces`, pours with `query_zones`, unrouted nets with `get_ratsnest`. The handbook's "estimate from the image" advice is for screenshots; you have the board.
    - Read the rule's **Exceptions** before you call something a finding.
    - Check the lab's final list (design rules §3.7) and `design-requirements.md` too.
-4. **Sort every finding** into one of two groups:
+5. **Sort every finding** into one of two groups:
    - **Fix it:** the fix is clear, local, within the lab rules and the requirements, and the kicad tools can do it. For example: move or rotate a part that isn't locked (a decoupling cap closer to its pin), add or widen a track, add vias on a power layer change, add stitching vias, refill zones, move silkscreen text off a pad, add the board info text, fix a net class.
    - **Needs the user:**
      - it needs information you don't have (current, voltage, enclosure, fab or cost choice);
      - it needs a decision: moving a connector, mounting hole, locked part or anything the user placed on purpose; changing the outline, layer count or stackup; changing the schematic, a part or a footprint; anything with a surcharge;
      - the tools can't do it (see below);
      - you tried to fix it twice and it didn't work.
-5. **Fix** the "fix it" findings, highest severity first, one block at a time. After each group: save, run the DRC again, and render the area you changed.
+6. **Fix** the "fix it" findings, highest severity first, one block at a time. After each group: save, run the DRC again, and render the area you changed.
    - If a fix adds DRC errors or makes something else worse, undo it (move the part back) and move the finding to "needs the user".
    - Keep a log for the report: round, rule, where, what you changed (with numbers, e.g. "C5 moved from 4.2 mm to 1.1 mm of U2 pin 7").
 

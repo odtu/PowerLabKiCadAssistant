@@ -27,6 +27,7 @@ A rendered view shows all of these at a glance. On the lab's ESC3Phase board, re
      - Bottom routing: `["B.Cu", "Edge.Cuts"]`. Copper pours hide tracks in combined views, so check layers one at a time.
      - Both layers together: `["F.Cu", "B.Cu", "Edge.Cuts"]`, for layer changes and crossings.
      - Use `width: 2400` for dense boards.
+     - **Close-ups:** add `region: {x, y, size}` (board mm; or `{x0, y0, x1, y1}`) to render one block, e.g. 15–25 mm round an IC. A whole-board view looks fine even when parts are packed pad to pad, so render a close-up of every block you place or route, and look at it.
    - **3D:** `kicad-cli pcb render --side top --output <views>/NN-3d-top.png <board>.kicad_pcb` (and `--side bottom`). Use it for placement, part bodies colliding, connectors facing outward, polarity marks, and missing 3D models.
 3. **Look at it** with the Read tool. The panel shows every image you open to the user too, so open the views you want them to see. Usually that's the final one per step, not every attempt.
 4. **Review it against the design rules** (`powerlab-pcb-design-rules`), and write down what you see in one or two short lines, e.g. "C5 is 4 mm from U1's VDD pin, move it closer":
@@ -36,7 +37,9 @@ A rendered view shows all of these at a glance. On the lab's ESC3Phase board, re
      - power, analog and digital sections apart, with power flowing one way
      - connectors at the edge, facing out
      - polarized parts aligned
-     - assembly spacing: ≥ 1 mm pad to pad, ≥ 2 mm around fine-pitch ICs, nothing on top of anything else
+     - assembly spacing: ≥ 1 mm pad to pad, ≥ 2 mm around fine-pitch ICs, nothing on top of anything else. **Measure it with `check_part_spacing`**, never judge it from a view: the lab's parts have no courtyard, so DRC and `check_courtyard_overlaps` report nothing. Every pair it lists is a finding. A decoupling cap may sit closer to its IC only where its pad joins the pin next to it directly and no other pin needs that room to escape; say so for each one.
+     - keep-out areas from `design-requirements.md` (an encoder or sensor area, a mechanical ring, a heatsink or connector footprint): pass them to `check_part_spacing` as `keepouts`, or draw them as rule areas. **Both sides**, unless the requirement explicitly allows parts on one side; a magnetic encoder, for one, is disturbed by switching parts and power copper on the other side too. If it's unclear, ask before placing.
+     - room between parts for the tracks and vias that must pass there (a bus, the escape from a fine-pitch IC); routing can't make room that placement didn't leave
      - silkscreen readable, not on pads
    - **Routing (§3.3–3.5):**
      - every power pad in its copper area; high-current paths short and wide

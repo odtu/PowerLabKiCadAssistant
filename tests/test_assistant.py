@@ -1546,6 +1546,139 @@ class McpPatchTests(unittest.TestCase):
         track = {"Type": "Track", "NetClass": "Default", "NetName": "IO2", "Width": 0.2, "Footprint": None}
         self.assertEqual(rules.clearance(track, pad("U1"), "F.Cu", 0.3), 0.3)
 
+    def test_powerlab_router_net_name_patterns(self):
+        """Rules that name nets: the patterns they compare NetName with, or None when a rule
+        uses NetName another way (then each net needs grids of its own)."""
+        module = types.ModuleType("rules")
+        exec(self.new_file("python/commands/powerlab_router/rules.py"), module.__dict__)
+        rules = module.Rules.parse('''(version 1)
+(rule "HV" (layer outer)
+	(constraint clearance (min 0.6mm))
+	(condition "(A.NetName == '+48V' || A.NetName == 'SW_*') && !(B.NetName == '+48V' || B.NetName == 'SW_*')"))
+''')
+        self.assertEqual(module.net_name_patterns(rules), ["+48V", "SW_*"])
+        same = module.Rules.parse('''(version 1)
+(rule "Same net" (constraint clearance (min 0.3mm)) (condition "A.NetName == B.NetName"))
+''')
+        self.assertIsNone(module.net_name_patterns(same))
+
+    def test_powerlab_router_patches(self):
+        """A net's copper is kept as a patch round it, not a full-board array per net and
+        layer (5.8 GB on a 4-layer board with 100 nets)."""
+        module = types.ModuleType("grid")
+        exec(self.new_file("python/commands/powerlab_router/grid.py"), module.__dict__)
+        g = module.Grid(0, 0, 30, 20, 0.1)
+        polys = [([(5, 5), (8, 5), (8, 7), (5, 7)], []), ([(20, 12), (21, 12), (21, 15)], [])]
+        full = g.raster(polys)
+        p = g.raster_box(polys)
+        self.assertTrue((p.full(g.ny, g.nx) == full).all())
+        self.assertLess(g.raster_box(polys[:1]).a.size, full.size / 50)  # one part's copper: a small box
+        self.assertIsNone(g.raster_box([]))
+        a, b = g.raster_box(polys[:1]), g.raster_box(polys[1:])
+        self.assertTrue((module.Patch.union(a, b).full(g.ny, g.nx) == full).all())
+
+    def test_powerlab_router_groups_nets_the_rules_treat_alike(self):
+        """Nets the rules can't tell apart share their grids: the 48 V nets of a rule that
+        lists them by name are one group, every other net another."""
+        try:
+            import pcbnew  # noqa: F401
+        except ImportError:
+            self.skipTest("needs KiCad's Python")
+        router, _pours = self._import_router()
+        from commands.powerlab_router.model import RouterBoard
+        from commands.powerlab_router.rules import Rules
+        nets = ["+48V", "SW_A", "SW_B", "IO1", "IO2", "IO3"]
+        board = self._router_board([(f"R{i}", (3 + 4 * i, 10), n) for i, n in enumerate(nets)], nets)
+        rules = Rules.parse('''(version 1)
+(rule "HV" (layer outer)
+	(constraint clearance (min 0.6mm))
+	(condition "(A.NetName == '+48V' || A.NetName == 'SW_A' || A.NetName == 'SW_B') && !(B.NetName == '+48V' || B.NetName == 'SW_A' || B.NetName == 'SW_B')"))
+''')
+        rb = RouterBoard(board, rules=rules)
+        groups = {n: rb.net_group(n) for n in nets}
+        self.assertEqual(len({groups[n] for n in ("+48V", "SW_A", "SW_B")}), 1)
+        self.assertEqual(len({groups[n] for n in ("IO1", "IO2", "IO3")}), 1)
+        self.assertNotEqual(groups["+48V"], groups["IO1"])
+        self.assertEqual(len({rb.key(n) for n in nets}), 2)
+
+    def test_powerlab_router_leaves_inner_planes_alone(self):
+        """On a 4-layer board an inner layer covered by a zone is a plane: no tracks on it,
+        vias pass through. An inner layer without one is routed."""
+        try:
+            import pcbnew
+        except ImportError:
+            self.skipTest("needs KiCad's Python")
+        router, _pours = self._import_router()
+        from commands.powerlab_router.model import RouterBoard
+        board = self._router_board([("R1", (5, 10), "SIG"), ("R2", (25, 10), "SIG")], ["SIG", "GND"])
+        board.SetCopperLayerCount(4)
+        layers = board.GetEnabledLayers()
+        layers.AddLayer(pcbnew.In1_Cu)
+        layers.AddLayer(pcbnew.In2_Cu)
+        board.SetEnabledLayers(layers)
+        plane = pcbnew.ZONE(board)
+        plane.SetLayer(pcbnew.In1_Cu)
+        plane.SetNet(board.FindNet("GND"))
+        for x, y in ((0, 0), (30, 0), (30, 20), (0, 20)):
+            plane.AppendCorner(pcbnew.VECTOR2I(pcbnew.FromMM(x), pcbnew.FromMM(y)), -1)
+        board.Add(plane)
+        rb = RouterBoard(board)
+        names = [rb.layer_names[L] for L in rb.layers]
+        self.assertEqual(names, ["F.Cu", "In2.Cu", "B.Cu"])
+        self.assertEqual([rb.layer_names[L] for L in rb.via_only_layers], ["In1.Cu"])
+        self.assertEqual([rb.layer_names[L] for L in RouterBoard(board, layers=["F.Cu", "B.Cu"]).layers],
+                         ["F.Cu", "B.Cu"])
+
+    def test_powerlab_router_time_limit(self):
+        """Past the time limit the connections left are reported for hand routing, and the
+        run still finishes with what it has."""
+        try:
+            import pcbnew  # noqa: F401
+        except ImportError:
+            self.skipTest("needs KiCad's Python")
+        router, _pours = self._import_router()
+        board = self._router_board([("R1", (5, 10), "SIG"), ("R2", (25, 10), "SIG")], ["SIG"])
+        report = router.Router(board, time_limit=1e-9).run(["SIG"])
+        self.assertEqual(report["routed"], 0)
+        self.assertEqual(report["time_limit_left"], 1)
+        self.assertEqual([c["reason"] for c in report["left"]], ["time limit"])
+
+    def test_part_spacing(self):
+        """check_part_spacing: parts closer than the lab's 1 mm pad to pad, and parts in a
+        keep-out area on either side, measured on the board (the lab parts have no courtyard)."""
+        try:
+            import pcbnew
+        except ImportError:
+            self.skipTest("needs KiCad's Python")
+        module = types.ModuleType("part_spacing")
+        exec(self.new_file("python/commands/part_spacing.py"), module.__dict__)
+        board = self._router_board([("C1", (5, 10), "A"), ("C2", (6.5, 10), "A"), ("C3", (15, 10), "B")], ["A", "B"])
+        c3 = [fp for fp in board.GetFootprints() if fp.GetReference() == "C3"][0]
+        c3.Flip(c3.GetPosition(), pcbnew.FLIP_DIRECTION_LEFT_RIGHT)
+        path = os.path.join(tempfile.mkdtemp(), "spacing.kicad_pcb")
+        pcbnew.SaveBoard(path, board)
+        out = module.check(path, {"keepouts": [{"name": "encoder", "center": {"x": 15, "y": 10}, "diameter": 6}]})
+        self.assertEqual([s["refs"] for s in out["spacing"]], [["C1", "C2"]])
+        self.assertAlmostEqual(out["spacing"][0]["gap_mm"], 0.5, places=2)
+        self.assertEqual([(k["ref"], k["side"]) for k in out["in_keepouts"]], [("C3", "B")])
+        top_only = module.check(path, {"keepouts": [{"center": {"x": 15, "y": 10}, "diameter": 6, "sides": ["F"]}]})
+        self.assertEqual(top_only["in_keepouts"], [])
+        loose = module.check(path, {"minGap": 0.4})
+        self.assertEqual(loose["spacing"], [])
+
+    def test_placement_is_measured_in_reviews(self):
+        """Reviews measure spacing and keep-outs and look close up, instead of judging a
+        whole-board view."""
+        patch = self.patch()
+        self.assertIn('"check_part_spacing"', patch)
+        self.assertIn('+      region: z', patch)
+        skills = os.path.join(ROOT, "skills")
+        for name in ("powerlab-design-review", "powerlab-visual-review", "powerlab-autoroute"):
+            with open(os.path.join(skills, name, "SKILL.md"), encoding="utf-8") as f:
+                self.assertIn("check_part_spacing", f.read(), name)
+        with open(os.path.join(skills, "powerlab-visual-review", "SKILL.md"), encoding="utf-8") as f:
+            self.assertIn("region", f.read())
+
     def test_powerlab_router_groups(self):
         """Milestone 1: nets sorted into the lab's routing order (§3.4)."""
         module = types.ModuleType("groups")
