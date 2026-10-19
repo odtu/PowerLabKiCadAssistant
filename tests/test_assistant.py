@@ -589,7 +589,8 @@ class DesignReviewTests(unittest.TestCase):
         for rule in ("**0.5 A per 0.3 mm via**", "**Ø 8 mm keepout**", "place the hot loop first",
                      "TVS and ESD diodes go at the connector", "Power input protection sits at the input connector",
                      "Gate return is Kelvin", "Current-sense shunts use Kelvin connections",
-                     "No copper on any layer under the antenna", "within about 2.5 mm of its pin"):
+                     "No copper on any layer under the antenna", "about 2.5 mm as the target",
+                     "Placement distances are targets, not limits", "Rotations follow the board"):
             self.assertIn(rule, rules)
         self.assertNotIn("0.4 mm via ≈ 1.5 A", rules)
         self.assertIn("## 4. Layout review handbook", rules)
@@ -1705,6 +1706,10 @@ class McpPatchTests(unittest.TestCase):
         self.assertEqual([(k["ref"], k["side"]) for k in out["in_keepouts"]], [("C3", "B")])
         top_only = module.check(path, {"keepouts": [{"center": {"x": 15, "y": 10}, "diameter": 6, "sides": ["F"]}]})
         self.assertEqual(top_only["in_keepouts"], [])
+        # passives the requirements let in (e.g. under an encoder ring) aren't hits
+        allowed = module.check(path, {"keepouts": [{"center": {"x": 15, "y": 10}, "diameter": 6, "allow": ["c"]}]})
+        self.assertEqual(allowed["in_keepouts"], [])
+        self.assertEqual(allowed["rules"]["keepout_areas"][-1]["allowed"], ["C"])
         loose = module.check(path, {"minGap": 0.4})
         self.assertEqual(loose["spacing"], [])
         # a through pad of a bottom part is copper on top too: a top pad on it is a short
