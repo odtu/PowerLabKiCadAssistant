@@ -589,7 +589,8 @@ class DesignReviewTests(unittest.TestCase):
         for rule in ("**0.5 A per 0.3 mm via**", "**Ø 8 mm keepout**", "place the hot loop first",
                      "TVS and ESD diodes go at the connector", "Power input protection sits at the input connector",
                      "Gate return is Kelvin", "Current-sense shunts use Kelvin connections",
-                     "No copper on any layer under the antenna", "within about 2.5 mm of its pin"):
+                     "No copper on any layer under the antenna", "about 2.5 mm as the target",
+                     "Placement distances are targets, not limits", "Rotations follow the board"):
             self.assertIn(rule, rules)
         self.assertNotIn("0.4 mm via ≈ 1.5 A", rules)
         self.assertIn("## 4. Layout review handbook", rules)
@@ -917,6 +918,48 @@ class McpPatchTests(unittest.TestCase):
         self.assertIn('+        "move_footprint_text": "_ipc_move_footprint_text",', patch)
         self.assertIn("def _ipc_move_footprint_text", patch)
         self.assertIn("+            board.update_items([target_fp])\n+            board.push_commit(commit, f\"Moved {reference} {field} text\")", patch)
+
+    def test_schematic_text_can_be_deleted_and_moved(self):
+        """Issue #60: free text could be added and listed, but not deleted or moved."""
+        patch = self.patch()
+        for tool in ("delete_schematic_text", "move_schematic_text"):
+            self.assertIn(f'+            "{tool}": self._handle_{tool},', patch)
+            self.assertIn(f'+    "{tool}",', patch)  # the TypeScript tool
+        self.assertIn("def delete_text(", patch)
+        self.assertIn("def move_text(", patch)
+
+    def test_open_board_resolves_symbol_libraries_once(self):
+        """Issue #61: open_board took ~27 s with 300+ symbol libraries and timed out at 30 s."""
+        patch = self.patch()
+        self.assertIn('env_vars = getattr(self, "_uri_env_vars", None)', patch)
+        self.assertIn('+  "open_board", // PowerLab patch (#61)', patch)
+
+    def test_junctions_count_wires_running_through(self):
+        """Issue #62: every wire edit dropped the junctions of T's drawn in KiCad."""
+        patch = self.patch()
+        self.assertIn("def _through_wire_counter(", patch)
+        self.assertIn("return ends + 2 * through(iu) if ends else 0", patch)
+
+    def test_live_board_edits_that_need_a_library_footprint(self):
+        """Issues #63, #65, #67: these changed only the tool's copy with KiCad open."""
+        patch = self.patch()
+        self.assertIn("LIVE_VIA_FILE_COMMANDS = {", patch)
+        for command in ("place_component", "add_mounting_hole", "sync_schematic_to_board",
+                        "edit_component", "replace_component"):
+            self.assertIn(f'+        "{command}",\n', patch)
+        self.assertIn("kicad_board.revert()", patch)
+        self.assertIn('"replace_component": self._handle_replace_component', patch)
+        self.assertIn("cli_nets = self._kicad_cli_pad_net_map(schematic_path)", patch)
+        self.assertIn("nets_renamed.append(", patch)
+        self.assertIn('describe("Net for the pad of a plated hole', patch)
+
+    def test_parts_flip_and_circles_draw_in_live_mode(self):
+        """Issues #64, #66, #68."""
+        patch = self.patch()
+        self.assertIn("def flip_component(self, reference: str, layer: str)", patch)
+        self.assertIn('self._kicad.run_action("pcbnew.InteractiveEdit.flip")', patch)
+        self.assertIn("return self._ipc_add_outline_circle(params)", patch)
+        self.assertIn("circle.radius_point = Vector2.from_xy(", patch)
 
     def test_pour_nets_are_left_out_of_routing(self):
         module = types.ModuleType("pour_nets")
@@ -1545,6 +1588,162 @@ class McpPatchTests(unittest.TestCase):
         # rules without a clearance don't change clearances
         track = {"Type": "Track", "NetClass": "Default", "NetName": "IO2", "Width": 0.2, "Footprint": None}
         self.assertEqual(rules.clearance(track, pad("U1"), "F.Cu", 0.3), 0.3)
+
+    def test_powerlab_router_net_name_patterns(self):
+        """Rules that name nets: the patterns they compare NetName with, or None when a rule
+        uses NetName another way (then each net needs grids of its own)."""
+        module = types.ModuleType("rules")
+        exec(self.new_file("python/commands/powerlab_router/rules.py"), module.__dict__)
+        rules = module.Rules.parse('''(version 1)
+(rule "HV" (layer outer)
+	(constraint clearance (min 0.6mm))
+	(condition "(A.NetName == '+48V' || A.NetName == 'SW_*') && !(B.NetName == '+48V' || B.NetName == 'SW_*')"))
+''')
+        self.assertEqual(module.net_name_patterns(rules), ["+48V", "SW_*"])
+        same = module.Rules.parse('''(version 1)
+(rule "Same net" (constraint clearance (min 0.3mm)) (condition "A.NetName == B.NetName"))
+''')
+        self.assertIsNone(module.net_name_patterns(same))
+
+    def test_powerlab_router_patches(self):
+        """A net's copper is kept as a patch round it, not a full-board array per net and
+        layer (5.8 GB on a 4-layer board with 100 nets)."""
+        module = types.ModuleType("grid")
+        exec(self.new_file("python/commands/powerlab_router/grid.py"), module.__dict__)
+        g = module.Grid(0, 0, 30, 20, 0.1)
+        polys = [([(5, 5), (8, 5), (8, 7), (5, 7)], []), ([(20, 12), (21, 12), (21, 15)], [])]
+        full = g.raster(polys)
+        p = g.raster_box(polys)
+        self.assertTrue((p.full(g.ny, g.nx) == full).all())
+        self.assertLess(g.raster_box(polys[:1]).a.size, full.size / 50)  # one part's copper: a small box
+        self.assertIsNone(g.raster_box([]))
+        a, b = g.raster_box(polys[:1]), g.raster_box(polys[1:])
+        self.assertTrue((module.Patch.union(a, b).full(g.ny, g.nx) == full).all())
+
+    def test_powerlab_router_groups_nets_the_rules_treat_alike(self):
+        """Nets the rules can't tell apart share their grids: the 48 V nets of a rule that
+        lists them by name are one group, every other net another."""
+        try:
+            import pcbnew  # noqa: F401
+        except ImportError:
+            self.skipTest("needs KiCad's Python")
+        router, _pours = self._import_router()
+        from commands.powerlab_router.model import RouterBoard
+        from commands.powerlab_router.rules import Rules
+        nets = ["+48V", "SW_A", "SW_B", "IO1", "IO2", "IO3"]
+        board = self._router_board([(f"R{i}", (3 + 4 * i, 10), n) for i, n in enumerate(nets)], nets)
+        rules = Rules.parse('''(version 1)
+(rule "HV" (layer outer)
+	(constraint clearance (min 0.6mm))
+	(condition "(A.NetName == '+48V' || A.NetName == 'SW_A' || A.NetName == 'SW_B') && !(B.NetName == '+48V' || B.NetName == 'SW_A' || B.NetName == 'SW_B')"))
+''')
+        rb = RouterBoard(board, rules=rules)
+        groups = {n: rb.net_group(n) for n in nets}
+        self.assertEqual(len({groups[n] for n in ("+48V", "SW_A", "SW_B")}), 1)
+        self.assertEqual(len({groups[n] for n in ("IO1", "IO2", "IO3")}), 1)
+        self.assertNotEqual(groups["+48V"], groups["IO1"])
+        self.assertEqual(len({rb.key(n) for n in nets}), 2)
+
+    def test_powerlab_router_leaves_inner_planes_alone(self):
+        """On a 4-layer board an inner layer covered by a zone is a plane: no tracks on it,
+        vias pass through. An inner layer without one is routed."""
+        try:
+            import pcbnew
+        except ImportError:
+            self.skipTest("needs KiCad's Python")
+        router, _pours = self._import_router()
+        from commands.powerlab_router.model import RouterBoard
+        board = self._router_board([("R1", (5, 10), "SIG"), ("R2", (25, 10), "SIG")], ["SIG", "GND"])
+        board.SetCopperLayerCount(4)
+        layers = board.GetEnabledLayers()
+        layers.AddLayer(pcbnew.In1_Cu)
+        layers.AddLayer(pcbnew.In2_Cu)
+        board.SetEnabledLayers(layers)
+        plane = pcbnew.ZONE(board)
+        plane.SetLayer(pcbnew.In1_Cu)
+        plane.SetNet(board.FindNet("GND"))
+        for x, y in ((0, 0), (30, 0), (30, 20), (0, 20)):
+            plane.AppendCorner(pcbnew.VECTOR2I(pcbnew.FromMM(x), pcbnew.FromMM(y)), -1)
+        board.Add(plane)
+        rb = RouterBoard(board)
+        names = [rb.layer_names[L] for L in rb.layers]
+        self.assertEqual(names, ["F.Cu", "In2.Cu", "B.Cu"])
+        self.assertEqual([rb.layer_names[L] for L in rb.via_only_layers], ["In1.Cu"])
+        self.assertEqual([rb.layer_names[L] for L in RouterBoard(board, layers=["F.Cu", "B.Cu"]).layers],
+                         ["F.Cu", "B.Cu"])
+
+    def test_powerlab_router_time_limit(self):
+        """Past the time limit the connections left are reported for hand routing, and the
+        run still finishes with what it has."""
+        try:
+            import pcbnew  # noqa: F401
+        except ImportError:
+            self.skipTest("needs KiCad's Python")
+        router, _pours = self._import_router()
+        board = self._router_board([("R1", (5, 10), "SIG"), ("R2", (25, 10), "SIG")], ["SIG"])
+        report = router.Router(board, time_limit=1e-9).run(["SIG"])
+        self.assertEqual(report["routed"], 0)
+        self.assertEqual(report["time_limit_left"], 1)
+        self.assertEqual([c["reason"] for c in report["left"]], ["time limit"])
+
+    def test_part_spacing(self):
+        """check_part_spacing: parts closer than the lab's 1 mm pad to pad, and parts in a
+        keep-out area on either side, measured on the board (the lab parts have no courtyard)."""
+        try:
+            import pcbnew
+        except ImportError:
+            self.skipTest("needs KiCad's Python")
+        module = types.ModuleType("part_spacing")
+        exec(self.new_file("python/commands/part_spacing.py"), module.__dict__)
+        board = self._router_board([("C1", (5, 10), "A"), ("C2", (6.5, 10), "A"), ("C3", (15, 10), "B")], ["A", "B"])
+        c3 = [fp for fp in board.GetFootprints() if fp.GetReference() == "C3"][0]
+        c3.Flip(c3.GetPosition(), pcbnew.FLIP_DIRECTION_LEFT_RIGHT)
+        path = os.path.join(tempfile.mkdtemp(), "spacing.kicad_pcb")
+        pcbnew.SaveBoard(path, board)
+        out = module.check(path, {"keepouts": [{"name": "encoder", "center": {"x": 15, "y": 10}, "diameter": 6}]})
+        self.assertEqual([s["refs"] for s in out["spacing"]], [["C1", "C2"]])
+        self.assertAlmostEqual(out["spacing"][0]["gap_mm"], 0.5, places=2)
+        self.assertEqual([(k["ref"], k["side"]) for k in out["in_keepouts"]], [("C3", "B")])
+        top_only = module.check(path, {"keepouts": [{"center": {"x": 15, "y": 10}, "diameter": 6, "sides": ["F"]}]})
+        self.assertEqual(top_only["in_keepouts"], [])
+        # passives the requirements let in (e.g. under an encoder ring) aren't hits
+        allowed = module.check(path, {"keepouts": [{"center": {"x": 15, "y": 10}, "diameter": 6, "allow": ["c"]}]})
+        self.assertEqual(allowed["in_keepouts"], [])
+        self.assertEqual(allowed["rules"]["keepout_areas"][-1]["allowed"], ["C"])
+        loose = module.check(path, {"minGap": 0.4})
+        self.assertEqual(loose["spacing"], [])
+        # a through pad of a bottom part is copper on top too: a top pad on it is a short
+        tht = pcbnew.FOOTPRINT(board)
+        tht.SetReference("Q9")
+        tht.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(5), pcbnew.FromMM(10)))
+        via = pcbnew.PAD(tht)
+        via.SetAttribute(pcbnew.PAD_ATTRIB_PTH)
+        via.SetLayerSet(pcbnew.PAD.PTHMask())
+        via.SetShape(pcbnew.PAD_SHAPE_CIRCLE)
+        via.SetSize(pcbnew.F_Cu, pcbnew.VECTOR2I(pcbnew.FromMM(0.6), pcbnew.FromMM(0.6)))
+        via.SetDrillSize(pcbnew.VECTOR2I(pcbnew.FromMM(0.3), pcbnew.FromMM(0.3)))
+        via.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(5), pcbnew.FromMM(10)))
+        via.SetNumber("1")
+        via.SetNet(board.FindNet("B"))
+        tht.Add(via)
+        board.Add(tht)
+        tht.Flip(tht.GetPosition(), pcbnew.FLIP_DIRECTION_LEFT_RIGHT)
+        pcbnew.SaveBoard(path, board)
+        out = module.check(path, {"refs": ["C1"]})
+        self.assertEqual([(t["refs"], t["short"]) for t in out["on_through_pads"]], [(["C1", "Q9"], True)])
+
+    def test_placement_is_measured_in_reviews(self):
+        """Reviews measure spacing and keep-outs and look close up, instead of judging a
+        whole-board view."""
+        patch = self.patch()
+        self.assertIn('"check_part_spacing"', patch)
+        self.assertIn('+      region: z', patch)
+        skills = os.path.join(ROOT, "skills")
+        for name in ("powerlab-design-review", "powerlab-visual-review", "powerlab-autoroute"):
+            with open(os.path.join(skills, name, "SKILL.md"), encoding="utf-8") as f:
+                self.assertIn("check_part_spacing", f.read(), name)
+        with open(os.path.join(skills, "powerlab-visual-review", "SKILL.md"), encoding="utf-8") as f:
+            self.assertIn("region", f.read())
 
     def test_powerlab_router_groups(self):
         """Milestone 1: nets sorted into the lab's routing order (§3.4)."""

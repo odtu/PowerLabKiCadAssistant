@@ -27,17 +27,21 @@ A rendered view shows all of these at a glance. On the lab's ESC3Phase board, re
      - Bottom routing: `["B.Cu", "Edge.Cuts"]`. Copper pours hide tracks in combined views, so check layers one at a time.
      - Both layers together: `["F.Cu", "B.Cu", "Edge.Cuts"]`, for layer changes and crossings.
      - Use `width: 2400` for dense boards.
+     - **Close-ups:** add `region: {x, y, size}` (board mm; or `{x0, y0, x1, y1}`) to render one block, e.g. 15–25 mm round an IC. A whole-board view looks fine even when parts are packed pad to pad, so render a close-up of every block you place or route, and look at it.
    - **3D:** `kicad-cli pcb render --side top --output <views>/NN-3d-top.png <board>.kicad_pcb` (and `--side bottom`). Use it for placement, part bodies colliding, connectors facing outward, polarity marks, and missing 3D models.
 3. **Look at it** with the Read tool. The panel shows every image you open to the user too, so open the views you want them to see. Usually that's the final one per step, not every attempt.
 4. **Review it against the design rules** (`powerlab-pcb-design-rules`), and write down what you see in one or two short lines, e.g. "C5 is 4 mm from U1's VDD pin, move it closer":
    - **Placement (§3.2):**
+     - every part where its connections are shortest, packed as tightly as assembly allows; passives on the other side under their pins where that's shorter; blocks that talk to each other stacked on the two sides. Distances in the rules are targets: closer is better, a little further is fine when closer would push other parts away
      - decoupling caps right at their IC pins, smallest value closest
      - crystal at the MCU
      - power, analog and digital sections apart, with power flowing one way
      - connectors at the edge, facing out
-     - polarized parts aligned
-     - assembly spacing: ≥ 1 mm pad to pad, ≥ 2 mm around fine-pitch ICs, nothing on top of anything else
-     - silkscreen readable, not on pads
+     - polarized parts aligned; rotations at 0/90/180/270 on a rectangular board, following the circle on a round one
+     - **passives placed by their connections (§3.2):** each beside the pin it serves, rows in pin order, pads facing their connections, chains in signal order, decap supply pad to the VDD pin and GND pad to its GND. In the close-up, follow every airwire: one that crosses another inside a block, or runs past a part to reach its pin, means a 180° turn or a swap. Measure with `get_ratsnest` / `estimate_airwire_lengths`.
+     - assembly spacing and keep-outs (§3.2): **measure with `check_part_spacing`**, never judge them from a view; the lab's parts have no courtyard, so DRC reports nothing. Pass `minGap` 0.5 for machine assembly (1.0 hand soldering, per `design-requirements.md`) and the requirement keep-outs as `keepouts` (both sides unless the requirement allows one; `allow` for the parts the requirement lets inside, e.g. `["R", "C"]`). Every pair, keep-out hit and through-pad hit it lists is a finding.
+     - room between parts for the tracks and vias that must pass there (a bus, the escape from a fine-pitch IC); routing can't make room that placement didn't leave
+     - silkscreen readable, not on pads (checked last: fit the labels after the placement, never move parts for them)
    - **Routing (§3.3–3.5):**
      - every power pad in its copper area; high-current paths short and wide
      - small gate-drive and switching loops, return path directly beside or below

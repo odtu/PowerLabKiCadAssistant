@@ -27,7 +27,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 diff --git a/README.md b/README.md
-index 831a2f3..a352c15 100644
+index 831a2f3..aabca60 100644
 --- a/README.md
 +++ b/README.md
 @@ -23,8 +23,8 @@ The [Model Context Protocol](https://modelcontextprotocol.io/) is an open standa
@@ -36,8 +36,8 @@ index 831a2f3..a352c15 100644
  
 -- 233 tools registered, 173 of them indexed for keyword discovery
 -- 173 tools across 16 categories with JSON Schema validation
-+- 237 tools registered, 177 of them indexed for keyword discovery
-+- 177 tools across 16 categories with JSON Schema validation
++- 239 tools registered, 180 of them indexed for keyword discovery
++- 180 tools across 16 categories with JSON Schema validation
  - Keyword tool discovery via `search_tools` / `get_category_tools`
  - 23 dynamic resources exposing project state
  - Complete schematic workflow with 65 tools (authoring, batch edits, hierarchy, layout) and dynamic symbol loading (~10,000 symbols)
@@ -46,7 +46,7 @@ index 831a2f3..a352c15 100644
  - **32 essential tools** that `search_tools` surfaces first, covering the
    operations nearly every session needs
 -- **173 tools indexed across 16 categories** (board, component, export, drc,
-+- **177 tools indexed across 16 categories** (board, component, export, drc,
++- **180 tools indexed across 16 categories** (board, component, export, drc,
    schematic, library, symbol_library, symbol_pins, schematic_hierarchy,
    schematic_layout, schematic_batch, routing, autoroute, validation,
    parts-registry, digikey)
@@ -55,11 +55,11 @@ index 831a2f3..a352c15 100644
  ## Available Tools
  
 -The server exposes every tool directly, so your assistant can call any of them without a discovery step -- just ask for what you want to accomplish. **173 tools** are additionally indexed into 16 functional categories, so `search_tools` and `get_category_tools` can find one by keyword.
-+The server exposes every tool directly, so your assistant can call any of them without a discovery step -- just ask for what you want to accomplish. **177 tools** are additionally indexed into 16 functional categories, so `search_tools` and `get_category_tools` can find one by keyword.
++The server exposes every tool directly, so your assistant can call any of them without a discovery step -- just ask for what you want to accomplish. **180 tools** are additionally indexed into 16 functional categories, so `search_tools` and `get_category_tools` can find one by keyword.
  
  The lists below are a curated tour of the most useful tools, not the full set.
 -For the complete, generated reference of all 233 tools -- including how each one
-+For the complete, generated reference of all 237 tools -- including how each one
++For the complete, generated reference of all 239 tools -- including how each one
  is discovered -- see [Tool Inventory](docs/TOOL_INVENTORY.md).
  
  ### Project Management (12 tools)
@@ -70,7 +70,7 @@ index 831a2f3..a352c15 100644
 -- **Capabilities:** Tools (233), Resources (23)
 -- **Tool discovery:** keyword search catalogue indexing 173 tools in 16 categories
 +- **Capabilities:** Tools (237), Resources (23)
-+- **Tool discovery:** keyword search catalogue indexing 177 tools in 16 categories
++- **Tool discovery:** keyword search catalogue indexing 180 tools in 16 categories
  - **Error Handling:** Standard JSON-RPC error codes
  
  ### TypeScript Server (`src/`)
@@ -79,7 +79,7 @@ index 831a2f3..a352c15 100644
  See [STATUS_SUMMARY.md](docs/STATUS_SUMMARY.md) for the complete status matrix and [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
  
 -**Working Features (233 tools):**
-+**Working Features (237 tools):**
++**Working Features (239 tools):**
  
  - Project management with snapshot checkpointing
  - Complete board design (outline, layers, zones, mounting holes, text, SVG logos)
@@ -145,16 +145,91 @@ index 0000000..ef01ec3
 +    except OSError:
 +        pass
 +    return {"success": True, "restored_from": source, "saved_before_run": taken}
+diff --git a/python/commands/board/outline.py b/python/commands/board/outline.py
+index 3caa343..f488fdc 100644
+--- a/python/commands/board/outline.py
++++ b/python/commands/board/outline.py
+@@ -423,7 +423,8 @@ class BoardOutlineCommands:
+             position = params.get("position")
+             diameter = params.get("diameter")
+             pad_diameter = params.get("padDiameter")
+-            plated = params.get("plated", False)
++            net_name = params.get("net")  # PowerLab patch (#63)
++            plated = bool(params.get("plated", False) or net_name)
+             footprint_lib_id = params.get("footprintLibId")
+ 
+             if not position or not diameter:
+@@ -493,6 +494,13 @@ class BoardOutlineCommands:
+                 mask_only.AddLayer(pcbnew.B_Mask)
+                 pad.SetLayerSet(mask_only)
+ 
++            if net_name:
++                net = self.board.FindNet(net_name)
++                if net is None:
++                    net = pcbnew.NETINFO_ITEM(self.board, net_name)
++                    self.board.Add(net)
++                pad.SetNet(net)
++
+             module.Add(pad)
+ 
+             # Position the mounting hole
+@@ -509,6 +517,8 @@ class BoardOutlineCommands:
+                     "diameter": diameter,
+                     "padDiameter": pad_diameter or diameter + 1,
+                     "plated": plated,
++                    "net": net_name,
++                    "reference": f"MH{next_num}",
+                     "footprintLibId": f"{lib_name}:{fp_name}",
+                 },
+             }
 diff --git a/python/commands/board/view.py b/python/commands/board/view.py
-index 16a4915..cef014b 100644
+index 16a4915..922b826 100644
 --- a/python/commands/board/view.py
 +++ b/python/commands/board/view.py
-@@ -15,7 +15,12 @@ from utils.kicad_cli import kicad_cli_not_found_message, resolve_kicad_cli
+@@ -15,7 +15,50 @@ from utils.kicad_cli import kicad_cli_not_found_message, resolve_kicad_cli
  logger = logging.getLogger("kicad_interface")
  
  
 -def _svg_to_png(svg_path: str, width: int, height: int) -> Optional[bytes]:
 +BOARD_BACKGROUND = (0, 16, 35)  # KiCad's default PCB editor background (PowerLab patch)
++
++
++def _crop_svg(svg_path: str, pcb_path: str, region: Dict[str, Any]) -> Optional[str]:
++    """Narrow kicad-cli's SVG (page-size-mode 2) to `region` in board mm: {x0, y0, x1, y1},
++    or {x, y, size} for a square round a point. The SVG's frame is the board's edge box,
++    centred on it (PowerLab patch). Returns an error text, or None."""
++    import re
++
++    try:
++        if "size" in region:
++            half = float(region["size"]) / 2
++            x0, y0 = float(region["x"]) - half, float(region["y"]) - half
++            x1, y1 = float(region["x"]) + half, float(region["y"]) + half
++        else:
++            x0, y0, x1, y1 = (float(region[k]) for k in ("x0", "y0", "x1", "y1"))
++    except (KeyError, TypeError, ValueError):
++        return "region needs x0, y0, x1, y1 (mm), or x, y and size"
++    x0, x1 = min(x0, x1), max(x0, x1)
++    y0, y1 = min(y0, y1), max(y0, y1)
++    if x1 - x0 < 0.5 or y1 - y0 < 0.5:
++        return "region is smaller than 0.5 mm"
++    with open(svg_path, encoding="utf-8") as fh:
++        text = fh.read()
++    m = re.search(r'viewBox="\s*([-0-9.]+)\s+([-0-9.]+)\s+([-0-9.]+)\s+([-0-9.]+)\s*"', text)
++    if not m:
++        return "the SVG has no viewBox"
++    vx, vy, vw, vh = (float(g) for g in m.groups())
++    bb = pcbnew.LoadBoard(pcb_path).GetBoardEdgesBoundingBox()
++    cx, cy = pcbnew.ToMM(bb.GetCenter().x), pcbnew.ToMM(bb.GetCenter().y)
++    ox, oy = cx - vw / 2 - vx, cy - vh / 2 - vy  # board mm at the SVG's user-space origin
++    w, h = x1 - x0, y1 - y0
++    head = text[:m.end()]
++    head = re.sub(r'width="[0-9.]+mm"', f'width="{w:.4f}mm"', head, count=1)
++    head = re.sub(r'height="[0-9.]+mm"', f'height="{h:.4f}mm"', head, count=1)
++    head = head[:head.rfind("viewBox=")] + f'viewBox="{x0 - ox:.4f} {y0 - oy:.4f} {w:.4f} {h:.4f}"'
++    with open(svg_path, "w", encoding="utf-8") as fh:
++        fh.write(head + text[m.end():])
++    return None
 +
 +
 +def _svg_to_png(
@@ -163,7 +238,7 @@ index 16a4915..cef014b 100644
      """Convert SVG to PNG. No cffi dependency.
  
      Priority:
-@@ -32,8 +37,17 @@ def _svg_to_png(svg_path: str, width: int, height: int) -> Optional[bytes]:
+@@ -32,8 +75,17 @@ def _svg_to_png(svg_path: str, width: int, height: int) -> Optional[bytes]:
  
          doc = fitz.open(svg_path)
          page = doc[0]
@@ -183,7 +258,7 @@ index 16a4915..cef014b 100644
      except Exception:
          pass
  
-@@ -182,6 +196,10 @@ class BoardViewCommands:
+@@ -182,6 +234,10 @@ class BoardViewCommands:
                  "Edge.Cuts",
              ]
              response_mode = params.get("responseMode", "inline")
@@ -194,7 +269,7 @@ index 16a4915..cef014b 100644
  
              kicad_cli = resolve_kicad_cli()
              if not kicad_cli:
-@@ -206,7 +224,7 @@ class BoardViewCommands:
+@@ -206,7 +262,7 @@ class BoardViewCommands:
                      "--output",
                      output_svg,
                      "--mode-single",
@@ -203,7 +278,22 @@ index 16a4915..cef014b 100644
                      # Render the board, not the drawing sheet. kicad-cli's
                      # default (page-size-mode 0) plots only the area inside the
                      # sheet, so board geometry past the page edge is left out.
-@@ -256,7 +274,9 @@ class BoardViewCommands:
+@@ -246,6 +302,14 @@ class BoardViewCommands:
+                     }
+ 
+                 svg_path = svg_files[0]
++                region = params.get("region")
++                if region:
++                    # A close-up (PowerLab patch): parts packed pad to pad look fine on a
++                    # whole-board view. The SVG spans the board's edge box, so the region
++                    # becomes its viewBox.
++                    err = _crop_svg(svg_path, pcb_path, region)
++                    if err:
++                        return {"success": False, "message": "Bad region", "errorDetails": err}
+ 
+                 # --- Render to bytes (shared for both response modes) ---
+                 board_dir = os.path.dirname(pcb_path)
+@@ -256,7 +320,9 @@ class BoardViewCommands:
                          image_bytes = f.read()
                      mime_format = "svg"
                  else:
@@ -214,7 +304,7 @@ index 16a4915..cef014b 100644
                      if png_bytes is None:
                          # No PNG converter — fall back to SVG inline
                          with open(svg_path, "r", encoding="utf-8") as f:
-@@ -277,7 +297,10 @@ class BoardViewCommands:
+@@ -277,7 +343,10 @@ class BoardViewCommands:
  
                  # --- Package response according to responseMode ---
                  if response_mode == "file":
@@ -226,6 +316,54 @@ index 16a4915..cef014b 100644
                      with open(output_path, "wb") as f:
                          f.write(image_bytes)
                      return {
+diff --git a/python/commands/component.py b/python/commands/component.py
+index f635672..fd3e2eb 100644
+--- a/python/commands/component.py
++++ b/python/commands/component.py
+@@ -149,6 +149,8 @@ class ComponentCommands(PlacementOptimizerCommands):
+             if layer == "B.Cu":
+                 if not module.IsFlipped():
+                     module.Flip(module.GetPosition(), False)
++                    # PowerLab patch: Flip mirrors the angle (30 became 150); set it again.
++                    module.SetOrientation(angle)
+ 
+             return {
+                 "success": True,
+@@ -219,10 +221,11 @@ class ComponentCommands(PlacementOptimizerCommands):
+             # Flip to target layer if specified
+             if layer:
+                 current_layer = self.board.GetLayerName(module.GetLayer())
+-                if layer == "B.Cu" and current_layer != "B.Cu":
+-                    module.Flip(module.GetPosition(), False)
+-                elif layer == "F.Cu" and current_layer != "F.Cu":
++                angle = module.GetOrientation()
++                if layer in ("F.Cu", "B.Cu") and current_layer != layer:
+                     module.Flip(module.GetPosition(), False)
++                    # PowerLab patch: Flip mirrors the angle; keep the one asked for.
++                    module.SetOrientation(angle)
+ 
+             return {
+                 "success": True,
+@@ -330,7 +333,9 @@ class ComponentCommands(PlacementOptimizerCommands):
+                     if layer:
+                         current_layer = self.board.GetLayerName(module.GetLayer())
+                         if layer in ("F.Cu", "B.Cu") and current_layer != layer:
++                            angle = module.GetOrientation()
+                             module.Flip(module.GetPosition(), False)
++                            module.SetOrientation(angle)  # PowerLab patch: Flip mirrors it
+                     moved.append(
+                         {
+                             "reference": ref,
+@@ -563,6 +568,9 @@ class ComponentCommands(PlacementOptimizerCommands):
+                 self.board.Add(new_module)
+                 if was_flipped and not new_module.IsFlipped():
+                     new_module.Flip(new_module.GetPosition(), False)
++                    # PowerLab patch: Flip mirrors the angle; keep the old part's.
++                    new_module.SetOrientation(module.GetOrientation())
++                    new_module.SetPosition(module.GetPosition())
+                 delete_board_item(self.board, module)
+                 module = new_module
+ 
 diff --git a/python/commands/dynamic_symbol_loader.py b/python/commands/dynamic_symbol_loader.py
 index 4fd6044..b205dd7 100644
 --- a/python/commands/dynamic_symbol_loader.py
@@ -1334,6 +1472,408 @@ index 0000000..36e1a36
 +            self.errors += 1
 +            logger.warning(f"Live autoroute update skipped: {e}")
 +        self.timings.append(time.time() - t0)
+diff --git a/python/commands/library_symbol.py b/python/commands/library_symbol.py
+index ce1981d..da7ad90 100644
+--- a/python/commands/library_symbol.py
++++ b/python/commands/library_symbol.py
+@@ -222,25 +222,33 @@ class SymbolLibraryManager:
+         """
+         resolved = uri
+ 
+-        # Common KiCAD environment variables
+-        env_vars = {
+-            "KICAD10_SYMBOL_DIR": self._find_kicad_symbol_dir(),
+-            "KICAD9_SYMBOL_DIR": self._find_kicad_symbol_dir(),
+-            "KICAD8_SYMBOL_DIR": self._find_kicad_symbol_dir(),
+-            "KICAD_SYMBOL_DIR": self._find_kicad_symbol_dir(),
+-            "KICAD10_3RD_PARTY": self._find_3rd_party_dir(),
+-            "KICAD9_3RD_PARTY": self._find_3rd_party_dir(),
+-            "KICAD8_3RD_PARTY": self._find_3rd_party_dir(),
+-            "KICAD_3RD_PARTY": self._find_3rd_party_dir(),
+-            "KISYSSYM": self._find_kicad_symbol_dir(),
+-        }
+-
+-        # Merge user-defined env vars from kicad_common.json
+-        env_vars.update(PlatformHelper.load_kicad_env_vars())
+-
+-        # Project directory
+-        if self.project_path:
+-            env_vars["KIPRJMOD"] = str(self.project_path)
++        # PowerLab patch (#61): worked out once per manager, not once per library. With
++        # 300+ libraries the directory probes and kicad_common.json reads took ~27 s, so
++        # open_board hit its 30 s timeout.
++        env_vars = getattr(self, "_uri_env_vars", None)
++        if env_vars is None:
++            symbol_dir = self._find_kicad_symbol_dir()
++            third_party_dir = self._find_3rd_party_dir()
++            # Common KiCAD environment variables
++            env_vars = {
++                "KICAD10_SYMBOL_DIR": symbol_dir,
++                "KICAD9_SYMBOL_DIR": symbol_dir,
++                "KICAD8_SYMBOL_DIR": symbol_dir,
++                "KICAD_SYMBOL_DIR": symbol_dir,
++                "KICAD10_3RD_PARTY": third_party_dir,
++                "KICAD9_3RD_PARTY": third_party_dir,
++                "KICAD8_3RD_PARTY": third_party_dir,
++                "KICAD_3RD_PARTY": third_party_dir,
++                "KISYSSYM": symbol_dir,
++            }
++
++            # Merge user-defined env vars from kicad_common.json
++            env_vars.update(PlatformHelper.load_kicad_env_vars())
++
++            # Project directory
++            if self.project_path:
++                env_vars["KIPRJMOD"] = str(self.project_path)
++            self._uri_env_vars = env_vars
+ 
+         # Replace environment variables
+         for var, value in env_vars.items():
+diff --git a/python/commands/part_spacing.py b/python/commands/part_spacing.py
+new file mode 100644
+index 0000000..78f1697
+--- /dev/null
++++ b/python/commands/part_spacing.py
+@@ -0,0 +1,339 @@
++"""
++check_part_spacing (PowerLab patch): part-to-part spacing and keep-out areas, measured.
++
++The lab's library parts have no courtyard (by design), so KiCad's DRC and the courtyard
++checks can't see parts packed pad to pad. This measures what a person checks by eye:
++- the gap between the pads of neighbouring parts on the same side (minGap: 1 mm for hand
++  soldering, 0.5 mm for machine assembly; fineGap, 2 mm, round fine-pitch ICs for parts not
++  connected to them), and parts whose bodies overlap;
++- parts on the through pads of a part on the other side (thermal vias in a drain or exposed
++  pad, THT pins): copper on both sides, so a short when the nets differ;
++- parts inside keep-out areas: the board's rule areas that keep out footprints or pads
++  (on the side they are on), and areas given in the call (a circle or ring, a polygon),
++  each for the top, the bottom or both sides, with the parts it lets in (`allow`, reference
++  prefixes, e.g. passives under an encoder ring);
++- optionally, pads closer to the board edge than edgeGap.
++
++It reads the saved board file, so save in KiCad first.
++"""
++
++import math
++import re
++from typing import Any, Dict, List, Optional, Tuple
++
++MIN_GAP = 1.0  # mm pad to pad between parts (powerlab-visual-review: assembly spacing)
++FINE_GAP = 2.0  # mm round fine-pitch ICs
++FINE_PITCH = 0.8  # pads closer than this make a part fine pitch (as the router)
++FINE_PADS = 8  # ... when it has at least this many pads (an IC, not a 2-pad part)
++MAX_LISTED = 80
++ERR = 5000  # nm, polygon error
++
++
++def _mm(v: float) -> float:
++    import pcbnew
++
++    return pcbnew.ToMM(v)
++
++
++def _side(fp: Any) -> str:
++    return "B" if fp.IsFlipped() else "F"
++
++
++def _pad_polys(fp: Any) -> List[Any]:
++    import pcbnew
++
++    L = pcbnew.B_Cu if fp.IsFlipped() else pcbnew.F_Cu
++    out = []
++    for p in fp.Pads():
++        if p.IsOnLayer(L):
++            sp = pcbnew.SHAPE_POLY_SET()
++            p.TransformShapeToPolygon(sp, L, 0, ERR, pcbnew.ERROR_INSIDE)
++            out.append((p, sp))
++    return out
++
++
++def _body(fp: Any) -> Any:
++    """The part's body: its fab outline's box (or courtyard's), with its pads."""
++    import pcbnew
++
++    fab = pcbnew.B_Fab if fp.IsFlipped() else pcbnew.F_Fab
++    crt = pcbnew.B_CrtYd if fp.IsFlipped() else pcbnew.F_CrtYd
++    sp = pcbnew.SHAPE_POLY_SET()
++    for layer in (crt, fab):
++        box = None
++        for g in fp.GraphicalItems():
++            if g.GetLayer() == layer and g.Type() != pcbnew.PCB_TEXT_T and g.Type() != pcbnew.PCB_FIELD_T:
++                b = g.GetBoundingBox()
++                if box is None:
++                    box = pcbnew.BOX2I(b.GetPosition(), b.GetSize())
++                else:
++                    box.Merge(b)
++        if box is not None and box.GetWidth() > 0 and box.GetHeight() > 0:
++            sp.NewOutline()
++            for x, y in ((box.GetLeft(), box.GetTop()), (box.GetRight(), box.GetTop()),
++                         (box.GetRight(), box.GetBottom()), (box.GetLeft(), box.GetBottom())):
++                sp.Append(x, y)
++            break
++    for _p, pp in _pad_polys(fp):
++        sp.BooleanAdd(pp)
++    sp.Simplify()
++    return sp
++
++
++def _gap(a: Any, b: Any) -> float:
++    """Smallest distance (mm) between two polygon sets; 0 when they touch."""
++    if a.OutlineCount() == 0 or b.OutlineCount() == 0:
++        return 1e9
++    if a.Collide(b.Outline(0).CPoint(0)) or b.Collide(a.Outline(0).CPoint(0)):
++        return 0.0
++    best = 1e18
++    for i in range(a.OutlineCount()):
++        oa = a.Outline(i)
++        for j in range(b.OutlineCount()):
++            ob = b.Outline(j)
++            if oa.Intersects(ob):
++                return 0.0
++            for k in range(ob.PointCount()):
++                best = min(best, oa.Distance(ob.CPoint(k)))
++            for k in range(oa.PointCount()):
++                best = min(best, ob.Distance(oa.CPoint(k)))
++    return _mm(best)
++
++
++def _overlap(a: Any, b: Any) -> float:
++    """Overlapping area in mm2."""
++    import pcbnew
++
++    x = a.CloneDropTriangulation()
++    x.BooleanIntersection(b)
++    return x.Area() / 1e12 if x.OutlineCount() else 0.0
++
++
++def fine_pitch(fp: Any) -> bool:
++    """Two different pins of the same size closer than FINE_PITCH. Segments of one
++    exposed pad share a number and don't count."""
++    pads = [p for p in fp.Pads() if p.GetNumber()]
++    if len({p.GetNumber() for p in pads}) < FINE_PADS:
++        return False
++    pts = [(p.GetNumber(), (p.GetSizeX(), p.GetSizeY()), (_mm(p.GetPosition().x), _mm(p.GetPosition().y)))
++           for p in pads]
++    for i, (na, sa, a) in enumerate(pts):
++        for nb, sb, b in pts[i + 1:]:
++            if na != nb and sa == sb and 1e-3 < math.dist(a, b) < FINE_PITCH:
++                return True
++    return False
++
++
++def _net_tie(fp: Any) -> bool:
++    try:
++        return bool(fp.IsNetTie())
++    except Exception:
++        return "nettie" in str(fp.GetFPID().GetLibItemName()).lower().replace("_", "")
++
++
++def _prefix(ref: str) -> str:
++    """The letters of a reference: "C12" -> "C", "TP3" -> "TP"."""
++    m = re.match(r"[A-Za-z_]+", ref)
++    return m.group(0).upper() if m else ""
++
++
++def _area(spec: Dict[str, Any]) -> Tuple[str, Any, List[str]]:
++    """A keep-out given in the call -> (name, SHAPE_POLY_SET, sides)."""
++    import pcbnew
++
++    sides = [s.upper()[0] for s in (spec.get("sides") or ["F", "B"])]
++    sp = pcbnew.SHAPE_POLY_SET()
++    if spec.get("points"):
++        sp.NewOutline()
++        for p in spec["points"]:
++            sp.Append(pcbnew.FromMM(float(p["x"])), pcbnew.FromMM(float(p["y"])))
++    else:
++        c = spec.get("center") or {}
++        cx, cy = pcbnew.FromMM(float(c.get("x", 0))), pcbnew.FromMM(float(c.get("y", 0)))
++        r = pcbnew.FromMM(float(spec["diameter"]) / 2)
++        n = 96
++        sp.NewOutline()
++        for k in range(n):
++            a = 2 * math.pi * k / n
++            sp.Append(int(cx + r * math.cos(a)), int(cy + r * math.sin(a)))
++        inner = spec.get("innerDiameter")
++        if inner:  # a ring: the hole inside is free
++            hole = pcbnew.SHAPE_POLY_SET()
++            hole.NewOutline()
++            ri = pcbnew.FromMM(float(inner) / 2)
++            for k in range(n):
++                a = 2 * math.pi * k / n
++                hole.Append(int(cx + ri * math.cos(a)), int(cy + ri * math.sin(a)))
++            sp.BooleanSubtract(hole)
++    name = spec.get("name") or ("ring" if spec.get("innerDiameter") else "area")
++    return name, sp, sides
++
++
++def check(board_path: str, params: Dict[str, Any]) -> Dict[str, Any]:
++    import pcbnew
++
++    board = pcbnew.LoadBoard(board_path)
++    min_gap = float(params.get("minGap", MIN_GAP))
++    fine_gap = float(params.get("fineGap", FINE_GAP))
++    only = set(params.get("refs") or [])
++    allow = {frozenset(p) for p in (params.get("allowPairs") or []) if len(p) == 2}
++    fps = [fp for fp in board.GetFootprints() if len(fp.Pads()) or fp.GraphicalItems()]
++    info = {}
++    for fp in fps:
++        nets = {p.GetNetname() for p in fp.Pads() if p.GetNetname() and "GND" not in p.GetNetname().upper()}
++        info[fp.GetReference()] = {"fp": fp, "side": _side(fp), "pads": _pad_polys(fp), "body": _body(fp),
++                                   "fine": fine_pitch(fp), "tie": _net_tie(fp), "nets": nets}
++    refs = sorted(info)
++
++    # --- spacing -------------------------------------------------------------------------
++    spacing, bodies = [], []
++    for i, ra in enumerate(refs):
++        A = info[ra]
++        for rb in refs[i + 1:]:
++            B = info[rb]
++            if A["side"] != B["side"] or (only and ra not in only and rb not in only):
++                continue
++            if frozenset((ra, rb)) in allow or A["tie"] or B["tie"]:
++                continue
++            # round a fine-pitch IC, only parts it isn't connected to keep the wide gap: its own
++            # decoupling caps and pin passives belong right at its pins (design rules §3.2)
++            own = A["nets"] & B["nets"]
++            need = fine_gap if ((A["fine"] or B["fine"]) and not own) else min_gap
++            ba, bb = A["fp"].GetBoundingBox(False), B["fp"].GetBoundingBox(False)
++            if not ba.GetInflated(pcbnew.FromMM(need + 0.1)).Intersects(bb):
++                continue
++            ov = _overlap(A["body"], B["body"])
++            if ov > 0.01:
++                bodies.append({"refs": [ra, rb], "side": A["side"], "overlap_mm2": round(ov, 2)})
++            gap, at = 1e9, None
++            for pa, sa in A["pads"]:
++                for pb, sb in B["pads"]:
++                    g = _gap(sa, sb)
++                    if g < gap:
++                        gap = g
++                        p1, p2 = pa.GetPosition(), pb.GetPosition()
++                        at = {"x": round(_mm((p1.x + p2.x) / 2), 2), "y": round(_mm((p1.y + p2.y) / 2), 2)}
++            if gap < need:
++                spacing.append({"refs": [ra, rb], "side": A["side"], "gap_mm": round(gap, 2),
++                                "required_mm": need, "at": at})
++    spacing.sort(key=lambda s: s["gap_mm"] - s["required_mm"])
++
++    # --- through pads of parts on the other side (thermal vias in a drain pad, a THT pin) --
++    # They are copper on this side too: a part's pad over one of another net is a short, and
++    # over one of its own net solder runs into it.
++    through = []
++    thru_pads = []
++    for rb in refs:
++        B = info[rb]
++        for p in B["fp"].Pads():
++            if p.GetAttribute() in (pcbnew.PAD_ATTRIB_PTH, pcbnew.PAD_ATTRIB_NPTH):
++                thru_pads.append((rb, B["side"], p))
++    for ra in refs:
++        A = info[ra]
++        if only and ra not in only:
++            continue
++        L = pcbnew.B_Cu if A["side"] == "B" else pcbnew.F_Cu
++        for rb, side_b, p in thru_pads:
++            if rb == ra or side_b == A["side"]:
++                continue
++            sp = pcbnew.SHAPE_POLY_SET()
++            p.TransformShapeToPolygon(sp, L, 0, ERR, pcbnew.ERROR_INSIDE)
++            for pa, sa in A["pads"]:
++                g = _gap(sa, sp)
++                if g < min_gap:
++                    same = pa.GetNetname() == p.GetNetname() and pa.GetNetname() != ""
++                    through.append({"refs": [ra, rb], "side": A["side"], "gap_mm": round(g, 2),
++                                    "same_net": same, "short": g <= 0 and not same,
++                                    "at": {"x": round(_mm(p.GetPosition().x), 2), "y": round(_mm(p.GetPosition().y), 2)}})
++    seen, uniq = set(), []
++    for t in sorted(through, key=lambda t: (not t["short"], t["gap_mm"])):
++        k = (tuple(t["refs"]), t["same_net"])
++        if k not in seen:
++            seen.add(k); uniq.append(t)
++    through = uniq
++
++    # --- keep-out areas -------------------------------------------------------------------
++    areas = []
++    zones = list(board.Zones()) + [z for fp in board.GetFootprints() for z in fp.Zones()]
++    for z in zones:
++        if not z.GetIsRuleArea():
++            continue
++        parent = z.GetParentFootprint() if hasattr(z, "GetParentFootprint") else None
++        keep_fp = z.GetDoNotAllowFootprints()
++        keep_pads = z.GetDoNotAllowPads() if hasattr(z, "GetDoNotAllowPads") else False
++        if not (keep_fp or keep_pads):
++            continue
++        sides = [s for s, L in (("F", pcbnew.F_Cu), ("B", pcbnew.B_Cu)) if z.IsOnLayer(L)]
++        name = z.GetZoneName() or ("rule area of " + parent.GetReference() if parent else "rule area")
++        areas.append((name, z.Outline(), sides, "footprints" if keep_fp else "pads",
++                      parent.GetReference() if parent else None, set()))
++    for spec in params.get("keepouts") or []:
++        name, sp, sides = _area(spec)
++        areas.append((name, sp, sides, "footprints", None, {a.upper() for a in spec.get("allow") or []}))
++    inside = []
++    for name, sp, sides, what, owner, allowed in areas:
++        for ref in refs:
++            A = info[ref]
++            if ref == owner or A["side"] not in sides and not (what == "pads" and _through(A)):
++                continue
++            if _prefix(ref) in allowed:
++                continue
++            shape = A["body"] if what == "footprints" else _union(A["pads"])
++            ov = _overlap(shape, sp)
++            if ov > 0.005:
++                inside.append({"ref": ref, "side": A["side"], "area": name, "overlap_mm2": round(ov, 2)})
++
++    # --- edge -----------------------------------------------------------------------------
++    edge = []
++    edge_gap = float(params.get("edgeGap") or 0)
++    if edge_gap > 0:
++        outline = pcbnew.SHAPE_POLY_SET()
++        board.GetBoardPolygonOutlines(outline, False)
++        inner = outline.CloneDropTriangulation()
++        inner.Inflate(pcbnew.FromMM(-edge_gap), pcbnew.CORNER_STRATEGY_ROUND_ALL_CORNERS, ERR)
++        for ref in refs:
++            A = info[ref]
++            pads = _union(A["pads"])
++            if pads.OutlineCount() == 0:
++                continue
++            out = pads.CloneDropTriangulation()
++            out.BooleanSubtract(inner)
++            if out.OutlineCount() and out.Area() / 1e12 > 0.005:
++                edge.append({"ref": ref, "side": A["side"], "required_mm": edge_gap})
++
++    ok = not (spacing or bodies or inside or edge or through)
++    shorts = sum(1 for t in through if t["short"])
++    summary = (f"{len(spacing)} part pairs closer than the spacing rule, {len(bodies)} with overlapping bodies, "
++               f"{len(inside)} parts in keep-out areas" + (f", {len(edge)} too close to the edge" if edge_gap else "")
++               + (f", {len(through)} parts on through pads of the other side ({shorts} shorts)" if through else ""))
++    return {
++        "success": True,
++        "ok": ok,
++        "message": "Spacing and keep-outs are clean" if ok else summary,
++        "rules": {"minGap_mm": min_gap, "fineGap_mm": fine_gap, "fine_pitch_parts": sorted(r for r in refs if info[r]["fine"]),
++                  "keepout_areas": [{"name": n, "sides": s, "keeps_out": w, "allowed": sorted(al)}
++                                    for n, _sp, s, w, _o, al in areas]},
++        "spacing": spacing[:MAX_LISTED],
++        "spacing_count": len(spacing),
++        "overlapping_bodies": bodies[:MAX_LISTED],
++        "in_keepouts": inside[:MAX_LISTED],
++        "in_keepouts_count": len(inside),
++        "near_edge": edge[:MAX_LISTED],
++        "on_through_pads": through[:MAX_LISTED],
++        "note": "Net-tie parts are skipped. Reads the saved board file: save in KiCad first.",
++    }
++
++
++def _through(A: Dict[str, Any]) -> bool:
++    import pcbnew
++
++    return any(p.GetAttribute() in (pcbnew.PAD_ATTRIB_PTH, pcbnew.PAD_ATTRIB_NPTH) for p, _sp in A["pads"])
++
++
++def _union(pads: List[Any]) -> Any:
++    import pcbnew
++
++    sp = pcbnew.SHAPE_POLY_SET()
++    for _p, pp in pads:
++        sp.BooleanAdd(pp)
++    return sp
 diff --git a/python/commands/pour_nets.py b/python/commands/pour_nets.py
 new file mode 100644
 index 0000000..052abc5
@@ -1438,10 +1978,10 @@ index 0000000..052abc5
 +
 diff --git a/python/commands/powerlab_route.py b/python/commands/powerlab_route.py
 new file mode 100644
-index 0000000..864a099
+index 0000000..a1737d1
 --- /dev/null
 +++ b/python/commands/powerlab_route.py
-@@ -0,0 +1,621 @@
+@@ -0,0 +1,641 @@
 +"""
 +The PowerLab router as a background job (PowerLab patch).
 +
@@ -1492,6 +2032,8 @@ index 0000000..864a099
 +STALE = 600  # s without a status write: the router process is gone (a zone fill holds the GIL)
 +PROJECT_FILES = (".kicad_pro", ".kicad_dru")
 +LIVE_GAP = 2.0  # s between live updates in KiCad
++TIME_LIMIT_MIN = 15.0  # default minutes for routing the connections; the run then finishes what it has
++STALL = 180  # s without a newly routed connection while routing: reported as stalled
 +
 +_procs: Dict[str, subprocess.Popen] = {}  # job folder -> router process started by this worker
 +
@@ -1572,6 +2114,10 @@ index 0000000..864a099
 +            if st.get("state") == "running":
 +                st.update(state="failed", error="the router process ended without a result")
 +                _write(os.path.join(folder, "status.json"), st)
++    if st.get("state") == "running" and st.get("phase") == "routing":
++        since = time.time() - st.get("last_routed_at", st.get("started", time.time()))
++        if since > STALL:
++            st["stalled_seconds"] = int(since)
 +    return st
 +
 +
@@ -1621,6 +2167,9 @@ index 0000000..864a099
 +        "min_run": DEFAULTS["min_run"],
 +        "min_run_diag": DEFAULTS["min_run_diag"],
 +        "max_nodes": DEFAULTS["max_nodes"],
++        # copper layers to route on (default: all but inner planes)
++        "route_layers": [str(n) for n in params.get("routeLayers") or []] or None,
++        "time_limit": 60.0 * float(params.get("timeLimit") or TIME_LIMIT_MIN),
 +    }
 +    _write(os.path.join(folder, "job.json"), job)
 +    now = time.time()
@@ -1962,19 +2511,30 @@ index 0000000..864a099
 +                      layer_factor=dict(enumerate(job["layers"])), max_nodes=job["max_nodes"],
 +                      diagonal=job["diagonal"], min_run_diag=job["min_run_diag"])
 +        router = Router(board, pitch=job["pitch"], pour_nets=job["pour_nets"], costs=costs, order="bus",
-+                        ripup=True, finish=True, step_in=True, draw=True)
++                        ripup=True, finish=True, step_in=True, draw=True, layers=job.get("route_layers"),
++                        time_limit=job.get("time_limit"))
 +        total = len(router.connections(nets))
 +        done: Dict[str, bool] = {}
-+        st.write(phase="routing", nets=len(nets), connections=total, routed=0)
++        t_route = time.time()
++        st.write(phase="routing", nets=len(nets), connections=total, routed=0, last_routed_at=t_route,
++                 layers=[router.rb.layer_names[L] for L in router.rb.layers],
++                 time_limit_min=round(job.get("time_limit", 0) / 60.0, 1))
 +
 +        def progress(r: Dict[str, Any]) -> None:
 +            if os.path.exists(cancel_flag):
 +                raise Cancelled()
 +            if "connection" in r:
++                before = sum(done.values())
 +                done[r["connection"]] = bool(r.get("ok"))
 +                log.write(f"{r['net']} {r['connection']} {r['event']}\n")
 +                log.flush()
-+                st.write(routed=sum(done.values()), events=st.data.get("events", 0) + 1, last=r["event"][:120])
++                routed = sum(done.values())
++                minutes = max((time.time() - t_route) / 60.0, 1e-3)
++                rate = routed / minutes
++                more = {"last_routed_at": time.time()} if routed > before else {}
++                st.write(routed=routed, events=st.data.get("events", 0) + 1, last=r["event"][:120],
++                         per_minute=round(rate, 1),
++                         eta_minutes=round((total - routed) / rate, 1) if rate > 0 else None, **more)
 +            if r.get("phase"):
 +                st.write(phase=r["phase"])
 +            if live:
@@ -2833,10 +3393,10 @@ index 0000000..e2151ce
 +    return stats
 diff --git a/python/commands/powerlab_router/grid.py b/python/commands/powerlab_router/grid.py
 new file mode 100644
-index 0000000..766ed64
+index 0000000..f4f77b8
 --- /dev/null
 +++ b/python/commands/powerlab_router/grid.py
-@@ -0,0 +1,48 @@
+@@ -0,0 +1,103 @@
 +"""The router's grid: copper shapes rasterised per layer (numpy and Pillow, no pcbnew).
 +
 +A cell is blocked when a track centre line there would be too close to something. Shapes
@@ -2865,7 +3425,28 @@ index 0000000..766ed64
 +
 +    def raster(self, polygons):
 +        """polygons: [(outline, holes)] in mm -> bool array [ny, nx], True inside."""
-+        im = Image.new("1", (self.nx, self.ny), 0)
++        return self._draw(polygons, 0, 0, self.nx, self.ny)
++
++    def raster_box(self, polygons):
++        """Like raster(), but only the box round the polygons: a Patch, or None when there
++        are none. One net's copper covers a small part of the board, and full-board arrays
++        per net and layer took gigabytes on a 4-layer board with 100 nets."""
++        pts = [p for outline, _h in polygons if len(outline) >= 3 for p in outline]
++        if not pts:
++            return None
++        xs = [(x - self.x0) / self.pitch for x, _y in pts]
++        ys = [(y - self.y0) / self.pitch for _x, y in pts]
++        i0, j0 = max(0, int(np.floor(min(xs))) - 1), max(0, int(np.floor(min(ys))) - 1)
++        i1, j1 = min(self.nx, int(np.ceil(max(xs))) + 2), min(self.ny, int(np.ceil(max(ys))) + 2)
++        if i1 <= i0 or j1 <= j0:
++            return None
++        return Patch(j0, i0, self._draw(polygons, i0, j0, i1 - i0, j1 - j0))
++
++    def _draw(self, polygons, i0, j0, w, h):
++        def px(p):
++            x, y = self.px(*p)
++            return (x - i0, y - j0)
++        im = Image.new("1", (w, h), 0)
 +        draw = ImageDraw.Draw(im)
 +        holed = []
 +        for outline, holes in polygons:
@@ -2874,16 +3455,50 @@ index 0000000..766ed64
 +            if holes:
 +                holed.append((outline, holes))
 +                continue
-+            draw.polygon([self.px(*p) for p in outline], fill=1, outline=1)
++            draw.polygon([px(p) for p in outline], fill=1, outline=1)
 +        out = np.array(im, dtype=bool)
 +        for outline, holes in holed:  # each on its own image, so a hole can't clear a neighbour
-+            one = Image.new("1", (self.nx, self.ny), 0)
++            one = Image.new("1", (w, h), 0)
 +            d = ImageDraw.Draw(one)
-+            d.polygon([self.px(*p) for p in outline], fill=1, outline=1)
++            d.polygon([px(p) for p in outline], fill=1, outline=1)
 +            for hole in holes:
 +                if len(hole) >= 3:
-+                    d.polygon([self.px(*p) for p in hole], fill=0, outline=1)
++                    d.polygon([px(p) for p in hole], fill=0, outline=1)
 +            out |= np.array(one, dtype=bool)
++        return out
++
++
++class Patch:
++    """A bool raster of part of the grid: rows j0.., columns i0.."""
++
++    __slots__ = ("j0", "i0", "a")
++
++    def __init__(self, j0, i0, a):
++        self.j0, self.i0, self.a = j0, i0, a
++
++    def view(self, full):
++        """The part of a full [ny, nx] array under this patch."""
++        return full[self.j0:self.j0 + self.a.shape[0], self.i0:self.i0 + self.a.shape[1]]
++
++    def full(self, ny, nx):
++        out = np.zeros((ny, nx), bool)
++        self.view(out)[...] = self.a
++        return out
++
++    @staticmethod
++    def union(*patches):
++        """One patch covering all of them (None for none)."""
++        ps = [p for p in patches if p is not None]
++        if not ps:
++            return None
++        if len(ps) == 1:
++            return ps[0]
++        j0, i0 = min(p.j0 for p in ps), min(p.i0 for p in ps)
++        j1 = max(p.j0 + p.a.shape[0] for p in ps)
++        i1 = max(p.i0 + p.a.shape[1] for p in ps)
++        out = Patch(j0, i0, np.zeros((j1 - j0, i1 - i0), bool))
++        for p in ps:
++            out.a[p.j0 - j0:p.j0 - j0 + p.a.shape[0], p.i0 - i0:p.i0 - i0 + p.a.shape[1]] |= p.a
 +        return out
 diff --git a/python/commands/powerlab_router/groups.py b/python/commands/powerlab_router/groups.py
 new file mode 100644
@@ -2968,10 +3583,10 @@ index 0000000..4d59b97
 +    return out
 diff --git a/python/commands/powerlab_router/model.py b/python/commands/powerlab_router/model.py
 new file mode 100644
-index 0000000..f2906cd
+index 0000000..16ec7a6
 --- /dev/null
 +++ b/python/commands/powerlab_router/model.py
-@@ -0,0 +1,800 @@
+@@ -0,0 +1,929 @@
 +"""Board side of the PowerLab router (pcbnew): obstacles, pad entry lanes, results as tracks.
 +
 +Clearances are KiCad's: the larger of the two net classes' clearances and the board
@@ -2995,8 +3610,8 @@ index 0000000..f2906cd
 +import pcbnew
 +
 +from commands.powerlab_router import search
-+from commands.powerlab_router.grid import Grid
-+from commands.powerlab_router.rules import Rules
++from commands.powerlab_router.grid import Grid, Patch
++from commands.powerlab_router.rules import Rules, net_name_patterns
 +
 +MM, T = pcbnew.FromMM, pcbnew.ToMM
 +VIA_TO_PAD = 0.25  # via ring to a pad edge (§3.5)
@@ -3006,6 +3621,7 @@ index 0000000..f2906cd
 +TEE_PAD_MM = 1.0  # a track joins its net's track no closer than this to a pad centre (§3.4)
 +USED_LANE = 3.0  # extra cost (mm) for a lane another track of the net already leaves by
 +LANE_TRIES = 6  # exit lengths tried per lane, one grid cell apart
++PLANE_SHARE = 0.5  # an inner layer this much covered by zones is a plane: no tracks on it
 +ERR = MM(0.005)
 +TYPES = {pcbnew.PCB_PAD_T: "Pad", pcbnew.PCB_TRACE_T: "Track", pcbnew.PCB_ARC_T: "Track",
 +         pcbnew.PCB_VIA_T: "Via", pcbnew.PCB_ZONE_T: "Zone"}
@@ -3052,13 +3668,15 @@ index 0000000..f2906cd
 +
 +class _Occupancy:
 +    """The grids for one key: per net and layer, where that net's copper keeps a track
-+    centre (and a via centre) of the key's nets away; and per cell, how many nets do."""
++    centre (and a via centre) of the key's nets away; and per cell, how many nets do.
++    A net's own rasters are Patches (just the box round its copper); only the counts
++    cover the whole board."""
 +
 +    def __init__(self, rb, key):
 +        self.rb, self.key = rb, key
 +        g = rb.grid
 +        n = len(rb.layers)
-+        self.fixed_t, self.fixed_v = {}, {}  # net -> [bool array per layer]: the board's copper
++        self.fixed_t, self.fixed_v = {}, {}  # net -> [Patch or None per layer]: the board's copper
 +        self.new_t, self.new_v = {}, {}  # the router's copper
 +        self.track, self.via = {}, {}  # both
 +        self.t_count = [np.zeros((g.ny, g.nx), np.uint16) for _ in range(n)]
@@ -3110,31 +3728,47 @@ index 0000000..f2906cd
 +                    it.TransformHoleToPolygon(hole, MM(by), ERR, pcbnew.ERROR_OUTSIDE)
 +                    for L in rb.layers:
 +                        dst[L] += _polys(hole)
++        # copper on layers the router doesn't route (inner planes) still keeps vias away
++        for it in items:
++            if it.Type() == pcbnew.PCB_ZONE_T:
++                continue  # a plane's fill opens round a via
++            for L in rb.via_only_layers:
++                if not it.IsOnLayer(L) or (it.Type() == pcbnew.PCB_PAD_T and it.GetAttribute() == pcbnew.PAD_ATTRIB_NPTH):
++                    continue
++                if any(it.IsOnLayer(M) for M in rb.layers):
++                    continue  # a through pad or via: already there on the routed layers
++                c_v = rb.clearance_to(it, self.key, "Via", L)
++                vp[rb.layers[0]] += _polys(_grown(it, L, c_v + vd / 2))
 +        g = rb.grid
-+        return [g.raster(tp[L]) for L in rb.layers], [g.raster(vp[L]) for L in rb.layers]
++        return [g.raster_box(tp[L]) for L in rb.layers], [g.raster_box(vp[L]) for L in rb.layers]
 +
 +    def _update(self, net):
 +        """Recount `net` after its fixed or new copper changed."""
 +        n = len(self.t_count)
-+        parts_t = [x for x in (self.fixed_t.get(net), self.new_t.get(net)) if x is not None]
-+        parts_v = [x for x in (self.fixed_v.get(net), self.new_v.get(net)) if x is not None]
-+        track = [np.logical_or.reduce([p[i] for p in parts_t]) for i in range(n)]
-+        via = [np.logical_or.reduce([p[i] for p in parts_v]) for i in range(n)]
++        none = [None] * n
++        ft, nt = self.fixed_t.get(net, none), self.new_t.get(net, none)
++        fv, nv = self.fixed_v.get(net, none), self.new_v.get(net, none)
++        track = [Patch.union(ft[i], nt[i]) for i in range(n)]
++        via = [Patch.union(fv[i], nv[i]) for i in range(n)]
 +        old_t, old_v = self.track.get(net), self.via.get(net)
 +        for i in range(n):
 +            if old_t is not None:
-+                self.t_count[i] -= old_t[i]
-+                self.v_count[i] -= old_v[i]
-+            self.t_count[i] += track[i]
-+            self.v_count[i] += via[i]
++                if old_t[i] is not None:
++                    old_t[i].view(self.t_count[i])[...] -= old_t[i].a
++                if old_v[i] is not None:
++                    old_v[i].view(self.v_count[i])[...] -= old_v[i].a
++            if track[i] is not None:
++                track[i].view(self.t_count[i])[...] += track[i].a
++            if via[i] is not None:
++                via[i].view(self.v_count[i])[...] += via[i].a
 +        self.track[net], self.via[net] = track, via
 +
 +    def stamp(self, net, items):
 +        """Add the router's new copper of `net`."""
 +        t, v = self._raster(items)
 +        if net in self.new_t:
-+            t = [a | b for a, b in zip(self.new_t[net], t)]
-+            v = [a | b for a, b in zip(self.new_v[net], v)]
++            t = [Patch.union(a, b) for a, b in zip(self.new_t[net], t)]
++            v = [Patch.union(a, b) for a, b in zip(self.new_v[net], v)]
 +        self.new_t[net], self.new_v[net] = t, v
 +        self._update(net)
 +
@@ -3154,24 +3788,38 @@ index 0000000..f2906cd
 +        mine_v = self.via.get(net)
 +        out_t, out_soft = [], []
 +        via_block = self.static_v.copy()
++        def sub(arr, p):
++            if p is not None:
++                p.view(arr)[...] -= p.a
++
++        def add(arr, p):
++            if p is not None:
++                p.view(arr)[...] += p.a
++
 +        for i in range(len(self.t_count)):
 +            t = self.t_count[i].astype(np.int32)
 +            if mine_t is not None:
-+                t -= mine_t[i]
++                sub(t, mine_t[i])
 +            soft_any = np.zeros(t.shape, bool)
 +            for s in soft:
 +                if s == net or s not in self.new_t:
 +                    continue
-+                t -= self.track[s][i]
++                sub(t, self.track[s][i])
 +                if s in self.fixed_t:
-+                    t += self.fixed_t[s][i]
-+                soft_any |= self.new_t[s][i]
++                    add(t, self.fixed_t[s][i])
++                p = self.new_t[s][i]
++                if p is not None:
++                    p.view(soft_any)[...] |= p.a
 +            hard = (t > 0) | self.static_t[i]
 +            out_t.append(hard.astype(np.uint8).tobytes())
 +            out_soft.append(soft_any & ~hard)
-+            v = self.v_count[i] - (mine_v[i] if mine_v is not None else 0)
++            v = self.v_count[i].astype(np.int32)
++            if mine_v is not None:
++                sub(v, mine_v[i])
 +            via_block |= v > 0
-+        via_block |= self._own_via(net)
++        own = self._own_via(net)
++        if own is not None:
++            own.view(via_block)[...] |= own.a
 +        return out_t, (~via_block).astype(np.uint8).tobytes(), (out_soft if soft else None)
 +
 +    def _own_via(self, net):
@@ -3186,16 +3834,45 @@ index 0000000..f2906cd
 +                for L in rb.layers:
 +                    if p.IsOnLayer(L):
 +                        polys += _polys(_grown(p, L, VIA_TO_PAD + vd / 2))
-+            self.own_via[net] = rb.grid.raster(polys)
++            self.own_via[net] = rb.grid.raster_box(polys)
 +        return self.own_via[net]
 +
 +
++def plane_layers(board, share=PLANE_SHARE):
++    """Inner copper layers that are planes: copper zones cover at least `share` of the
++    board there. Tracks don't go on them (they would cut the plane); vias pass through."""
++    outline = pcbnew.SHAPE_POLY_SET()
++    board.GetBoardPolygonOutlines(outline, False)
++    area = outline.Area()
++    out = []
++    for L in list(board.GetEnabledLayers().CuStack())[1:-1]:
++        sp = pcbnew.SHAPE_POLY_SET()
++        for z in board.Zones():
++            if not z.GetIsRuleArea() and z.IsOnLayer(L):
++                sp.BooleanAdd(z.Outline())
++        sp.BooleanIntersection(outline)
++        if area and sp.Area() >= share * area:
++            out.append(L)
++    return out
++
++
 +class RouterBoard:
-+    def __init__(self, board, pitch=0.1, pour_nets=("GND",), rules=None):
++    def __init__(self, board, pitch=0.1, pour_nets=("GND",), rules=None, layers=None):
++        """`layers`: names of the copper layers to route on; by default every copper layer
++        except inner planes (plane_layers)."""
 +        self.board = board
 +        self.pour_nets = set(pour_nets)
-+        self.layers = list(board.GetEnabledLayers().CuStack())
-+        self.layer_names = {L: board.GetLayerName(L) for L in self.layers}
++        self.all_layers = list(board.GetEnabledLayers().CuStack())
++        self.layer_names = {L: board.GetLayerName(L) for L in self.all_layers}
++        if layers:
++            wanted = set(layers)
++            self.layers = [L for L in self.all_layers if self.layer_names[L] in wanted]
++            if not self.layers:
++                raise ValueError(f"none of the layers {sorted(wanted)} is a copper layer of this board")
++        else:
++            planes = set(plane_layers(board))
++            self.layers = [L for L in self.all_layers if L not in planes]
++        self.via_only_layers = [L for L in self.all_layers if L not in self.layers]
 +        ds = board.GetDesignSettings()
 +        self.ns = ds.m_NetSettings
 +        self.min_clearance = T(ds.m_MinClearance)
@@ -3211,6 +3888,8 @@ index 0000000..f2906cd
 +        self.grid = Grid(T(bb.GetLeft()), T(bb.GetTop()), T(bb.GetRight()), T(bb.GetBottom()), pitch)
 +        self.pads = [p for fp in board.GetFootprints() for p in fp.Pads()]
 +        self._props = {}
++        self._groups = None  # net -> the net standing for its group (see _net_groups)
++        self.deadline = None  # time.time() after which searches give up (Router.connection_limit)
 +        self._occ = {}
 +        self.router_items = set()  # uuids of the copper this router added
 +        self._others = {}
@@ -3226,8 +3905,73 @@ index 0000000..f2906cd
 +
 +    def key(self, net, extra=0.0):
 +        w, vd, _drill = self.widths(net)
-+        name = net if self.rules.uses_net_names else None
++        name = self.net_group(net) if self.rules.uses_net_names else None
 +        return (self.netclass(net).GetName(), round(w + 2 * extra, 4), round(vd + 2 * extra, 4), name)
++
++    def net_group(self, net):
++        """The net that stands for `net`'s group: nets the rules can't tell apart share
++        their grids. Before, rules naming nets gave every net grids of its own: gigabytes,
++        and each commit drawn into all of them."""
++        if self._groups is None:
++            self._groups = self._net_groups()
++        return self._groups.get(net, net)
++
++    def _net_groups(self):
++        """Nets whose new copper gets the same clearance to everything: to every item on
++        the board and to every group's new copper, on every layer, as track and as via.
++        NetName only reaches a condition through its comparisons with the rules' patterns,
++        so first the nets that match the same patterns are put together, then those groups
++        are compared by evaluating the rules."""
++        nets = sorted({p.GetNetname() for p in self.pads} | {t.GetNetname() for t in self.board.GetTracks()}
++                      | {z.GetNetname() for z in self.board.Zones() if not z.GetIsRuleArea()})
++        nets = [n for n in nets if n]
++        pats = net_name_patterns(self.rules)
++        if pats is None:  # a rule compares two net names: each net is its own group
++            return {n: n for n in nets}
++        from commands.powerlab_router.rules import _wild
++        first = {}
++        for n in nets:
++            k = (self.key_base(n), tuple(_wild(n, p) for p in pats))
++            first.setdefault(k, n)
++        rep = {n: first[(self.key_base(n), tuple(_wild(n, p) for p in pats))] for n in nets}
++        reps = sorted(set(rep.values()))
++        # the other side of every clearance: board items, nets standing for their group
++        others = {}
++        for it, net in self.copper_items():
++            p = dict(self.props(it))
++            if net in rep:
++                p["NetName"] = rep[net]
++                p["NetClass"] = self.netclass(rep[net]).GetName()
++            frozen = tuple(sorted((k, tuple(v) if isinstance(v, list) else v) for k, v in p.items()))
++            if frozen not in others:
++                others[frozen] = (p, T(self.netclass(net).GetClearance()) if net else self.min_clearance)
++        for r in reps:
++            cls, w, vd, _ = self.key_base(r) + (None,)
++            for kind in ("Track", "Via"):
++                p = self.routed_props((cls, w, vd, r), kind)
++                others[("routed", r, kind)] = (p, T(self.netclass(r).GetClearance()))
++        names = [self.layer_names[L] for L in self.layers]
++        final, seen = {}, {}
++        for r in reps:
++            cls, w, vd = self.key_base(r)
++            mine = T(self.ns.GetNetClassByName(cls).GetClearance()) if cls else self.min_clearance
++            vec = []
++            for kind in ("Track", "Via"):
++                a = self.routed_props((cls, w, vd, r), kind)
++                for p, theirs in others.values():
++                    default = max(theirs, mine, self.min_clearance)
++                    for name in names:
++                        vec.append(self.rules.clearance(p, a, name, default))
++            k = ((cls, w, vd), tuple(vec))
++            final[r] = seen.setdefault(k, r)
++        return {n: final[rep[n]] for n in nets}
++
++    def past_deadline(self):
++        return self.deadline is not None and time.time() > self.deadline
++
++    def key_base(self, net):
++        w, vd, _drill = self.widths(net)
++        return (self.netclass(net).GetName(), round(w, 4), round(vd, 4))
 +
 +    def props(self, item):
 +        u = _uuid(item)
@@ -3235,7 +3979,7 @@ index 0000000..f2906cd
 +            net = item.GetNetname()
 +            p = {"Type": TYPES.get(item.Type(), "Other"), "NetName": net,
 +                 "NetClass": self.netclass(net).GetName() if net else "Default",
-+                 "Layers": [self.layer_names[L] for L in self.layers if item.IsOnLayer(L)], "Footprint": None}
++                 "Layers": [self.layer_names[L] for L in self.all_layers if item.IsOnLayer(L)], "Footprint": None}
 +            if item.Type() in (pcbnew.PCB_TRACE_T, pcbnew.PCB_ARC_T):
 +                p["Width"] = T(item.GetWidth())
 +            if item.Type() == pcbnew.PCB_PAD_T:
@@ -3445,7 +4189,7 @@ index 0000000..f2906cd
 +                window = (max(0, min(c[0] for c in cells) - m), max(0, min(c[1] for c in cells) - m),
 +                          min(g.nx - 1, max(c[0] for c in cells) + m), min(g.ny - 1, max(c[1] for c in cells) + m))
 +            found, stats = search.search(blocked, via_ok, g.nx, g.ny, g.pitch, starts, goals, window, costs,
-+                                         max_nodes=budget, penalty=penalty, via_cost=vc)
++                                         max_nodes=budget, penalty=penalty, via_cost=vc, deadline=self.deadline)
 +            info["nodes"] += stats["nodes"]
 +            # a path that comes back to a cell it has been on (a loop through two vias at one
 +            # spot, to turn where the corner rules don't allow it): no via there, search again
@@ -3457,7 +4201,7 @@ index 0000000..f2906cd
 +                for i, j in spots:
 +                    via_ok[j * g.nx + i] = 0
 +                found, stats = search.search(blocked, bytes(via_ok), g.nx, g.ny, g.pitch, starts, goals, window,
-+                                             costs, max_nodes=budget, penalty=penalty, via_cost=vc)
++                                             costs, max_nodes=budget, penalty=penalty, via_cost=vc, deadline=self.deadline)
 +                info["nodes"] += stats["nodes"]
 +            if found and _loops(found):
 +                found = None
@@ -3475,7 +4219,7 @@ index 0000000..f2906cd
 +                info["limit"] = not path  # gave up: a bigger window won't be cheaper
 +                break
 +        info["seconds"] = round(time.time() - t0, 3)
-+        if not path and (costs.diagonal > 1.0 or costs.min_run_diag > costs.min_run):
++        if not path and (costs.diagonal > 1.0 or costs.min_run_diag > costs.min_run) and not self.past_deadline():
 +            # by hand, diagonals are short corners; where it's too tight for that (a fine-pitch
 +            # connector), any 45 degree way is better than none
 +            plain = copy.copy(costs)
@@ -3891,7 +4635,7 @@ index 0000000..96e3f70
 +    return n
 diff --git a/python/commands/powerlab_router/pours.py b/python/commands/powerlab_router/pours.py
 new file mode 100644
-index 0000000..8df2566
+index 0000000..9133690
 --- /dev/null
 +++ b/python/commands/powerlab_router/pours.py
 @@ -0,0 +1,200 @@
@@ -3959,10 +4703,10 @@ index 0000000..8df2566
 +    margin, then left out."""
 +    rb = router.rb
 +    board = rb.board
-+    if len(rb.layers) == 2:
-+        plane = {rb.layers[-1]}
++    if len(rb.all_layers) == 2:
++        plane = {rb.all_layers[-1]}
 +    else:
-+        plane = {L for L in rb.layers[1:-1] if any(_zones(board, n, L) for n in rb.pour_nets)}
++        plane = {L for L in rb.all_layers[1:-1] if any(_zones(board, n, L) for n in rb.pour_nets)}
 +    before = _gnd_quality(router)
 +    base = check() if check else None
 +    solid = set(solid)
@@ -4027,7 +4771,7 @@ index 0000000..8df2566
 +                        break
 +                    why = "it would add DRC errors: " + ", ".join(sorted({kind for kind, _u in errors}))
 +                for z in added:
-+                    board.Remove(z)
++                    board.Delete(z)  # Remove() would leave Python owning it (#247)
 +            else:
 +                skipped.setdefault(net, []).append(f"{name}: {why}")
 +    pcbnew.ZONE_FILLER(board).Fill(board.Zones())
@@ -4097,10 +4841,10 @@ index 0000000..8df2566
 +    return {"added": len(added), "pitch_mm": pitch, "via": [vd, rb.widths(net)[2]]}
 diff --git a/python/commands/powerlab_router/router.py b/python/commands/powerlab_router/router.py
 new file mode 100644
-index 0000000..9f405db
+index 0000000..6c4daf9
 --- /dev/null
 +++ b/python/commands/powerlab_router/router.py
-@@ -0,0 +1,1283 @@
+@@ -0,0 +1,1308 @@
 +"""The PowerLab router's main loop (plan §4.2-4.6).
 +
 +Connections are the edges of a minimum spanning tree over each net's pads. Groups are
@@ -4153,6 +4897,7 @@ index 0000000..9f405db
 +IMPROVE_DETOUR = 1.6  # a track this many times its straight distance gets a second look
 +IMPROVE_BENDS = 6  # so does one with more corners than this
 +IMPROVE_MAX = 15  # tracks looked at again, the worst first
++CONNECTION_SECONDS = 90.0  # one connection's searches give up after this (a hard way round takes ~50 s)
 +MAX_RIPPED = 3
 +MAX_RIPS = 3
 +BUDGET = 2  # rip-ups per connection overall
@@ -4213,10 +4958,18 @@ index 0000000..9f405db
 +
 +class Router:
 +    def __init__(self, board, pitch=0.1, pour_nets=("GND",), costs=None, rules=None, groups=None,
-+                 order="bus", ripup=True, finish=True, step_in=True, draw=True):
++                 order="bus", ripup=True, finish=True, step_in=True, draw=True, layers=None,
++                 time_limit=None, connection_limit=CONNECTION_SECONDS):
++        """`layers`: copper layer names to route on (default: all but inner planes).
++        `time_limit`: seconds for routing the connections; when it runs out, the ones left
++        are reported as left ("time limit") and the run goes on to finish what it has, so a
++        board that is too hard still comes back with its routed part to finish by hand.
++        `connection_limit`: seconds one connection may take with its retries; after that it
++        doesn't rip anything up and is left."""
 +        self.step_in, self.draw = step_in, draw
 +        self.order, self.ripup, self.finish = order, ripup, finish
-+        self.rb = RouterBoard(board, pitch=pitch, pour_nets=pour_nets, rules=rules)
++        self.time_limit, self.connection_limit = time_limit, connection_limit
++        self.rb = RouterBoard(board, pitch=pitch, pour_nets=pour_nets, rules=rules, layers=layers)
 +        self.costs = costs or Costs(layer_factor={1: 1.2} if len(self.rb.layers) == 2 else None)
 +        self.group_overrides = groups or {}
 +
@@ -4446,7 +5199,7 @@ index 0000000..9f405db
 +
 +    def run(self, nets, log=None):
 +        rb = self.rb
-+        t_start = time.time()
++        t_start = time.perf_counter()  # time.time() ticks every ~15 ms on Windows
 +        conns = self.connections(nets)
 +        pending = list(conns)
 +        g = rb.grid
@@ -4469,7 +5222,15 @@ index 0000000..9f405db
 +            if log:
 +                log({"net": c.net, "connection": c.name(), "group": c.group, "ok": True,
 +                     "event": f"routed as part of the bus {c.bus}"})
++        timed_out = 0
 +        while pending:
++            if self.time_limit and time.perf_counter() - t_start > self.time_limit:
++                for c in pending:
++                    c.reason = "time limit"
++                timed_out = len(pending)
++                if log:
++                    log({"phase": "routing", "event": f"time limit: {timed_out} connections left for hand routing"})
++                break
 +            group = min(c.group for c in pending)
 +            here = [c for c in pending if c.group == group]
 +            if self.order == "constrained":
@@ -4480,12 +5241,16 @@ index 0000000..9f405db
 +            else:
 +                conn = min(here, key=lambda c: c.length)
 +            pending.remove(conn)
++            rb.deadline = time.time() + self.connection_limit if self.connection_limit else None
 +            ok, info = self._route_whole(conn, totals)
 +            event = "routed" if ok else info.get("fail", "no path")
 +            if info.get("pour"):
 +                event += f" ({info['pour']})"
 +            victims = []
-+            if not ok and self.ripup and conn.rips < MAX_RIPS and totals["ripups"] < budget:
++            if not ok and rb.past_deadline():
++                event += f"; no rip-up (over {self.connection_limit:g} s)"
++                totals["slow"] = totals.get("slow", 0) + 1
++            elif not ok and self.ripup and conn.rips < MAX_RIPS and totals["ripups"] < budget:
 +                victims, why, routed = self._rip_up(conn, totals)
 +                if routed:
 +                    ok, event = True, "routed (way found by the rip-up search, nothing in it)"
@@ -4496,6 +5261,7 @@ index 0000000..9f405db
 +                    event = f"ripped up {len(victims)}: " + ", ".join(v.name() for v in victims) + \
 +                            ("; routed" if ok else "; " + info2.get("fail", "no path"))
 +                    pending += victims
++            rb.deadline = None
 +            conn.reason = None if ok else info.get("fail", "no path")
 +            if log:
 +                log({"net": conn.net, "connection": conn.name(), "group": conn.group, "ok": ok, "event": event,
@@ -4536,7 +5302,10 @@ index 0000000..9f405db
 +            "left": [{"net": c.net, "connection": c.name(), "reason": c.reason or "ripped up, not rerouted"}
 +                     for c in conns if not c.items],
 +            "groups": by_group,
-+            "seconds": round(time.time() - t_start, 1),
++            "seconds": round(time.perf_counter() - t_start, 1),
++            "layers": [rb.layer_names[L] for L in rb.layers],
++            "time_limit_left": timed_out,
++            "over_connection_limit": totals.get("slow", 0),
 +            "search_seconds": round(totals["search_s"], 1),
 +            "nodes": totals["nodes"],
 +            "retries": totals["retries"],
@@ -5386,10 +6155,10 @@ index 0000000..9f405db
 +                self.hist[i] = np.minimum(self.hist[i].astype(np.int32) + cells * amount, 200).astype(np.uint8)
 diff --git a/python/commands/powerlab_router/rules.py b/python/commands/powerlab_router/rules.py
 new file mode 100644
-index 0000000..2c99089
+index 0000000..ee48370
 --- /dev/null
 +++ b/python/commands/powerlab_router/rules.py
-@@ -0,0 +1,298 @@
+@@ -0,0 +1,318 @@
 +"""Custom design rules (.kicad_dru) for the PowerLab router: the clearance rules, and
 +the zone_connection rules (how pads join a pour: solid, thermal reliefs or none).
 +
@@ -5688,12 +6457,32 @@ index 0000000..2c99089
 +            if m is MAYBE:
 +                maybe = max(maybe, rule.clearance)
 +        return max(default, maybe)
++
++
++_NAME_CMP = r"[AB]\.NetName\s*(?:==|!=)\s*"
++
++
++def net_name_patterns(rules):
++    """The patterns the rules compare NetName with ('+48V_DC', 'SW_*'...): two nets that
++    match the same ones look alike to every condition. None when a rule uses NetName any
++    other way (A.NetName == B.NetName), where only the net itself will do."""
++    pats = []
++    for r in rules.rules:
++        text = r.text
++        if re.search(_NAME_CMP + r"[AB]\.NetName", text):
++            return None
++        found = re.findall(_NAME_CMP + r"'([^']*)'", text) + \
++            re.findall(r"'([^']*)'\s*(?:==|!=)\s*[AB]\.NetName", text)
++        if len(found) != text.count("NetName"):
++            return None
++        pats += found
++    return sorted(set(pats))
 diff --git a/python/commands/powerlab_router/search.py b/python/commands/powerlab_router/search.py
 new file mode 100644
-index 0000000..a43d0f9
+index 0000000..30ff246
 --- /dev/null
 +++ b/python/commands/powerlab_router/search.py
-@@ -0,0 +1,193 @@
+@@ -0,0 +1,195 @@
 +"""Octilinear A* for the PowerLab router. No pcbnew, so it can be tested and timed anywhere.
 +
 +A state is (i, j, layer, direction, run): the cell, the direction it was entered in (0-7,
@@ -5711,6 +6500,7 @@ index 0000000..a43d0f9
 +
 +import heapq
 +import math
++import time
 +
 +import numpy as np
 +
@@ -5742,7 +6532,7 @@ index 0000000..a43d0f9
 +
 +
 +def search(blocked, via_ok, nx, ny, pitch, starts, goals, window, costs, max_nodes=3_000_000, penalty=None,
-+           via_cost=None):
++           via_cost=None, deadline=None):
 +    """Cheapest path from any start lane to any goal lane.
 +
 +    blocked: per layer, a flat sequence of nx*ny (truthy = no track centre here).
@@ -5755,6 +6545,7 @@ index 0000000..a43d0f9
 +    via_cost: ({cell index: cost}, cost elsewhere[, pour cells]), or None for costs.via
 +    everywhere; with pour cells, a via also pays that many cells of `penalty` on every layer
 +    (the pour it cuts).
++    deadline: time.time() after which the search gives up like at max_nodes.
 +    Returns (states from start to goal, stats); states is None when there's no path.
 +    """
 +    i0, j0, i1, j1 = window
@@ -5802,7 +6593,7 @@ index 0000000..a43d0f9
 +            continue
 +        done.add(s)
 +        nodes += 1
-+        if nodes > max_nodes:
++        if nodes > max_nodes or (deadline is not None and not nodes & 2047 and time.time() > deadline):
 +            limit = True
 +            break
 +        i, j, L, d, r = s
@@ -5889,10 +6680,10 @@ index 0000000..a43d0f9
 +    return True
 diff --git a/python/commands/route_cleanup.py b/python/commands/route_cleanup.py
 new file mode 100644
-index 0000000..076167b
+index 0000000..4700077
 --- /dev/null
 +++ b/python/commands/route_cleanup.py
-@@ -0,0 +1,431 @@
+@@ -0,0 +1,428 @@
 +"""Clean up tracks after autorouting (PowerLab patch).
 +
 +Freerouting leaves zero-length and tiny stubs, dead-end segments, tracks narrower than
@@ -5922,12 +6713,9 @@ index 0000000..076167b
 +
 +
 +def _delete(board, item):
-+    """Board.Delete keeps ownership in C++; Remove() corrupts SWIG on KiCad 10 (#247)."""
-+    if callable(getattr(board, "Delete", None)):
-+        board.Delete(item)
-+    else:
-+        board.Remove(item)
-+        item.thisown = False
++    """Board.Delete keeps ownership in C++; Remove() corrupts SWIG on KiCad 10 (#247).
++    This module runs in KiCad's own Python, whose BOARD always has Delete."""
++    board.Delete(item)
 +
 +
 +def _tracks(board):
@@ -6595,7 +7383,7 @@ index 4f4fea6..e6aa8b6 100644
                      fdata.get("value", "") if isinstance(fdata, dict) else str(fdata)
                  )
 diff --git a/python/commands/schematic_handlers.py b/python/commands/schematic_handlers.py
-index ee10775..0fde965 100644
+index ee10775..b63d79a 100644
 --- a/python/commands/schematic_handlers.py
 +++ b/python/commands/schematic_handlers.py
 @@ -263,7 +263,7 @@ class SchematicHandlersMixin:
@@ -6607,6 +7395,194 @@ index ee10775..0fde965 100644
              footprint = component.get("footprint", "")
              x = component.get("x", 0)
              y = component.get("y", 0)
+@@ -2596,6 +2596,49 @@ class SchematicHandlersMixin:
+             logger.error(traceback.format_exc())
+             return {"success": False, "message": str(e)}
+ 
++    def _schematic_text_target(self, params: Dict[str, Any]) -> Tuple[Optional[Path], Dict]:
++        schematic_path = params.get("schematicPath")
++        if not schematic_path:
++            return None, {"success": False, "message": "schematicPath is required"}
++        sch_file = Path(schematic_path)
++        if not sch_file.exists():
++            return None, {"success": False, "message": f"Schematic not found: {schematic_path}"}
++        return sch_file, {}
++
++    def _handle_delete_schematic_text(self, params: Dict[str, Any]) -> Dict[str, Any]:
++        """Delete a free text or text box (PowerLab patch, #60)."""
++        try:
++            sch_file, error = self._schematic_text_target(params)
++            if sch_file is None:
++                return error
++            return WireManager.delete_text(
++                sch_file, params.get("uuid"), params.get("text"), params.get("position")
++            )
++        except Exception as e:
++            logger.error(f"Error deleting schematic text: {e}")
++            return {"success": False, "message": str(e)}
++
++    def _handle_move_schematic_text(self, params: Dict[str, Any]) -> Dict[str, Any]:
++        """Move (and optionally rotate) a free text or text box (PowerLab patch, #60)."""
++        try:
++            sch_file, error = self._schematic_text_target(params)
++            if sch_file is None:
++                return error
++            new_position = params.get("newPosition")
++            if not new_position or len(new_position) != 2:
++                return {"success": False, "message": "newPosition [x, y] is required"}
++            return WireManager.move_text(
++                sch_file,
++                new_position,
++                params.get("uuid"),
++                params.get("text"),
++                params.get("position"),
++                params.get("angle"),
++            )
++        except Exception as e:
++            logger.error(f"Error moving schematic text: {e}")
++            return {"success": False, "message": str(e)}
++
+     def _handle_add_schematic_text(self, params: Dict[str, Any]) -> Dict[str, Any]:
+         """Add a free-form text annotation (SCH_TEXT) to a schematic."""
+         logger.info("Adding text annotation to schematic")
+@@ -3150,11 +3193,21 @@ class SchematicHandlersMixin:
+                     "message": f"Schematic not found. Provide schematicPath. Tried: {schematic_path}",
+                 }
+ 
+-            # Build the pad->net map from the sheets reachable from the root
++            # Build the pad->net map from the sheets reachable from the root.
++            # PowerLab patch: from KiCad's own netlist (kicad-cli, the one F8 uses) when it
++            # can be exported. The schematic parser below left local labels on the middle of
++            # a wire unmerged and dropped the "/Sheet/" prefix of sheet-local names, so pads
++            # got the wrong nets; it stays as the fallback.
+             sheets_scanned: list = []
+-            pad_net_map, net_names = self._build_hierarchical_pad_net_map(
+-                schematic_path, sheets_out=sheets_scanned
+-            )
++            cli_nets = self._kicad_cli_pad_net_map(schematic_path)
++            if cli_nets is not None:
++                pad_net_map, net_names, sheets_scanned = cli_nets
++                netlist_source = "kicad-cli"
++            else:
++                pad_net_map, net_names = self._build_hierarchical_pad_net_map(
++                    schematic_path, sheets_out=sheets_scanned
++                )
++                netlist_source = "schematic parser"
+ 
+             # Add missing footprints from the schematic to the board *before*
+             # we add nets and assign pads — F8 in KiCad does this implicitly
+@@ -3182,6 +3235,8 @@ class SchematicHandlersMixin:
+             # Assign nets to pads (now also covers any footprints we just added)
+             assigned_pads = 0
+             unmatched = []
++            renamed_to: Dict[str, set] = {}  # PowerLab patch: old net -> new names
++            kept_names: set = set()
+             for fp in board.GetFootprints():
+                 ref = fp.GetReference()
+                 for pad in fp.Pads():
+@@ -3190,10 +3245,30 @@ class SchematicHandlersMixin:
+                     if key in pad_net_map:
+                         net_name = pad_net_map[key]
+                         if nets_by_name.has_key(net_name):
++                            old_name = pad.GetNetname()
++                            if old_name and old_name != net_name:
++                                renamed_to.setdefault(old_name, set()).add(net_name)
++                            else:
++                                kept_names.add(net_name)
+                             pad.SetNet(nets_by_name[net_name])
+                             assigned_pads += 1
+                     else:
+                         unmatched.append(f"{ref}/{pad_num}")
++                        if pad.GetNetname():
++                            kept_names.add(pad.GetNetname())
++
++            # PowerLab patch: a net whose pads all moved to one new name was renamed in
++            # the schematic (e.g. "IO12" -> "/MCU/IO12"). Like F8, its tracks, vias and
++            # zones follow, or they would be left on the old net, shorted to the pads.
++            nets_renamed = []
++            for old_name, new_names in renamed_to.items():
++                if len(new_names) != 1 or old_name in kept_names:
++                    continue
++                new_net = nets_by_name[next(iter(new_names))]
++                for item in list(board.GetTracks()) + list(board.Zones()):
++                    if item.GetNetname() == old_name:
++                        item.SetNet(new_net)
++                nets_renamed.append({"from": old_name, "to": next(iter(new_names))})
+ 
+             with preserve_project_settings(board_path):
+                 board.Save(board_path)
+@@ -3232,6 +3307,8 @@ class SchematicHandlersMixin:
+                     f"{len(added_nets)} nets added, {assigned_pads} pads assigned"
+                 ),
+                 "sheets_scanned": sheet_names,
++                "netlist_source": netlist_source,
++                "nets_renamed": nets_renamed,
+                 "nets_added": added_nets,
+                 "nets_total": len(net_names),
+                 "pads_assigned": assigned_pads,
+@@ -3252,6 +3329,62 @@ class SchematicHandlersMixin:
+             logger.error(traceback.format_exc())
+             return {"success": False, "message": str(e)}
+ 
++    def _kicad_cli_pad_net_map(self, schematic_path: str) -> Optional[Tuple[Dict, set, list]]:
++        """{(ref, pin): net} from KiCad's own netlist, or None (PowerLab patch).
++
++        Returns ``(pad_net_map, net_names, sheet_paths)``. The net names are KiCad's, as
++        F8 gives them: ``/Sheet/LABEL`` for sheet-local labels, ``Net-(R1-Pad1)`` for
++        unlabelled wires.
++        """
++        import subprocess
++        import tempfile
++        import xml.etree.ElementTree as ET
++
++        kicad_cli = self._find_kicad_cli_static()
++        if not kicad_cli:
++            return None
++        with tempfile.NamedTemporaryFile(suffix=".xml", delete=False) as tmp:
++            tmp_path = tmp.name
++        try:
++            cmd = [kicad_cli, "sch", "export", "netlist", "--format", "kicadxml",
++                   "--output", tmp_path, schematic_path]
++            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
++            if result.returncode != 0:
++                logger.warning(
++                    f"kicad-cli netlist export failed (exit {result.returncode}): "
++                    f"{result.stderr.strip()}; using the schematic parser"
++                )
++                return None
++            root = ET.parse(tmp_path).getroot()
++            pad_net_map: Dict[Tuple[str, str], str] = {}
++            net_names: set = set()
++            for net in root.findall("./nets/net"):
++                name = net.get("name", "")
++                if not name:
++                    continue
++                net_names.add(name)
++                for node in net.findall("node"):
++                    ref, pin = node.get("ref"), node.get("pin")
++                    if ref and pin:
++                        pad_net_map[(ref, pin)] = name
++            if not net_names:
++                return None
++            root_dir = Path(schematic_path).parent
++            sheets = [
++                str(root_dir / s.findtext("title_block/source", ""))
++                for s in root.findall("./design/sheet")
++                if s.findtext("title_block/source")
++            ]
++            return pad_net_map, net_names, sheets
++        except Exception as e:
++            logger.warning(f"Could not read KiCad's netlist: {e}; using the schematic parser")
++            return None
++        finally:
++            try:
++                Path(tmp_path).unlink()
++            except OSError:
++                pass
++
+     def _extract_components_from_schematic(self, schematic_path: str) -> List[Dict[str, str]]:
+         """Run kicad-cli netlist export and return the flat list of components.
+ 
 diff --git a/python/commands/update_symbol_from_library.py b/python/commands/update_symbol_from_library.py
 index f876f4b..582a074 100644
 --- a/python/commands/update_symbol_from_library.py
@@ -6716,8 +7692,289 @@ index f876f4b..582a074 100644
 +        "fields_synced": total_synced,
          "results": results,
      }
+diff --git a/python/commands/wire_manager.py b/python/commands/wire_manager.py
+index 2ad29f6..10ddd45 100644
+--- a/python/commands/wire_manager.py
++++ b/python/commands/wire_manager.py
+@@ -12,7 +12,7 @@ import re
+ import tempfile
+ import uuid
+ from pathlib import Path
+-from typing import Any, List, Optional, Tuple
++from typing import Any, Callable, Dict, List, Optional, Tuple
+ 
+ import sexpdata
+ from sexpdata import Symbol
+@@ -671,36 +671,106 @@ class WireManager:
+ 
+         return world_positions
+ 
++    @staticmethod
++    def _collect_sheet_pin_positions(sch_data: list) -> List[Tuple[float, float]]:
++        """Return (x, y) for every hierarchical sheet pin (``(sheet ... (pin ... (at x y)))``).
++
++        PowerLab patch: a wire may end on a sheet pin, which is a connection point too.
++        """
++        positions: List[Tuple[float, float]] = []
++        for item in sch_data:
++            if not (isinstance(item, list) and item and item[0] == Symbol("sheet")):
++                continue
++            for part in item[1:]:
++                if not (isinstance(part, list) and part and part[0] == _SYM_PIN):
++                    continue
++                at = next(
++                    (p for p in part[1:] if isinstance(p, list) and len(p) >= 3 and p[0] == _SYM_AT),
++                    None,
++                )
++                if at is not None:
++                    positions.append((float(at[1]), float(at[2])))
++        return positions
++
++    @staticmethod
++    def _through_wire_counter(sch_data: list) -> Callable[[Tuple[int, int]], int]:
++        """Return a function giving how many wires pass *through* an IU point.
++
++        PowerLab patch (#62): KiCad draws a T as one wire ending on the middle of another,
++        with a junction dot. A wire running through the point is two exits there, as in
++        KiCad's SCH_SCREEN::IsExplicitJunction.
++        """
++        horizontal: Dict[int, List[Tuple[int, int]]] = {}
++        vertical: Dict[int, List[Tuple[int, int]]] = {}
++        diagonal: List[Tuple[int, int, int, int]] = []
++        for item in sch_data:
++            parsed = WireManager._parse_wire(item)
++            if parsed is None:
++                continue
++            (x1, y1), (x2, y2), _, _ = parsed
++            a = (round(x1 * _IU_PER_MM), round(y1 * _IU_PER_MM))
++            b = (round(x2 * _IU_PER_MM), round(y2 * _IU_PER_MM))
++            if a == b:
++                continue
++            if a[1] == b[1]:
++                horizontal.setdefault(a[1], []).append((min(a[0], b[0]), max(a[0], b[0])))
++            elif a[0] == b[0]:
++                vertical.setdefault(a[0], []).append((min(a[1], b[1]), max(a[1], b[1])))
++            else:
++                diagonal.append((a[0], a[1], b[0], b[1]))
++
++        def count(pt: Tuple[int, int]) -> int:
++            px, py = pt
++            n = sum(1 for lo, hi in horizontal.get(py, ()) if lo < px < hi)
++            n += sum(1 for lo, hi in vertical.get(px, ()) if lo < py < hi)
++            for ax, ay, bx, by in diagonal:
++                if (px, py) in ((ax, ay), (bx, by)):
++                    continue
++                cross = (bx - ax) * (py - ay) - (by - ay) * (px - ax)
++                if abs(cross) > abs(bx - ax) + abs(by - ay):  # off the line by > ~1 IU
++                    continue
++                if min(ax, bx) <= px <= max(ax, bx) and min(ay, by) <= py <= max(ay, by):
++                    n += 1
++            return n
++
++        return count
++
+     @staticmethod
+     def sync_junctions(sch_data: list) -> Tuple[int, int]:
+         """Add missing junctions and remove stale ones in sch_data in-place.
+ 
+-        A junction is needed at any point where the total of wire endpoints plus
+-        component pin positions is ≥ 3 and at least one wire endpoint is present.
+-        This covers wire-only T/X junctions and wire-meets-pin-with-another-wire cases.
++        A junction is needed where at least three wires, pins or sheet pins meet. A wire
++        that runs through the point counts twice (PowerLab patch, #62), so a wire ending on
++        the middle of another keeps its junction. New junctions are only added where a
++        wire ends; an existing junction stays wherever three exits still meet.
+ 
+         Returns (added_count, removed_count).
+         """
+         from collections import Counter
+ 
+-        wire_endpoints = WireManager._collect_wire_endpoints(sch_data)
+-        wire_iu: Counter = Counter(
+-            (round(x * _IU_PER_MM), round(y * _IU_PER_MM)) for x, y in wire_endpoints
+-        )
++        def to_iu(points: List[Tuple[float, float]]) -> Counter:
++            return Counter((round(x * _IU_PER_MM), round(y * _IU_PER_MM)) for x, y in points)
+ 
+-        pin_positions = WireManager._collect_pin_positions(sch_data)
+-        pin_iu: Counter = Counter(
+-            (round(x * _IU_PER_MM), round(y * _IU_PER_MM)) for x, y in pin_positions
++        wire_iu = to_iu(WireManager._collect_wire_endpoints(sch_data))
++        pin_iu = to_iu(
++            WireManager._collect_pin_positions(sch_data)
++            + WireManager._collect_sheet_pin_positions(sch_data)
+         )
++        through = WireManager._through_wire_counter(sch_data)
++
++        def exits(iu: Tuple[int, int]) -> int:
++            ends = wire_iu.get(iu, 0) + pin_iu.get(iu, 0)
++            return ends + 2 * through(iu) if ends else 0
+ 
+-        # wire_iu.items() guarantees wire_cnt >= 1, so no extra guard needed
+-        needed_iu = {iu for iu, wire_cnt in wire_iu.items() if wire_cnt + pin_iu.get(iu, 0) >= 3}
++        needed_iu = {iu for iu in wire_iu if exits(iu) >= 3}
+ 
+         existing = WireManager._get_existing_junctions(sch_data)
+         existing_iu = set(existing.keys())
+ 
+         # Remove stale junctions; work in reverse index order to avoid shifting
+-        stale_indices = sorted([existing[iu] for iu in existing_iu - needed_iu], reverse=True)
++        stale_indices = sorted(
++            [existing[iu] for iu in existing_iu - needed_iu if exits(iu) < 3], reverse=True
++        )
+         for idx in stale_indices:
+             del sch_data[idx]
+         removed = len(stale_indices)
+@@ -1024,7 +1094,12 @@ class WireManager:
+ 
+             results = []
+             for item in sch_data:
+-                if not (isinstance(item, list) and len(item) >= 2 and item[0] == _SYM_TEXT):
++                # PowerLab patch (#60): text boxes too, so they can be found and deleted
++                if not (
++                    isinstance(item, list)
++                    and len(item) >= 2
++                    and item[0] in (_SYM_TEXT, Symbol("text_box"))
++                ):
+                     continue
+                 # item[1] is the text string
+                 text_val = item[1] if len(item) > 1 else ""
+@@ -1064,6 +1139,7 @@ class WireManager:
+ 
+                 results.append(
+                     {
++                        "kind": str(item[0]),
+                         "text": text_val,
+                         "position": {"x": pos_x, "y": pos_y},
+                         "angle": angle,
+@@ -1082,6 +1158,125 @@ class WireManager:
+             logger.error(traceback.format_exc())
+             return None
+ 
++    # PowerLab patch (#60): free text could be added and listed, but nothing could delete
++    # or move it, so a wrong note stayed on the sheet.
++    _TEXT_KINDS = (Symbol("text"), Symbol("text_box"))
++
++    @staticmethod
++    def _text_item_info(item: Any) -> Optional[Dict[str, Any]]:
++        if not (isinstance(item, list) and len(item) >= 2 and item[0] in WireManager._TEXT_KINDS):
++            return None
++        info: Dict[str, Any] = {"kind": str(item[0]), "text": str(item[1]), "uuid": "", "at": None}
++        for part in item[2:]:
++            if isinstance(part, list) and part:
++                if part[0] == _SYM_AT and len(part) >= 3:
++                    info["at"] = part
++                elif part[0] == _SYM_UUID and len(part) >= 2:
++                    info["uuid"] = str(part[1])
++        return info
++
++    @staticmethod
++    def _find_texts(
++        sch_data: list,
++        uuid_: Optional[str],
++        text: Optional[str],
++        position: Optional[List[float]],
++        tolerance: float = 0.5,
++    ) -> Tuple[List[int], List[Dict[str, Any]]]:
++        """Indices of the text items that match, and every candidate looked at."""
++        hits: List[int] = []
++        seen: List[Dict[str, Any]] = []
++        for i, item in enumerate(sch_data):
++            info = WireManager._text_item_info(item)
++            if info is None:
++                continue
++            at = info["at"]
++            xy = (float(at[1]), float(at[2])) if at is not None else None
++            seen.append({"kind": info["kind"], "text": info["text"], "uuid": info["uuid"],
++                         "position": {"x": xy[0], "y": xy[1]} if xy else None})
++            if uuid_ and info["uuid"] != uuid_:
++                continue
++            if text is not None and info["text"] != text:
++                continue
++            if position is not None and (
++                xy is None
++                or abs(xy[0] - float(position[0])) > tolerance
++                or abs(xy[1] - float(position[1])) > tolerance
++            ):
++                continue
++            hits.append(i)
++        return hits, seen
++
++    @staticmethod
++    def _edit_text(
++        schematic_path: Path,
++        uuid_: Optional[str],
++        text: Optional[str],
++        position: Optional[List[float]],
++        edit: Callable[[list, int], str],
++    ) -> Dict[str, Any]:
++        if not uuid_ and text is None and position is None:
++            return {"success": False, "message": "Give the text's uuid, or its text (and position)"}
++        with open(schematic_path, "r", encoding="utf-8") as f:
++            sch_data = sexpdata.loads(f.read())
++        hits, seen = WireManager._find_texts(sch_data, uuid_, text, position)
++        if not hits:
++            return {
++                "success": False,
++                "message": "No matching text on this sheet (list_schematic_texts shows them)",
++                "texts": seen[:50],
++            }
++        if len(hits) > 1:
++            return {
++                "success": False,
++                "message": f"{len(hits)} texts match: give the uuid or the position",
++                "matches": [WireManager._text_item_info(sch_data[i])["uuid"] for i in hits],
++            }
++        message = edit(sch_data, hits[0])
++        with open(schematic_path, "w", encoding="utf-8") as f:
++            f.write(kicad_dumps(sch_data))
++        return {"success": True, "message": message}
++
++    @staticmethod
++    def delete_text(
++        schematic_path: Path,
++        uuid_: Optional[str] = None,
++        text: Optional[str] = None,
++        position: Optional[List[float]] = None,
++    ) -> Dict[str, Any]:
++        """Delete one free text or text box, found by uuid or by text (and position)."""
++
++        def edit(sch_data: list, i: int) -> str:
++            info = WireManager._text_item_info(sch_data[i])
++            del sch_data[i]
++            return f"Deleted {info['kind']} '{info['text']}'"
++
++        return WireManager._edit_text(schematic_path, uuid_, text, position, edit)
++
++    @staticmethod
++    def move_text(
++        schematic_path: Path,
++        new_position: List[float],
++        uuid_: Optional[str] = None,
++        text: Optional[str] = None,
++        position: Optional[List[float]] = None,
++        angle: Optional[float] = None,
++    ) -> Dict[str, Any]:
++        """Move (and optionally rotate) one free text or text box."""
++
++        def edit(sch_data: list, i: int) -> str:
++            info = WireManager._text_item_info(sch_data[i])
++            at = info["at"]
++            old_angle = at[3] if len(at) >= 4 else 0
++            at[1:] = [float(new_position[0]), float(new_position[1]),
++                      old_angle if angle is None else angle]
++            return (
++                f"Moved {info['kind']} '{info['text']}' to "
++                f"({float(new_position[0]):g}, {float(new_position[1]):g})"
++            )
++
++        return WireManager._edit_text(schematic_path, uuid_, text, position, edit)
++
+     @staticmethod
+     def add_text(
+         schematic_path: Path,
 diff --git a/python/kicad_api/ipc_backend.py b/python/kicad_api/ipc_backend.py
-index 6f9a813..5d40efc 100644
+index 6f9a813..1c8b1c5 100644
 --- a/python/kicad_api/ipc_backend.py
 +++ b/python/kicad_api/ipc_backend.py
 @@ -471,6 +471,30 @@ class IPCBoardAPI(BoardAPI):
@@ -6751,7 +8008,61 @@ index 6f9a813..5d40efc 100644
      @staticmethod
      def _get_box2_extents(bbox: Any) -> tuple[float, float, float, float]:
          """Return left/top/right/bottom for kipy Box2 wrappers across versions."""
-@@ -905,7 +929,13 @@ class IPCBoardAPI(BoardAPI):
+@@ -879,6 +903,53 @@ class IPCBoardAPI(BoardAPI):
+             logger.error(f"Failed to place placeholder component: {e}")
+             return False
+ 
++    def flip_component(self, reference: str, layer: str) -> Optional[tuple]:
++        """Put a footprint on `layer` ("F.Cu" or "B.Cu") (PowerLab patch, #64/#66).
++
++        Returns (flipped, angle in degrees before the flip), or None on failure. KiCad
++        10.0.5 has no FlipItems handler (it came in 10.0.6), so the footprint is selected
++        and KiCad's own flip action runs on it.
++        """
++        try:
++            from kipy.proto.board.board_types_pb2 import BoardLayer
++
++            board = self._get_board()
++            target = next(
++                (
++                    fp
++                    for fp in board.get_footprints()
++                    if fp.reference_field and fp.reference_field.text.value == reference
++                ),
++                None,
++            )
++            if target is None:
++                logger.error(f"Component not found: {reference}")
++                return None
++            want = BoardLayer.BL_B_Cu if layer == "B.Cu" else BoardLayer.BL_F_Cu
++            angle = target.orientation.degrees if target.orientation else 0.0
++            if target.layer == want:
++                return False, angle
++            try:
++                board.flip_items([target])
++            except Exception as e:  # no handler before KiCad 10.0.6
++                logger.debug(f"FlipItems unavailable ({e}); using KiCad's flip action")
++                board.clear_selection()
++                board.add_to_selection([target])
++                try:
++                    self._kicad.run_action("pcbnew.InteractiveEdit.flip")
++                finally:
++                    board.clear_selection()
++            now = next(
++                (fp for fp in board.get_footprints() if fp.id.value == target.id.value), None
++            )
++            if now is None or now.layer != want:
++                logger.error(f"KiCad did not flip {reference}")
++                return None
++            return True, angle
++        except Exception as e:
++            logger.error(f"Failed to flip component: {e}")
++            return None
++
+     def move_component(
+         self, reference: str, x: float, y: float, rotation: Optional[float] = None
+     ) -> bool:
+@@ -905,7 +976,13 @@ class IPCBoardAPI(BoardAPI):
              target_fp.position = Vector2.from_xy(from_mm(x), from_mm(y))
  
              if rotation is not None:
@@ -6765,7 +8076,7 @@ index 6f9a813..5d40efc 100644
  
              # Apply changes
              commit = board.begin_commit()
-@@ -1387,6 +1417,7 @@ class IPCBoardAPI(BoardAPI):
+@@ -1387,6 +1464,7 @@ class IPCBoardAPI(BoardAPI):
          priority: int = 0,
          fill_mode: str = "solid",
          name: str = "",
@@ -6773,7 +8084,7 @@ index 6f9a813..5d40efc 100644
      ) -> bool:
          """
          Add a copper pour zone to the board.
-@@ -1453,6 +1484,12 @@ class IPCBoardAPI(BoardAPI):
+@@ -1453,6 +1531,12 @@ class IPCBoardAPI(BoardAPI):
              zone._proto.copper_settings.fill_mode = (
                  ZoneFillMode.ZFM_HATCHED if fill_mode == "hatched" else ZoneFillMode.ZFM_SOLID
              )
@@ -6787,10 +8098,26 @@ index 6f9a813..5d40efc 100644
              # Create outline polyline
              outline = PolyLine()
 diff --git a/python/kicad_interface.py b/python/kicad_interface.py
-index c6ac305..89c29c4 100644
+index c6ac305..b7ea0b9 100644
 --- a/python/kicad_interface.py
 +++ b/python/kicad_interface.py
-@@ -558,6 +558,7 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -36,6 +36,7 @@ if sys.platform == "win32":
+ 
+ import sexpdata
+ from annotations import AnnotationLoader
++from commands import part_spacing, powerlab_route  # PowerLab patch
+ from commands.schematic_handlers import SchematicHandlersMixin
+ from commands.wire_manager import WireManager
+ from resources.resource_definitions import RESOURCE_DEFINITIONS, handle_resource_read
+@@ -525,6 +526,7 @@ class KiCADInterface(SchematicHandlersMixin):
+             "rotate_component": self.component_commands.rotate_component,
+             "delete_component": self.component_commands.delete_component,
+             "edit_component": self.component_commands.edit_component,
++            "replace_component": self._handle_replace_component,  # PowerLab patch (#67)
+             "get_component_properties": self.component_commands.get_component_properties,
+             "get_component_list": self.component_commands.get_component_list,
+             "get_component_geometry": self.component_commands.get_component_geometry,
+@@ -558,6 +560,7 @@ class KiCADInterface(SchematicHandlersMixin):
              "create_netclass": self.routing_commands.create_netclass,
              "set_net_color": self.routing_commands.set_net_color,
              "add_copper_pour": self.routing_commands.add_copper_pour,
@@ -6798,7 +8125,16 @@ index c6ac305..89c29c4 100644
              "route_differential_pair": self.routing_commands.route_differential_pair,
              "refill_zones": self._handle_refill_zones,
              # Design rule commands
-@@ -732,10 +733,14 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -693,6 +696,8 @@ class KiCADInterface(SchematicHandlersMixin):
+             "add_schematic_hierarchical_label": self._handle_add_schematic_hierarchical_label,
+             "add_schematic_text": self._handle_add_schematic_text,
+             "list_schematic_texts": self._handle_list_schematic_texts,
++            "delete_schematic_text": self._handle_delete_schematic_text,  # PowerLab patch (#60)
++            "move_schematic_text": self._handle_move_schematic_text,  # PowerLab patch (#60)
+             "add_sheet_pin": self._handle_add_sheet_pin,
+             "import_svg_logo": self._handle_import_svg_logo,
+             # UI/Process management commands
+@@ -732,10 +737,15 @@ class KiCADInterface(SchematicHandlersMixin):
              "remove_library_table_entry": remove_library_table_entry,
              "set_library_table_uri": set_library_table_uri,
              # Freerouting autoroute commands
@@ -6810,11 +8146,12 @@ index c6ac305..89c29c4 100644
 +            "clean_up_routing": self._handle_clean_up_routing,  # PowerLab patch
 +            "undo_autoroute": self._handle_undo_autoroute,  # PowerLab patch
 +            "powerlab_route": self._handle_powerlab_route,  # PowerLab patch
++            "check_part_spacing": self._handle_check_part_spacing,  # PowerLab patch
 +            "powerlab_route_status": self._handle_powerlab_route_status,  # PowerLab patch
              # Eagle import commands
              "import_eagle_project": self.eagle_commands.import_eagle_project,
              # Schematic migration
-@@ -756,12 +761,14 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -756,12 +766,14 @@ class KiCADInterface(SchematicHandlersMixin):
          "route_trace": "_ipc_route_trace",
          "route_arc_trace": "_ipc_route_arc_trace",
          "add_via": "_ipc_add_via",
@@ -6829,7 +8166,7 @@ index c6ac305..89c29c4 100644
          "refill_zones": "_ipc_refill_zones",
          # Board commands
          "add_text": "_ipc_add_text",
-@@ -771,6 +778,9 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -771,6 +783,9 @@ class KiCADInterface(SchematicHandlersMixin):
          "add_board_outline": "_ipc_add_board_outline",
          "add_mounting_hole": "_ipc_add_mounting_hole",
          "get_layer_list": "_ipc_get_layer_list",
@@ -6839,7 +8176,7 @@ index c6ac305..89c29c4 100644
          # Component commands
          "place_component": "_ipc_place_component",
          "move_component": "_ipc_move_component",
-@@ -779,6 +789,7 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -779,11 +794,32 @@ class KiCADInterface(SchematicHandlersMixin):
          "get_component_list": "_ipc_get_component_list",
          "get_component_properties": "_ipc_get_component_properties",
          "set_footprint_type": "_ipc_set_footprint_type",
@@ -6847,7 +8184,47 @@ index c6ac305..89c29c4 100644
          "add_component_3d_model": "_ipc_add_component_3d_model",
          # Save command
          "save_project": "_ipc_save_project",
-@@ -1075,6 +1086,22 @@ class KiCADInterface(SchematicHandlersMixin):
+     }
+ 
++    # PowerLab patch: commands KiCad 10's API can't do on the open board (it can't load a
++    # footprint from a library: ParseAndCreateItemsFromString is an empty stub in 10.0.5,
++    # and pcbnew has no GetGlobalFootprintLib). Without this they changed the tool's offline
++    # copy and the saved file, KiCad never showed it, and KiCad's next save wrote over it
++    # (#63, #64, #65, #67). With KiCad open on the board they run on its saved file instead:
++    # KiCad saves, the SWIG handler edits the file, KiCad reverts to it.
++    LIVE_VIA_FILE_COMMANDS = {
++        "place_component",
++        "add_mounting_hole",
++        "sync_schematic_to_board",
++        "edit_component",
++        "replace_component",
++        "add_layer",
++        "replace_board_outline",
++        "update_graphic",
++        "import_svg_logo",
++        "place_component_array",
++        "duplicate_component",
++    }
++
+     # Commands that are implemented by the explicit IPC command handlers in
+     # command_routes, rather than by the generic IPC_CAPABLE_COMMANDS fast path.
+     IPC_DIRECT_COMMANDS = {
+@@ -1021,6 +1057,14 @@ class KiCADInterface(SchematicHandlersMixin):
+                 ):
+                     self._downgrade_session_to_swig()
+ 
++            # PowerLab patch: commands KiCad's API can't do live work on KiCad's saved board.
++            if command in self.LIVE_VIA_FILE_COMMANDS:
++                live = self._live_board_for_file_edit()
++                if live is not None:
++                    return self._edit_saved_board_then_revert(
++                        command, self.command_routes[command], params, live
++                    )
++
+             # Check if we can use IPC for this command (real-time UI sync).
+             # A session pinned to SWIG never routes board commands over IPC,
+             # even when IPC is connected — the GUI may hold a stale copy of
+@@ -1075,6 +1119,22 @@ class KiCADInterface(SchematicHandlersMixin):
              if handler:
                  # Execute the command
                  result = handler(params)
@@ -6870,7 +8247,7 @@ index c6ac305..89c29c4 100644
                  logger.debug(f"Command result: {result}")
  
                  # Add backend indicator
-@@ -1236,6 +1263,7 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -1236,6 +1296,7 @@ class KiCADInterface(SchematicHandlersMixin):
          "add_board_text",
          "move_footprint_text",
          "add_copper_pour",
@@ -6878,7 +8255,7 @@ index c6ac305..89c29c4 100644
          "refill_zones",
          "import_svg_logo",
          "sync_schematic_to_board",
-@@ -1848,6 +1876,272 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -1848,6 +1909,376 @@ class KiCADInterface(SchematicHandlersMixin):
          state = self._dirty_state(board_path)
          return {"success": True, "boardPath": board_path, **state}
  
@@ -6896,7 +8273,7 @@ index c6ac305..89c29c4 100644
 +                except Exception as e:
 +                    logger.warning(f"Live autoroute: no board from KiCad: {e}")
 +        try:
-+            return fr.autoroute(params)
++            return self.freerouting_commands.autoroute(params)
 +        finally:
 +            fr.live_board = None
 +
@@ -7033,10 +8410,109 @@ index c6ac305..89c29c4 100644
 +                logger.warning(f"No board from KiCad: {e}")
 +        return None
 +
++    def _live_board_for_file_edit(self) -> Optional[Tuple[str, Any]]:
++        """(board path, KiCad's kipy board) when KiCad has this session's board open, else
++        None (PowerLab patch, see LIVE_VIA_FILE_COMMANDS)."""
++        if not self._session_allows_ipc():
++            return None
++        self._try_enable_ipc_backend()
++        backend = getattr(self, "ipc_backend", None)
++        if not (self.use_ipc and backend and backend.is_connected()):
++            return None
++        try:
++            path = backend.get_open_board_path()
++        except Exception:
++            return None
++        if not path or not os.path.isfile(str(path)):
++            return None
++        session_path = getattr(self, "session_board_path", None)
++        if session_path and self._normalize_board_path(path) != session_path:
++            return None
++        try:
++            return str(path), backend._kicad.get_board()
++        except Exception as e:
++            logger.warning(f"No board from KiCad: {e}")
++            return None
++
++    def _edit_saved_board_then_revert(
++        self, command: str, handler: Any, params: Dict[str, Any], live: Tuple[str, Any]
++    ) -> Dict[str, Any]:
++        """Run a SWIG handler on KiCad's saved board and load the result into KiCad
++        (PowerLab patch, see LIVE_VIA_FILE_COMMANDS)."""
++        board_path, kicad_board = live
++        try:
++            kicad_board.save()
++        except Exception as e:
++            return {"success": False, "message": f"{command}: KiCad could not save the board: {e}"}
++        self._reload_board_file(board_path)
++        if getattr(self, "board", None) is None:
++            return {"success": False, "message": f"{command}: could not load {board_path}"}
++        if self.session_board_path is None:
++            self.session_board_path = self._normalize_board_path(board_path)
++            self.session_backend = "ipc"
++
++        result = handler(params)
++        if not (isinstance(result, dict) and result.get("success")):
++            self._reload_board_file(board_path)  # drop anything half done
++            return result
++
++        current = self.board.GetFileName() or board_path
++        if self._normalize_board_path(current) == self._normalize_board_path(board_path):
++            with preserve_project_settings(board_path):
++                pcbnew.SaveBoard(board_path, self.board)
++        self._record_board_signature()
++        try:
++            kicad_board.revert()
++        except Exception as e:
++            result["warnings"] = list(result.get("warnings") or []) + [
++                f"Saved to the board file, but KiCad did not reload it ({e}): "
++                "use File > Revert in KiCad before editing or saving there."
++            ]
++            return result
++        result["_backend"] = "ipc"
++        result["_realtime"] = True
++        result["liveNote"] = (
++            "KiCad's API can't do this on the open board, so KiCad saved the board, the "
++            "change was made on the saved file and KiCad reloaded it. KiCad's undo "
++            "history starts again from here."
++        )
++        return result
++
++    def _handle_replace_component(self, params: Dict[str, Any]) -> Dict[str, Any]:
++        """replace_component had a tool but no Python command ("Unknown command", #67).
++        It swaps the footprint like edit_component; the same footprint reloads it from
++        its library (PowerLab patch)."""
++        footprint = params.get("newFootprint") or params.get("newComponentId")
++        if not params.get("reference") or not footprint:
++            return {
++                "success": False,
++                "message": "reference and newComponentId (or newFootprint) are required",
++            }
++        return self.component_commands.edit_component(
++            {"reference": params["reference"], "footprint": footprint, "value": params.get("newValue")}
++        )
++
++    def _handle_check_part_spacing(self, params: Dict[str, Any]) -> Dict[str, Any]:
++        """Part-to-part spacing and keep-out areas on the saved board (PowerLab patch)."""
++        board_path = params.get("boardPath") or self._authoritative_board_path()
++        if not board_path or not os.path.isfile(str(board_path)):
++            return {"success": False, "message": "No saved board",
++                    "errorDetails": "Open the board with open_board, or pass boardPath"}
++        board_path = os.path.abspath(str(board_path))
++        out = part_spacing.check(board_path, params)
++        kboard = self._live_kicad_board(board_path)
++        if kboard is not None:
++            try:
++                moved = powerlab_route.unsaved_changes(kboard, board_path).get("footprints")
++            except Exception:
++                moved = None
++            if moved:
++                out["warning"] = (f"{moved} parts in KiCad differ from the saved file, which this checked: "
++                                  "save the board (save_board or Ctrl+S) and check again")
++        return out
++
 +    def _handle_powerlab_route(self, params: Dict[str, Any]) -> Dict[str, Any]:
 +        """Start the PowerLab router on the saved board, in the background (PowerLab patch)."""
-+        from commands import powerlab_route
-+
 +        board_path = params.get("boardPath") or self._authoritative_board_path()
 +        if not board_path or not os.path.isfile(str(board_path)):
 +            return {
@@ -7077,8 +8553,6 @@ index c6ac305..89c29c4 100644
 +
 +    def _handle_powerlab_route_status(self, params: Dict[str, Any]) -> Dict[str, Any]:
 +        """Wait for a PowerLab router run, then put its result on the board (PowerLab patch)."""
-+        from commands import powerlab_route
-+
 +        board_path = params.get("boardPath") or self._authoritative_board_path()
 +        if not board_path:
 +            return {"success": False, "message": "No board", "errorDetails": "Pass boardPath"}
@@ -7092,14 +8566,21 @@ index c6ac305..89c29c4 100644
 +        if state == "none":
 +            return {"success": False, "message": "No PowerLab router run for this board; start one with powerlab_route"}
 +        elapsed = round(st.get("updated", 0) - st.get("started", 0))
-+        progress = {k: st[k] for k in ("phase", "nets", "connections", "routed", "last") if k in st}
++        progress = {k: st[k] for k in ("phase", "nets", "connections", "routed", "last", "per_minute", "eta_minutes",
++                                       "layers", "time_limit_min", "stalled_seconds") if k in st}
 +        if state == "running":
++            next_steps = "Still routing: call powerlab_route_status again."
++            if st.get("stalled_seconds"):
++                next_steps = (f"Stalled: no connection routed for {st['stalled_seconds'] // 60} min, so the ones left "
++                              "probably have no way out (see last: often pads boxed in by the placement). The routing "
++                              f"stops at its time limit ({st.get('time_limit_min', '?')} min) and the run then finishes "
++                              "what it has, for finishing by hand; cancel: true throws the run away. Tell the user.")
 +            return {
 +                "success": True,
 +                "state": "running",
 +                "elapsed_seconds": elapsed,
 +                **progress,
-+                "next_steps": "Still routing: call powerlab_route_status again.",
++                "next_steps": next_steps,
 +            }
 +        if state in ("failed", "cancelled"):
 +            back = powerlab_route.put_back(board_path, self._live_kicad_board(board_path))
@@ -7151,7 +8632,7 @@ index c6ac305..89c29c4 100644
      def _handle_batch_move_components(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """Batch move wrapper that preserves the external-edit save guard."""
          if getattr(self, "session_backend", None) == "ipc" and not self._ipc_session_alive():
-@@ -5079,6 +5373,65 @@ print("ok")
+@@ -5079,6 +5510,65 @@ print("ok")
              logger.error(f"IPC route_arc_trace error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -7217,7 +8698,7 @@ index c6ac305..89c29c4 100644
      def _ipc_add_via(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for add_via - adds via with real-time UI update"""
          try:
-@@ -5131,21 +5484,37 @@ print("ok")
+@@ -5131,21 +5621,37 @@ print("ok")
              net = params.get("net")
              clearance = params.get("clearance", 0.5)
              min_width = params.get("minWidth", 0.25)
@@ -7262,7 +8743,7 @@ index c6ac305..89c29c4 100644
  
              success = self.ipc_board_api.add_zone(
                  points=formatted_points,
-@@ -5156,6 +5525,7 @@ print("ok")
+@@ -5156,6 +5662,7 @@ print("ok")
                  priority=priority,
                  fill_mode=fill_type,
                  name=name,
@@ -7270,7 +8751,38 @@ index c6ac305..89c29c4 100644
              )
  
              return {
-@@ -5456,11 +5826,182 @@ print("ok")
+@@ -5349,6 +5856,19 @@ print("ok")
+                 x = x * 0.0254
+                 y = y * 0.0254
+ 
++            # PowerLab patch (#64, #66): `layer` was ignored live, so parts couldn't go to
++            # the other side. Flip first (KiCad mirrors the angle), then place; without a
++            # rotation the part keeps the angle it had.
++            flipped = False
++            layer = params.get("layer")
++            if layer in ("F.Cu", "B.Cu"):
++                flip = self.ipc_board_api.flip_component(reference, layer)
++                if flip is None:
++                    return {"success": False, "message": f"Could not move {reference} to {layer}"}
++                flipped, angle_before = flip
++                if flipped and rotation is None:
++                    rotation = angle_before
++
+             success = self.ipc_board_api.move_component(
+                 reference=reference, x=x, y=y, rotation=rotation
+             )
+@@ -5356,7 +5876,9 @@ print("ok")
+             return {
+                 "success": success,
+                 "message": (
+-                    f"Moved component {reference} (visible in KiCAD UI)"
++                    f"Moved component {reference}"
++                    + (f" to {layer}" if flipped else "")
++                    + " (visible in KiCAD UI)"
+                     if success
+                     else "Failed to move component"
+                 ),
+@@ -5456,11 +5978,182 @@ print("ok")
              return {"success": False, "message": str(e)}
  
      def _ipc_delete_trace(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -7458,7 +8970,79 @@ index c6ac305..89c29c4 100644
  
      def _ipc_query_traces(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for query_traces - reads traces from the live KiCAD board."""
-@@ -5833,6 +6374,100 @@ print("ok")
+@@ -5558,11 +6251,20 @@ print("ok")
+         and correctly generates PCB_SHAPE arcs for rounded corners.
+         """
+         shape = params.get("shape", "rectangle")
++        if shape == "circle":
++            return self._ipc_add_outline_circle(params)  # PowerLab patch (#68)
+         if shape in ("rounded_rectangle", "rectangle"):
+             # IPC path only supports straight segments from a points list,
+             # but Claude sends rectangle/rounded_rectangle as shape+width+height.
+             # Fall back to the SWIG path which correctly handles both shapes.
++            # PowerLab patch: on KiCad's saved board, then reloaded in KiCad; the SWIG
++            # path alone changed only the tool's copy, which KiCad's next save overwrote.
+             logger.info(f"_ipc_add_board_outline: delegating {shape} to SWIG path")
++            live = self._live_board_for_file_edit()
++            if live is not None:
++                return self._edit_saved_board_then_revert(
++                    "add_board_outline", self.board_commands.add_board_outline, params, live
++                )
+             return self.board_commands.add_board_outline(params)
+ 
+         try:
+@@ -5614,6 +6316,50 @@ print("ok")
+             logger.error(f"IPC add_board_outline error: {e}")
+             return {"success": False, "message": str(e)}
+ 
++    def _ipc_add_outline_circle(self, params: Dict[str, Any]) -> Dict[str, Any]:
++        """A round board outline (Edge.Cuts circle) on KiCad's open board (PowerLab patch,
++        #68: the live handler wanted a points list, so circles failed with "At least 2
++        points required"). Centre: centerX/centerY, or x/y as the SWIG path reads them."""
++        try:
++            from kipy.board_types import BoardCircle
++            from kipy.geometry import Vector2
++            from kipy.proto.board.board_types_pb2 import BoardLayer
++            from kipy.util.units import from_mm
++
++            inner = params.get("params", params)
++            scale = {"mm": 1.0, "mil": 0.0254, "inch": 25.4}.get(inner.get("unit", "mm"), 1.0)
++            radius = inner.get("radius")
++            if radius is None and inner.get("diameter") is not None:
++                radius = inner["diameter"] / 2
++            if radius is None:
++                return {
++                    "success": False,
++                    "message": "Missing radius",
++                    "errorDetails": "Radius is required for circle",
++                }
++            cx = inner.get("centerX", inner.get("x", 0)) or 0
++            cy = inner.get("centerY", inner.get("y", 0)) or 0
++            cx, cy, radius = cx * scale, cy * scale, radius * scale
++
++            board = self.ipc_board_api._get_board()
++            circle = BoardCircle()
++            circle.center = Vector2.from_xy(from_mm(cx), from_mm(cy))
++            circle.radius_point = Vector2.from_xy(from_mm(cx + radius), from_mm(cy))
++            circle.layer = BoardLayer.BL_Edge_Cuts
++            circle.attributes.stroke.width = from_mm(inner.get("lineWidth", 0.1))
++            commit = board.begin_commit()
++            board.create_items(circle)
++            board.push_commit(commit, "Added round board outline")
++            return {
++                "success": True,
++                "message": f"Added round board outline, radius {radius:g} mm at ({cx:g}, {cy:g}) mm",
++                "center": {"x": cx, "y": cy, "unit": "mm"},
++                "radius": radius,
++            }
++        except Exception as e:
++            logger.error(f"IPC add_board_outline circle error: {e}")
++            return {"success": False, "message": str(e)}
++
+     def _ipc_add_mounting_hole(self, params: Dict[str, Any]) -> Dict[str, Any]:
+         """IPC handler for add_mounting_hole - adds mounting hole with real-time UI update"""
+         try:
+@@ -5833,6 +6579,100 @@ print("ok")
              logger.error(f"IPC set_footprint_type error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -7559,21 +9143,38 @@ index c6ac305..89c29c4 100644
      # =========================================================================
      # Legacy IPC command handlers (explicit ipc_* commands)
  
+diff --git a/python/schemas/tool_schemas.py b/python/schemas/tool_schemas.py
+index e739f90..7642a10 100644
+--- a/python/schemas/tool_schemas.py
++++ b/python/schemas/tool_schemas.py
+@@ -585,6 +585,10 @@ BOARD_TOOLS = [
+                     "default": False,
+                     "description": "True for plated through-hole (PTH) with copper pad; false (default) for NPTH (mask only).",
+                 },
++                "net": {
++                    "type": "string",
++                    "description": "Net for the pad of a plated hole, e.g. 'GND' (implies plated). PowerLab patch (#63).",
++                },
+                 "footprintLibId": {
+                     "type": "string",
+                     "description": "Optional library:name FPID (e.g. 'MountingHole:MountingHole_3.2mm'). Defaults to MountingHole:MountingHole_<diameter>mm. A non-empty FPID is required for the footprint to be selectable in KiCad's GUI Move tool.",
 diff --git a/src/command-timeout.ts b/src/command-timeout.ts
-index dfd876c..0c3e2d9 100644
+index dfd876c..1f020d4 100644
 --- a/src/command-timeout.ts
 +++ b/src/command-timeout.ts
-@@ -35,6 +35,9 @@ export const LONG_RUNNING_COMMANDS = [
+@@ -35,6 +35,11 @@ export const LONG_RUNNING_COMMANDS = [
    "list_schematic_labels",
    "get_schematic_view",
    "digikey_check_library_availability",
 +  "clean_up_routing", // PowerLab patch: several kicad-cli DRC runs
 +  "powerlab_route", // PowerLab patch: copies the board, compares it with KiCad's
 +  "undo_autoroute", // PowerLab patch: refills the zones in KiCad
++  "open_board", // PowerLab patch (#61): a large board with 300+ symbol libraries
++  "open_project", // PowerLab patch (#61): loads the board too
  ] as const;
  
  /**
-@@ -66,6 +69,13 @@ export function computeCommandTimeout(command: string, params?: unknown): number
+@@ -66,6 +71,13 @@ export function computeCommandTimeout(command: string, params?: unknown): number
      return Math.max(budgetMs, LONG_COMMAND_TIMEOUT_MS);
    }
  
@@ -7588,10 +9189,36 @@ index dfd876c..0c3e2d9 100644
      return LONG_COMMAND_TIMEOUT_MS;
    }
 diff --git a/src/tools/board.ts b/src/tools/board.ts
-index 2738ebc..7f0b245 100644
+index 2738ebc..cbb1d7d 100644
 --- a/src/tools/board.ts
 +++ b/src/tools/board.ts
-@@ -522,8 +522,20 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
+@@ -353,13 +353,24 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
+         .describe("Position of the mounting hole"),
+       diameter: z.number().describe("Diameter of the hole"),
+       padDiameter: z.number().optional().describe("Optional diameter of the pad around the hole"),
++      // PowerLab patch (#63): plated holes with a net (e.g. a GND-bonded mounting hole)
++      plated: z
++        .boolean()
++        .optional()
++        .describe("Plated through hole with a copper pad (default false: NPTH)"),
++      net: z
++        .string()
++        .optional()
++        .describe("Net for the pad of a plated hole, e.g. 'GND' (implies plated)"),
+     },
+-    async ({ position, diameter, padDiameter }) => {
++    async ({ position, diameter, padDiameter, plated, net }) => {
+       logger.debug(`Adding mounting hole at (${position.x},${position.y}) ${position.unit}`);
+       const result = await callKicadScript("add_mounting_hole", {
+         position,
+         diameter,
+         padDiameter,
++        plated,
++        net,
+       });
+ 
+       return {
+@@ -522,8 +533,34 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
          .describe(
            '"inline" (default): image returned directly; "file": written to disk, filePath returned',
          ),
@@ -7607,23 +9234,101 @@ index 2738ebc..7f0b245 100644
 +        .describe(
 +          "File mode only: where to write the image (default: <board>_2d_view.<ext> next to the board). Use numbered names to keep a series of review views.",
 +        ),
++      region: z
++        .object({
++          x0: z.number().optional(),
++          y0: z.number().optional(),
++          x1: z.number().optional(),
++          y1: z.number().optional(),
++          x: z.number().optional(),
++          y: z.number().optional(),
++          size: z.number().optional(),
++        })
++        .optional()
++        .describe(
++          "A close-up of part of the board, in board mm: {x0, y0, x1, y1}, or {x, y, size} for a square round a point. Use it to check spacing and routing in a block; a whole-board view hides parts packed pad to pad.",
++        ),
      },
 -    async ({ pcbPath, layers, width, height, format, responseMode }) => {
-+    async ({ pcbPath, layers, width, height, format, responseMode, color, outputPath }) => {
++    async ({ pcbPath, layers, width, height, format, responseMode, color, outputPath, region }) => {
        logger.debug("Getting 2D board view");
        const result = await callKicadScript("get_board_2d_view", {
          pcbPath,
-@@ -532,6 +544,8 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
+@@ -532,6 +569,9 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
          height,
          format,
          responseMode,
 +        color,
 +        outputPath,
++        region,
        });
  
        if (result.success) {
+diff --git a/src/tools/component.ts b/src/tools/component.ts
+index d3737bc..c14b26d 100644
+--- a/src/tools/component.ts
++++ b/src/tools/component.ts
+@@ -803,6 +803,58 @@ export function registerComponentTools(server: McpServer, callKicadScript: Comma
+     },
+   );
+ 
++  // ------------------------------------------------------
++  // Part spacing and keep-outs (PowerLab patch)
++  // ------------------------------------------------------
++  const keepoutArea = z.object({
++    name: z.string().optional().describe("What it is, for the report (e.g. 'encoder area')"),
++    center: z.object({ x: z.number(), y: z.number() }).optional().describe("Circle or ring centre in mm"),
++    diameter: z.number().optional().describe("Circle diameter in mm (the ring's outer diameter)"),
++    innerDiameter: z.number().optional().describe("For a ring: the free inner diameter in mm"),
++    points: z
++      .array(z.object({ x: z.number(), y: z.number() }))
++      .optional()
++      .describe("A polygon in mm instead of a circle"),
++    sides: z
++      .array(z.enum(["F", "B"]))
++      .optional()
++      .describe("Board sides it keeps parts off (default both: ['F', 'B'])"),
++    allow: z
++      .array(z.string())
++      .optional()
++      .describe("Reference prefixes allowed inside, e.g. ['R', 'C'] where the requirements let passives under an encoder ring"),
++  });
++  server.tool(
++    "check_part_spacing",
++    "Measure part placement the way a person checks it close up. Library parts often have no courtyard, so DRC and check_courtyard_overlaps can't see parts packed pad to pad; this measures the pad-to-pad gap between neighbouring parts on the same side (minGap, default 1 mm for hand soldering, 0.5 mm for machine assembly; 2 mm round fine-pitch ICs for parts not connected to them), parts whose bodies overlap, parts on the through pads of a part on the other side (thermal vias in a MOSFET or regulator pad, THT pins: a short when the nets differ), parts inside keep-out areas (the board's rule areas that keep out footprints or pads, on their sides, plus circles, rings or polygons given here for either side, each with the parts it lets in), and optionally pads too close to the board edge. Net-tie parts are skipped. Reads the saved board file, so save first. Run it after placing each block and in every review.",
++    {
++      boardPath: z.string().optional().describe("Path to .kicad_pcb file (default: current board)"),
++      minGap: z.number().optional().describe("Smallest pad-to-pad gap between parts in mm (default 1.0, for hand soldering; 0.5 for machine assembly)"),
++      fineGap: z.number().optional().describe("Smallest gap round fine-pitch ICs (pin pitch under 0.8 mm) for parts not connected to them, in mm (default 2.0); the IC's own decoupling caps and pin passives only need minGap"),
++      refs: z.array(z.string()).optional().describe("Only pairs that include one of these parts (default: all)"),
++      allowPairs: z
++        .array(z.array(z.string()).length(2))
++        .optional()
++        .describe("Pairs placed close on purpose, e.g. [['C5', 'U1']], left out of the report"),
++      keepouts: z
++        .array(keepoutArea)
++        .optional()
++        .describe("Keep-out areas from the requirements that aren't rule areas on the board, e.g. an encoder ring area on both sides"),
++      edgeGap: z.number().optional().describe("Also report pads closer than this to the board edge, in mm (default: not checked)"),
++    },
++    async (args: any) => {
++      const result = await callKicadScript("check_part_spacing", args);
++      return {
++        content: [
++          {
++            type: "text",
++            text: JSON.stringify(result, null, 2),
++          },
++        ],
++      };
++    },
++  );
++
+   // ------------------------------------------------------
+   // Suggest Placement Tool
+   // ------------------------------------------------------
 diff --git a/src/tools/freerouting.ts b/src/tools/freerouting.ts
-index d9942f7..15fca85 100644
+index d9942f7..2429611 100644
 --- a/src/tools/freerouting.ts
 +++ b/src/tools/freerouting.ts
 @@ -19,7 +19,7 @@ export function registerFreeroutingTools(server: McpServer, callKicadScript: Fun
@@ -7670,7 +9375,7 @@ index d9942f7..15fca85 100644
      },
      async (args: any) => {
        const result = await callKicadScript("autoroute", args);
-@@ -75,6 +97,124 @@ export function registerFreeroutingTools(server: McpServer, callKicadScript: Fun
+@@ -75,6 +97,132 @@ export function registerFreeroutingTools(server: McpServer, callKicadScript: Fun
      },
    );
  
@@ -7725,7 +9430,7 @@ index d9942f7..15fca85 100644
 +  // The PowerLab router (PowerLab patch): a local router that applies the lab rules
 +  server.tool(
 +    "powerlab_route",
-+    "Route the board with the PowerLab router. It runs on this computer in KiCad's Python and applies the METU Power Lab rules while routing: power rails first at their net-class width, then given copper pours round their tracks (power polygons); GND pours kept whole; no tracks under inductors or transformers; escape room at fine-pitch pins; rule-area keepouts and the .kicad_dru clearance rules; buses routed as parallel runs; few corners and vias; pads entered at their centres (straight, or at 45 degrees where the pad isn't fine pitch); a net's later tracks join its earlier ones instead of running beside them; and GND stitching vias at the end. It routes the saved .kicad_pcb, so save in KiCad first. Default-class nets are routed from scratch (their unlocked tracks and vias are removed first); other nets only if they have no tracks yet; nets with locked copper (hand-routed) are left out. A run takes minutes (about 10-15 on a 2-layer board with ~50 connections), so it runs in the background: this call returns at once, then call powerlab_route_status until it reports the result. With the board open in KiCad, KiCad shows the copper as it is routed (pours unfilled meanwhile); at the end the result goes into KiCad's open board, the zones are refilled and it is saved there (no File > Revert). Without KiCad it goes into the board file. The board from before the run is kept; undo_autoroute puts it back.",
++    "Route the board with the PowerLab router. It runs on this computer in KiCad's Python and applies the METU Power Lab rules while routing: power rails first at their net-class width, then given copper pours round their tracks (power polygons); GND pours kept whole; no tracks under inductors or transformers; escape room at fine-pitch pins; rule-area keepouts and the .kicad_dru clearance rules; buses routed as parallel runs; few corners and vias; pads entered at their centres (straight, or at 45 degrees where the pad isn't fine pitch); a net's later tracks join its earlier ones instead of running beside them; and GND stitching vias at the end. It routes the saved .kicad_pcb, so save in KiCad first. Default-class nets are routed from scratch (their unlocked tracks and vias are removed first); other nets only if they have no tracks yet; nets with locked copper (hand-routed) are left out. A run takes minutes (about 10-15 on a 2-layer board with ~50 connections; the routing stops after timeLimit minutes and what's left is reported for hand routing), so it runs in the background: this call returns at once, then call powerlab_route_status until it reports the result. With the board open in KiCad, KiCad shows the copper as it is routed (pours unfilled meanwhile); at the end the result goes into KiCad's open board, the zones are refilled and it is saved there (no File > Revert). Without KiCad it goes into the board file. The board from before the run is kept; undo_autoroute puts it back.",
 +    {
 +      boardPath: z.string().optional().describe("Path to .kicad_pcb file (default: current board)"),
 +      nets: z
@@ -7756,7 +9461,15 @@ index d9942f7..15fca85 100644
 +      layerCosts: z
 +        .array(z.number())
 +        .optional()
-+        .describe("Cost factor per copper layer, top first (default [1.0, 1.2]: the bottom costs 20% more)"),
++        .describe("Cost factor per routed copper layer, top first (default [1.0, 1.2]: the bottom costs 20% more)"),
++      routeLayers: z
++        .array(z.string())
++        .optional()
++        .describe("Copper layers to route on, e.g. ['F.Cu', 'B.Cu'] (default: every copper layer except inner planes, i.e. inner layers mostly covered by zones; vias still pass through them)"),
++      timeLimit: z
++        .number()
++        .optional()
++        .describe("Minutes for routing the connections (default 15). When they run out, the connections left are reported as 'time limit' and the run finishes what it has (pours, stitching), so it can be finished by hand."),
 +    },
 +    async (args: any) => {
 +      const result = await callKicadScript("powerlab_route", args);
@@ -7773,7 +9486,7 @@ index d9942f7..15fca85 100644
 +
 +  server.tool(
 +    "powerlab_route_status",
-+    "Wait for the PowerLab router run started with powerlab_route and report its progress (connections routed so far). When the run has finished, puts the result on the board (in KiCad when it has the board open, saved there) and returns the router's report: connections routed and left with the reason, vias, track length, new DRC errors against the board before routing, and time. If the board was edited or saved during the run, the result is not applied (start again). Call it again while state is 'running'.",
++    "Wait for the PowerLab router run started with powerlab_route and report its progress (connections routed so far, per minute, the estimated minutes left, and stalled_seconds when nothing has been routed for 3 minutes). When the run has finished, puts the result on the board (in KiCad when it has the board open, saved there) and returns the router's report: connections routed and left with the reason, vias, track length, new DRC errors against the board before routing, and time. If the board was edited or saved during the run, the result is not applied (start again). Call it again while state is 'running'.",
 +    {
 +      boardPath: z.string().optional().describe("Path to .kicad_pcb file (default: current board)"),
 +      wait: z.number().optional().describe("Seconds to wait for the run to finish before reporting progress (default 300, at most 900)"),
@@ -7796,10 +9509,27 @@ index d9942f7..15fca85 100644
    server.tool(
      "export_dsn",
 diff --git a/src/tools/registry.ts b/src/tools/registry.ts
-index 902f7b1..3a1ef9b 100644
+index 902f7b1..495b53e 100644
 --- a/src/tools/registry.ts
 +++ b/src/tools/registry.ts
-@@ -235,7 +235,8 @@ export const toolCategories: ToolCategory[] = [
+@@ -59,6 +59,7 @@ export const toolCategories: ToolCategory[] = [
+       "get_ratsnest",
+       "estimate_airwire_lengths",
+       "check_placement_clearance",
++      "check_part_spacing",
+       "move_footprint_text",
+       "add_component_annotation",
+       "group_components",
+@@ -143,6 +144,8 @@ export const toolCategories: ToolCategory[] = [
+       "export_schematic_pdf",
+       "add_schematic_text",
+       "list_schematic_texts",
++      "delete_schematic_text", // PowerLab patch (#60)
++      "move_schematic_text", // PowerLab patch (#60)
+     ],
+   },
+   {
+@@ -235,7 +238,8 @@ export const toolCategories: ToolCategory[] = [
    {
      name: "autoroute",
      description: "Freerouting autorouter: automatic PCB routing via Specctra DSN/SES",
@@ -7902,7 +9632,7 @@ index dd067be..5e4ee2e 100644
        schematicPath: z.string().describe("Path to the .kicad_sch file"),
        reference: z.string().describe("Reference of the component to replace (e.g., D1)"),
 diff --git a/src/tools/schematic.ts b/src/tools/schematic.ts
-index f2b7f4d..d93f9d8 100644
+index f2b7f4d..7927796 100644
 --- a/src/tools/schematic.ts
 +++ b/src/tools/schematic.ts
 @@ -37,7 +37,12 @@ export function registerSchematicTools(server: McpServer, callKicadScript: Funct
@@ -7919,6 +9649,120 @@ index f2b7f4d..d93f9d8 100644
        footprint: z
          .string()
          .optional()
+@@ -2153,12 +2158,13 @@ edit_schematic_component and set its value to an empty string.`,
+         }
+         const lines = texts.map(
+           (t: any) =>
+-            `  "${t.text}" at (${t.position.x}, ${t.position.y})` +
++            `  ${t.kind === "text_box" ? "text box " : ""}"${t.text}" at (${t.position.x}, ${t.position.y})` +
+             (t.angle ? ` angle=${t.angle}` : "") +
+             ` size=${t.font_size}` +
+             (t.bold ? " bold" : "") +
+             (t.italic ? " italic" : "") +
+-            ` justify=${t.justify}`,
++            ` justify=${t.justify}` +
++            (t.uuid ? ` uuid=${t.uuid}` : ""), // PowerLab patch (#60): for delete/move
+         );
+         return {
+           content: [
+@@ -2181,6 +2187,51 @@ edit_schematic_component and set its value to an empty string.`,
+     },
+   );
+ 
++  // PowerLab patch (#60): free text could be added but not deleted or moved
++  const textTarget = {
++    schematicPath: z.string().describe("Path to the .kicad_sch file"),
++    uuid: z.string().optional().describe("The text's uuid, from list_schematic_texts"),
++    text: z.string().optional().describe("The exact text, when no uuid is given"),
++    position: z
++      .array(z.number())
++      .length(2)
++      .optional()
++      .describe("Its current position [x, y], when several texts read the same"),
++  };
++  const textResult = (verb: string, result: any) => ({
++    content: [
++      {
++        type: "text" as const,
++        text: result.success
++          ? result.message
++          : `Failed to ${verb} text: ${result.message || "Unknown error"}` +
++            (result.texts ? `\n${JSON.stringify(result.texts)}` : "") +
++            (result.matches ? `\nmatching uuids: ${result.matches.join(", ")}` : ""),
++      },
++    ],
++    ...(result.success ? {} : { isError: true }),
++  });
++
++  server.tool(
++    "delete_schematic_text",
++    "Delete a free-form text annotation or text box from the schematic. " +
++      "Find it with list_schematic_texts and pass its uuid (or its exact text).",
++    textTarget,
++    async (args: any) => textResult("delete", await callKicadScript("delete_schematic_text", args)),
++  );
++
++  server.tool(
++    "move_schematic_text",
++    "Move (and optionally rotate) a free-form text annotation or text box in the schematic. " +
++      "Find it with list_schematic_texts and pass its uuid (or its exact text).",
++    {
++      ...textTarget,
++      newPosition: z.array(z.number()).length(2).describe("New position [x, y] in mm"),
++      angle: z.number().optional().describe("New angle in degrees (default: unchanged)"),
++    },
++    async (args: any) => textResult("move", await callKicadScript("move_schematic_text", args)),
++  );
++
+   // Add free-form text annotation to schematic
+   server.tool(
+     "add_schematic_text",
+diff --git a/tests/test_autoroute_best_of_n.py b/tests/test_autoroute_best_of_n.py
+index bc5f7ae..3dbf1c6 100644
+--- a/tests/test_autoroute_best_of_n.py
++++ b/tests/test_autoroute_best_of_n.py
+@@ -326,7 +326,9 @@ def test_invalid_attempts_rejected_cleanly(workdir, fake_jar):
+ 
+ 
+ def _project_files(workdir):
+-    return sorted(f.name for f in workdir.iterdir())
++    # PowerLab patch: autoroute-backup/ keeps the board from before the run for
++    # undo_autoroute; it is the one folder a run is meant to leave.
++    return sorted(f.name for f in workdir.iterdir() if f.name != "autoroute-backup")
+ 
+ 
+ @pytest.mark.unit
+diff --git a/tests/test_kicad_common_env_resolution.py b/tests/test_kicad_common_env_resolution.py
+index 168e3a2..3293e49 100644
+--- a/tests/test_kicad_common_env_resolution.py
++++ b/tests/test_kicad_common_env_resolution.py
+@@ -130,3 +130,26 @@ def test_user_defined_and_builtin_vars_coexist(monkeypatch, tmp_path):
+ 
+     assert manager._resolve_uri("${MY_CUSTOM_LIB}/lib.kicad_sym") == str(lib_file)
+     assert manager._resolve_uri("${KIPRJMOD}") == str(project_dir)
++
++
++@pytest.mark.unit
++def test_symbol_manager_reads_env_vars_once(monkeypatch, tmp_path):
++    """PowerLab patch (#61): resolving 300+ libraries re-read kicad_common.json and
++    re-probed the KiCad directories for every library, so open_board took ~27 s and hit
++    its 30 s timeout. They are worked out once per manager."""
++    calls = []
++
++    def load():
++        calls.append(1)
++        return {"MY_CUSTOM_LIB": str(tmp_path)}
++
++    monkeypatch.setattr(library_symbol.PlatformHelper, "load_kicad_env_vars", staticmethod(load))
++    for i in range(5):
++        (tmp_path / f"lib{i}.kicad_sym").touch()
++
++    manager = _make_symbol_manager()
++    for i in range(5):
++        assert manager._resolve_uri(f"${{MY_CUSTOM_LIB}}/lib{i}.kicad_sym") == str(
++            tmp_path / f"lib{i}.kicad_sym"
++        )
++    assert len(calls) == 1
 diff --git a/tests/test_lab_symbol_fields.py b/tests/test_lab_symbol_fields.py
 new file mode 100644
 index 0000000..009b312
@@ -8227,6 +10071,220 @@ index 0000000..009b312
 +
 +        with pytest.raises(ValueError):
 +            parse_schematic_color("reddish")
+diff --git a/tests/test_powerlab_live_board_edits.py b/tests/test_powerlab_live_board_edits.py
+new file mode 100644
+index 0000000..3b62dee
+--- /dev/null
++++ b/tests/test_powerlab_live_board_edits.py
+@@ -0,0 +1,192 @@
++"""PowerLab patch: board edits with KiCad open on the board (issues #63-#68).
++
++KiCad 10.0.5's API can't load a footprint from a library (ParseAndCreateItemsFromString
++is an empty stub, FlipItems came in 10.0.6), so these tools changed only the tool's
++offline copy and KiCad never showed it. Checked live against KiCad 10.0.5 too; these
++tests pin the dispatch and the pieces that don't need a KiCad window.
++"""
++
++import sys
++from pathlib import Path
++from typing import Any
++from unittest.mock import MagicMock, patch
++
++import pytest
++
++sys.path.insert(0, str(Path(__file__).parent.parent / "python"))
++
++
++def _iface() -> Any:
++    with patch("kicad_interface.USE_IPC_BACKEND", True):
++        from kicad_interface import KiCADInterface
++
++        iface = KiCADInterface.__new__(KiCADInterface)
++    iface.use_ipc = True
++    iface.board = MagicMock()
++    iface.ipc_board_api = MagicMock()
++    iface.session_backend = "ipc"
++    iface.session_board_path = None
++    return iface
++
++
++def test_library_footprint_commands_edit_the_saved_board():
++    from kicad_interface import KiCADInterface
++
++    for command in (
++        "place_component",
++        "add_mounting_hole",
++        "sync_schematic_to_board",
++        "edit_component",
++        "replace_component",
++    ):
++        assert command in KiCADInterface.LIVE_VIA_FILE_COMMANDS
++
++
++def test_live_place_goes_through_the_saved_board():
++    iface = _iface()
++    handler = MagicMock(return_value={"success": True})
++    iface.command_routes = {"place_component": handler}
++    live = ("C:/b/board.kicad_pcb", MagicMock())
++    with patch.object(iface, "_try_enable_ipc_backend"), patch.object(
++        iface, "_ipc_session_alive", return_value=True
++    ), patch.object(iface, "_live_board_for_file_edit", return_value=live), patch.object(
++        iface, "_edit_saved_board_then_revert", return_value={"success": True, "x": 1}
++    ) as edit:
++        result = iface.handle_command("place_component", {"componentId": "A:B"})
++    assert result == {"success": True, "x": 1}
++    edit.assert_called_once_with("place_component", handler, {"componentId": "A:B"}, live)
++
++
++def test_round_trip_saves_edits_saves_and_reverts_in_order():
++    iface = _iface()
++    order = []
++    kicad_board = MagicMock()
++    kicad_board.save.side_effect = lambda: order.append("kicad save")
++    kicad_board.revert.side_effect = lambda: order.append("kicad revert")
++    iface.board.GetFileName.return_value = "C:/b/board.kicad_pcb"
++
++    def reload(path):
++        order.append("load file")
++
++    def handler(params):
++        order.append("handler")
++        return {"success": True}
++
++    with patch.object(iface, "_reload_board_file", side_effect=reload), patch.object(
++        iface, "_record_board_signature"
++    ), patch("kicad_interface.pcbnew") as pcbnew, patch(
++        "kicad_interface.preserve_project_settings"
++    ):
++        pcbnew.SaveBoard.side_effect = lambda *a: order.append("save file")
++        result = iface._edit_saved_board_then_revert(
++            "place_component", handler, {}, ("C:/b/board.kicad_pcb", kicad_board)
++        )
++    assert result["success"] and result["_realtime"]
++    assert order == ["kicad save", "load file", "handler", "save file", "kicad revert"]
++
++
++def test_round_trip_failure_leaves_kicad_alone():
++    iface = _iface()
++    kicad_board = MagicMock()
++    with patch.object(iface, "_reload_board_file"), patch("kicad_interface.pcbnew") as pcbnew:
++        result = iface._edit_saved_board_then_revert(
++            "place_component",
++            lambda p: {"success": False, "message": "Footprint not found"},
++            {},
++            ("C:/b/board.kicad_pcb", kicad_board),
++        )
++    assert result["success"] is False
++    pcbnew.SaveBoard.assert_not_called()
++    kicad_board.revert.assert_not_called()
++
++
++def test_replace_component_is_a_command():
++    """#67: the tool existed, the Python command didn't ("Unknown command")."""
++    iface = _iface()
++    iface.component_commands = MagicMock()
++    iface.component_commands.edit_component.return_value = {"success": True}
++    result = iface._handle_replace_component(
++        {"reference": "R5", "newComponentId": "Lib:R_0603", "newValue": "10k"}
++    )
++    assert result["success"]
++    iface.component_commands.edit_component.assert_called_once_with(
++        {"reference": "R5", "footprint": "Lib:R_0603", "value": "10k"}
++    )
++
++
++def test_live_move_flips_before_placing():
++    """#64/#66: `layer` was ignored live. The flip comes first (it mirrors the angle)."""
++    iface = _iface()
++    calls = []
++    iface.ipc_board_api.flip_component.side_effect = lambda r, l: calls.append("flip") or (True, -90.0)
++    iface.ipc_board_api.move_component.side_effect = lambda **k: calls.append(("move", k["rotation"])) or True
++    result = iface._ipc_move_component(
++        {"reference": "R1", "position": {"x": 1, "y": 2, "unit": "mm"}, "layer": "B.Cu"}
++    )
++    assert result["success"]
++    assert calls == ["flip", ("move", -90.0)]  # keeps the angle it had
++
++
++def test_flip_falls_back_to_kicads_flip_action():
++    """KiCad 10.0.5 answers FlipItems with "no handler available"."""
++    from kicad_api.ipc_backend import IPCBoardAPI
++    from kipy.proto.board.board_types_pb2 import BoardLayer
++
++    api = IPCBoardAPI.__new__(IPCBoardAPI)
++    api._kicad = MagicMock()
++    fp = MagicMock()
++    fp.reference_field.text.value = "R1"
++    fp.layer = BoardLayer.BL_F_Cu
++    fp.orientation.degrees = 30.0
++    flipped = MagicMock()
++    flipped.id.value = fp.id.value
++    flipped.layer = BoardLayer.BL_B_Cu
++    board = MagicMock()
++    board.get_footprints.side_effect = [[fp], [flipped]]
++    board.flip_items.side_effect = RuntimeError("no handler available for FlipItems")
++    api._get_board = lambda: board
++
++    assert api.flip_component("R1", "B.Cu") == (True, 30.0)
++    board.add_to_selection.assert_called_once_with([fp])
++    api._kicad.run_action.assert_called_once_with("pcbnew.InteractiveEdit.flip")
++
++
++def test_live_circle_outline():
++    """#68: the live handler wanted a points list, so circles failed."""
++    iface = _iface()
++    board = iface.ipc_board_api._get_board.return_value
++    result = iface._ipc_add_board_outline(
++        {"shape": "circle", "params": {"x": 50, "y": 40, "radius": 5, "unit": "mm"}}
++    )
++    assert result["success"], result
++    circle = board.create_items.call_args[0][0]
++    assert circle.center.x == 50_000_000 and circle.center.y == 40_000_000
++    assert circle.radius() == pytest.approx(5_000_000)
++
++
++def test_kicad_cli_netlist_gives_pad_nets(tmp_path):
++    """#65: pad nets come from KiCad's own netlist, as F8 gives them."""
++    from commands.schematic_handlers import SchematicHandlersMixin  # noqa: F401
++    from kicad_interface import KiCADInterface
++
++    xml = """<export><design>
++      <sheet number="1" name="/"><title_block><source>top.kicad_sch</source></title_block></sheet>
++      <sheet number="2" name="/MCU/"><title_block><source>mcu.kicad_sch</source></title_block></sheet>
++    </design><nets>
++      <net code="1" name="/MCU/IO12"><node ref="U1" pin="14"/><node ref="R3" pin="2"/></net>
++      <net code="2" name="GND"><node ref="U1" pin="1"/></net>
++    </nets></export>"""
++
++    def fake_run(cmd, **kwargs):
++        Path(cmd[cmd.index("--output") + 1]).write_text(xml, encoding="utf-8")
++        return MagicMock(returncode=0, stderr="")
++
++    iface = KiCADInterface.__new__(KiCADInterface)
++    sch = tmp_path / "top.kicad_sch"
++    with patch.object(KiCADInterface, "_find_kicad_cli_static", return_value="kicad-cli"), patch(
++        "subprocess.run", side_effect=fake_run
++    ):
++        pad_nets, names, sheets = iface._kicad_cli_pad_net_map(str(sch))
++    assert pad_nets == {("U1", "14"): "/MCU/IO12", ("R3", "2"): "/MCU/IO12", ("U1", "1"): "GND"}
++    assert names == {"/MCU/IO12", "GND"}
++    assert [Path(s).name for s in sheets] == ["top.kicad_sch", "mcu.kicad_sch"]
+diff --git a/tests/test_schema_param_names.py b/tests/test_schema_param_names.py
+index 995406c..37ebbed 100644
+--- a/tests/test_schema_param_names.py
++++ b/tests/test_schema_param_names.py
+@@ -93,11 +93,9 @@ KNOWN_JSONRPC_UNREAD: Dict[str, Set[str]] = {
+ # every call answers "unknown command".
+ KNOWN_UNROUTED: Set[str] = {
+     "add_component_annotation",
+-    "add_zone",
+     "export_position_file",
+     "export_vrml",
+     "group_components",
+-    "replace_component",
+ }
+ 
+ # --- TypeScript side ---------------------------------------------------------
 diff --git a/tests/test_schematic_batch.py b/tests/test_schematic_batch.py
 index 7fd9dfa..4cebe47 100644
 --- a/tests/test_schematic_batch.py
@@ -8244,6 +10302,88 @@ index 7fd9dfa..4cebe47 100644
          )
          monkeypatch.setattr(sb, "DynamicSymbolLoader", fake_loader_cls)
          fake_pins = types.SimpleNamespace(
+diff --git a/tests/test_schematic_text_edit.py b/tests/test_schematic_text_edit.py
+new file mode 100644
+index 0000000..2d98d57
+--- /dev/null
++++ b/tests/test_schematic_text_edit.py
+@@ -0,0 +1,76 @@
++"""PowerLab patch (#60): free schematic text can be deleted and moved, not only added."""
++
++import shutil
++import sys
++from pathlib import Path
++
++sys.path.insert(0, str(Path(__file__).parent.parent / "python"))
++
++from commands.wire_manager import WireManager  # noqa: E402
++
++EMPTY_SCH = Path(__file__).parent.parent / "python" / "templates" / "empty.kicad_sch"
++
++
++def _sheet(tmp_path: Path) -> Path:
++    sch = tmp_path / "t.kicad_sch"
++    shutil.copy(EMPTY_SCH, sch)
++    assert WireManager.add_text(sch, "Wrong note", [50, 40])
++    assert WireManager.add_text(sch, "Keep me", [50, 50])
++    return sch
++
++
++def _texts(sch: Path) -> dict:
++    return {t["text"]: t for t in WireManager.list_texts(sch)}
++
++
++def test_delete_by_text(tmp_path):
++    sch = _sheet(tmp_path)
++    result = WireManager.delete_text(sch, text="Wrong note")
++    assert result["success"], result
++    assert set(_texts(sch)) == {"Keep me"}
++
++
++def test_delete_by_uuid(tmp_path):
++    sch = _sheet(tmp_path)
++    uid = _texts(sch)["Keep me"]["uuid"]
++    assert WireManager.delete_text(sch, uuid_=uid)["success"]
++    assert set(_texts(sch)) == {"Wrong note"}
++
++
++def test_move_keeps_angle_unless_given(tmp_path):
++    sch = _sheet(tmp_path)
++    assert WireManager.move_text(sch, [60, 55], text="Keep me", angle=90)["success"]
++    moved = _texts(sch)["Keep me"]
++    assert moved["position"] == {"x": 60, "y": 55} and moved["angle"] == 90
++    assert WireManager.move_text(sch, [70, 55], text="Keep me")["success"]
++    assert _texts(sch)["Keep me"]["angle"] == 90
++
++
++def test_ambiguous_or_missing_text_changes_nothing(tmp_path):
++    sch = _sheet(tmp_path)
++    WireManager.add_text(sch, "Keep me", [80, 80])
++    before = sch.read_text(encoding="utf-8")
++    result = WireManager.delete_text(sch, text="Keep me")
++    assert not result["success"] and len(result["matches"]) == 2
++    assert not WireManager.delete_text(sch, text="Not there")["success"]
++    assert sch.read_text(encoding="utf-8") == before
++    # the position picks one
++    assert WireManager.delete_text(sch, text="Keep me", position=[80, 80])["success"]
++    assert [t["position"] for t in WireManager.list_texts(sch) if t["text"] == "Keep me"] == [
++        {"x": 50, "y": 50}
++    ]
++
++
++def test_text_boxes_are_listed_and_deleted(tmp_path):
++    sch = _sheet(tmp_path)
++    content = sch.read_text(encoding="utf-8")
++    box = (
++        '(text_box "Boxed" (exclude_from_sim no) (at 20 20 0) (size 10 5) '
++        "(stroke (width 0) (type solid)) (fill (type none)) "
++        "(effects (font (size 1.27 1.27))) (uuid \"11111111-2222-3333-4444-555555555555\"))"
++    )
++    idx = content.rindex("(sheet_instances")
++    sch.write_text(content[:idx] + box + "\n" + content[idx:], encoding="utf-8")
++    assert _texts(sch)["Boxed"]["kind"] == "text_box"
++    assert WireManager.delete_text(sch, uuid_="11111111-2222-3333-4444-555555555555")["success"]
++    assert "Boxed" not in _texts(sch)
 diff --git a/tests/test_update_symbol_from_library.py b/tests/test_update_symbol_from_library.py
 index 6119fce..57ba624 100644
 --- a/tests/test_update_symbol_from_library.py
@@ -8262,3 +10402,109 @@ index 6119fce..57ba624 100644
  
 -        assert result == {"updated": 0, "injected": 0, "skipped": 0}
 +        assert result == {"updated": 0, "injected": 0, "skipped": 0, "fields_synced": 0}
+diff --git a/tests/test_wire_junction_changes.py b/tests/test_wire_junction_changes.py
+index f0c1b12..21f06e2 100644
+--- a/tests/test_wire_junction_changes.py
++++ b/tests/test_wire_junction_changes.py
+@@ -1008,6 +1008,71 @@ class TestSyncJunctionsUnit:
+         assert removed == 0
+         assert len(_find_elements(data, "junction")) == 1
+ 
++    def test_t_on_unbroken_wire_keeps_junction(self) -> None:
++        """PowerLab patch (#62): KiCad draws a T as a wire ending on the middle of another
++        wire. Its junction must survive a sync."""
++        from commands.wire_manager import WireManager
++
++        data = self._base_data()
++        data.insert(1, self._wire(0, 0, 20, 0))  # not split at (10, 0)
++        data.insert(1, self._wire(10, -10, 10, 0))
++        data.insert(1, self._junction(10, 0))
++
++        added, removed = WireManager.sync_junctions(data)
++
++        assert (added, removed) == (0, 0)
++        assert len(_find_elements(data, "junction")) == 1
++
++    def test_t_on_unbroken_wire_gets_junction(self) -> None:
++        """A wire ending on the middle of another gets the junction KiCad would add."""
++        from commands.wire_manager import WireManager
++
++        data = self._base_data()
++        data.insert(1, self._wire(0, 0, 20, 0))
++        data.insert(1, self._wire(10, -10, 10, 0))
++
++        added, removed = WireManager.sync_junctions(data)
++
++        assert (added, removed) == (1, 0)
++
++    def test_t_on_diagonal_wire_keeps_junction(self) -> None:
++        from commands.wire_manager import WireManager
++
++        data = self._base_data()
++        data.insert(1, self._wire(0, 0, 20, 20))
++        data.insert(1, self._wire(10, 10, 10, 0))
++        data.insert(1, self._junction(10, 10))
++
++        assert WireManager.sync_junctions(data) == (0, 0)
++
++    def test_wire_crossing_without_junction_stays_unconnected(self) -> None:
++        """Two wires crossing (no wire ends there) get no junction."""
++        from commands.wire_manager import WireManager
++
++        data = self._base_data()
++        data.insert(1, self._wire(0, 0, 20, 0))
++        data.insert(1, self._wire(10, -10, 10, 10))
++
++        assert WireManager.sync_junctions(data) == (0, 0)
++
++    def test_sheet_pin_counts_as_connection(self) -> None:
++        """Two wires ending on a hierarchical sheet pin keep their junction."""
++        from commands.wire_manager import WireManager
++
++        data = self._base_data()
++        sheet = [
++            Symbol("sheet"),
++            [Symbol("at"), 30, -10],
++            [Symbol("size"), 20, 20],
++            [Symbol("pin"), "IN", Symbol("input"), [Symbol("at"), 30, 0, 180]],
++        ]
++        data.insert(1, sheet)
++        data.insert(1, self._wire(20, 0, 30, 0))
++        data.insert(1, self._wire(30, 0, 30, 10))
++        data.insert(1, self._junction(30, 0))
++
++        assert WireManager.sync_junctions(data) == (0, 0)
++
+ 
+ @pytest.mark.integration
+ class TestSyncJunctionsIntegration:
+@@ -1060,6 +1125,29 @@ class TestSyncJunctionsIntegration:
+         junctions = _find_elements(data, "junction")
+         assert junctions == [], f"Expected junction removed, got {len(junctions)}"
+ 
++    def test_editing_elsewhere_keeps_kicad_t_junctions(self, sch: Any) -> None:
++        """PowerLab patch (#62): adding or deleting an unrelated wire left every T that
++        KiCad drew (wire ending mid-wire) without its junction, so those pins came apart."""
++        from commands.wire_manager import WireManager
++
++        data = _parse_sch(sch)
++        idx = next(
++            i for i, it in enumerate(data) if isinstance(it, list) and it[0] == Symbol("sheet_instances")
++        )
++        data[idx:idx] = [
++            WireManager._make_wire_sexp([0, 10], [20, 10]),
++            WireManager._make_wire_sexp([10, 0], [10, 10]),
++            WireManager._make_junction_sexp(10, 10),
++        ]
++        from utils.sexpr_format import dumps as kicad_dumps
++
++        sch.write_text(kicad_dumps(data), encoding="utf-8")
++
++        WireManager.add_wire(sch, [50, 50], [60, 50])
++        assert len(_find_elements(_parse_sch(sch), "junction")) == 1
++        WireManager.delete_wire(sch, [50, 50], [60, 50])
++        assert len(_find_elements(_parse_sch(sch), "junction")) == 1
++
+     def test_polyline_t_junction_auto_inserted(self, sch: Any) -> None:
+         """Polyline whose endpoint hits a wire midpoint auto-inserts a junction."""
+         from commands.wire_manager import WireManager
