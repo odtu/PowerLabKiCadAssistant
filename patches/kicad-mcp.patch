@@ -1531,10 +1531,10 @@ index ce1981d..da7ad90 100644
          for var, value in env_vars.items():
 diff --git a/python/commands/part_spacing.py b/python/commands/part_spacing.py
 new file mode 100644
-index 0000000..f7123e4
+index 0000000..78f1697
 --- /dev/null
 +++ b/python/commands/part_spacing.py
-@@ -0,0 +1,328 @@
+@@ -0,0 +1,339 @@
 +"""
 +check_part_spacing (PowerLab patch): part-to-part spacing and keep-out areas, measured.
 +
@@ -1547,13 +1547,15 @@ index 0000000..f7123e4
 +  pad, THT pins): copper on both sides, so a short when the nets differ;
 +- parts inside keep-out areas: the board's rule areas that keep out footprints or pads
 +  (on the side they are on), and areas given in the call (a circle or ring, a polygon),
-+  each for the top, the bottom or both sides;
++  each for the top, the bottom or both sides, with the parts it lets in (`allow`, reference
++  prefixes, e.g. passives under an encoder ring);
 +- optionally, pads closer to the board edge than edgeGap.
 +
 +It reads the saved board file, so save in KiCad first.
 +"""
 +
 +import math
++import re
 +from typing import Any, Dict, List, Optional, Tuple
 +
 +MIN_GAP = 1.0  # mm pad to pad between parts (powerlab-visual-review: assembly spacing)
@@ -1664,6 +1666,12 @@ index 0000000..f7123e4
 +        return bool(fp.IsNetTie())
 +    except Exception:
 +        return "nettie" in str(fp.GetFPID().GetLibItemName()).lower().replace("_", "")
++
++
++def _prefix(ref: str) -> str:
++    """The letters of a reference: "C12" -> "C", "TP3" -> "TP"."""
++    m = re.match(r"[A-Za-z_]+", ref)
++    return m.group(0).upper() if m else ""
 +
 +
 +def _area(spec: Dict[str, Any]) -> Tuple[str, Any, List[str]]:
@@ -1795,15 +1803,17 @@ index 0000000..f7123e4
 +        sides = [s for s, L in (("F", pcbnew.F_Cu), ("B", pcbnew.B_Cu)) if z.IsOnLayer(L)]
 +        name = z.GetZoneName() or ("rule area of " + parent.GetReference() if parent else "rule area")
 +        areas.append((name, z.Outline(), sides, "footprints" if keep_fp else "pads",
-+                      parent.GetReference() if parent else None))
++                      parent.GetReference() if parent else None, set()))
 +    for spec in params.get("keepouts") or []:
 +        name, sp, sides = _area(spec)
-+        areas.append((name, sp, sides, "footprints", None))
++        areas.append((name, sp, sides, "footprints", None, {a.upper() for a in spec.get("allow") or []}))
 +    inside = []
-+    for name, sp, sides, what, owner in areas:
++    for name, sp, sides, what, owner, allowed in areas:
 +        for ref in refs:
 +            A = info[ref]
 +            if ref == owner or A["side"] not in sides and not (what == "pads" and _through(A)):
++                continue
++            if _prefix(ref) in allowed:
 +                continue
 +            shape = A["body"] if what == "footprints" else _union(A["pads"])
 +            ov = _overlap(shape, sp)
@@ -1838,7 +1848,8 @@ index 0000000..f7123e4
 +        "ok": ok,
 +        "message": "Spacing and keep-outs are clean" if ok else summary,
 +        "rules": {"minGap_mm": min_gap, "fineGap_mm": fine_gap, "fine_pitch_parts": sorted(r for r in refs if info[r]["fine"]),
-+                  "keepout_areas": [{"name": n, "sides": s, "keeps_out": w} for n, _sp, s, w, _o in areas]},
++                  "keepout_areas": [{"name": n, "sides": s, "keeps_out": w, "allowed": sorted(al)}
++                                    for n, _sp, s, w, _o, al in areas]},
 +        "spacing": spacing[:MAX_LISTED],
 +        "spacing_count": len(spacing),
 +        "overlapping_bodies": bodies[:MAX_LISTED],
@@ -4624,7 +4635,7 @@ index 0000000..96e3f70
 +    return n
 diff --git a/python/commands/powerlab_router/pours.py b/python/commands/powerlab_router/pours.py
 new file mode 100644
-index 0000000..97e36eb
+index 0000000..9133690
 --- /dev/null
 +++ b/python/commands/powerlab_router/pours.py
 @@ -0,0 +1,200 @@
@@ -4760,7 +4771,7 @@ index 0000000..97e36eb
 +                        break
 +                    why = "it would add DRC errors: " + ", ".join(sorted({kind for kind, _u in errors}))
 +                for z in added:
-+                    board.Remove(z)
++                    board.Delete(z)  # Remove() would leave Python owning it (#247)
 +            else:
 +                skipped.setdefault(net, []).append(f"{name}: {why}")
 +    pcbnew.ZONE_FILLER(board).Fill(board.Zones())
@@ -4830,7 +4841,7 @@ index 0000000..97e36eb
 +    return {"added": len(added), "pitch_mm": pitch, "via": [vd, rb.widths(net)[2]]}
 diff --git a/python/commands/powerlab_router/router.py b/python/commands/powerlab_router/router.py
 new file mode 100644
-index 0000000..e68c041
+index 0000000..6c4daf9
 --- /dev/null
 +++ b/python/commands/powerlab_router/router.py
 @@ -0,0 +1,1308 @@
@@ -5188,7 +5199,7 @@ index 0000000..e68c041
 +
 +    def run(self, nets, log=None):
 +        rb = self.rb
-+        t_start = time.time()
++        t_start = time.perf_counter()  # time.time() ticks every ~15 ms on Windows
 +        conns = self.connections(nets)
 +        pending = list(conns)
 +        g = rb.grid
@@ -5213,7 +5224,7 @@ index 0000000..e68c041
 +                     "event": f"routed as part of the bus {c.bus}"})
 +        timed_out = 0
 +        while pending:
-+            if self.time_limit and time.time() - t_start > self.time_limit:
++            if self.time_limit and time.perf_counter() - t_start > self.time_limit:
 +                for c in pending:
 +                    c.reason = "time limit"
 +                timed_out = len(pending)
@@ -5291,7 +5302,7 @@ index 0000000..e68c041
 +            "left": [{"net": c.net, "connection": c.name(), "reason": c.reason or "ripped up, not rerouted"}
 +                     for c in conns if not c.items],
 +            "groups": by_group,
-+            "seconds": round(time.time() - t_start, 1),
++            "seconds": round(time.perf_counter() - t_start, 1),
 +            "layers": [rb.layer_names[L] for L in rb.layers],
 +            "time_limit_left": timed_out,
 +            "over_connection_limit": totals.get("slow", 0),
@@ -6669,10 +6680,10 @@ index 0000000..30ff246
 +    return True
 diff --git a/python/commands/route_cleanup.py b/python/commands/route_cleanup.py
 new file mode 100644
-index 0000000..076167b
+index 0000000..4700077
 --- /dev/null
 +++ b/python/commands/route_cleanup.py
-@@ -0,0 +1,431 @@
+@@ -0,0 +1,428 @@
 +"""Clean up tracks after autorouting (PowerLab patch).
 +
 +Freerouting leaves zero-length and tiny stubs, dead-end segments, tracks narrower than
@@ -6702,12 +6713,9 @@ index 0000000..076167b
 +
 +
 +def _delete(board, item):
-+    """Board.Delete keeps ownership in C++; Remove() corrupts SWIG on KiCad 10 (#247)."""
-+    if callable(getattr(board, "Delete", None)):
-+        board.Delete(item)
-+    else:
-+        board.Remove(item)
-+        item.thisown = False
++    """Board.Delete keeps ownership in C++; Remove() corrupts SWIG on KiCad 10 (#247).
++    This module runs in KiCad's own Python, whose BOARD always has Delete."""
++    board.Delete(item)
 +
 +
 +def _tracks(board):
@@ -8090,10 +8098,18 @@ index 6f9a813..1c8b1c5 100644
              # Create outline polyline
              outline = PolyLine()
 diff --git a/python/kicad_interface.py b/python/kicad_interface.py
-index c6ac305..e2683f2 100644
+index c6ac305..b7ea0b9 100644
 --- a/python/kicad_interface.py
 +++ b/python/kicad_interface.py
-@@ -525,6 +525,7 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -36,6 +36,7 @@ if sys.platform == "win32":
+ 
+ import sexpdata
+ from annotations import AnnotationLoader
++from commands import part_spacing, powerlab_route  # PowerLab patch
+ from commands.schematic_handlers import SchematicHandlersMixin
+ from commands.wire_manager import WireManager
+ from resources.resource_definitions import RESOURCE_DEFINITIONS, handle_resource_read
+@@ -525,6 +526,7 @@ class KiCADInterface(SchematicHandlersMixin):
              "rotate_component": self.component_commands.rotate_component,
              "delete_component": self.component_commands.delete_component,
              "edit_component": self.component_commands.edit_component,
@@ -8101,7 +8117,7 @@ index c6ac305..e2683f2 100644
              "get_component_properties": self.component_commands.get_component_properties,
              "get_component_list": self.component_commands.get_component_list,
              "get_component_geometry": self.component_commands.get_component_geometry,
-@@ -558,6 +559,7 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -558,6 +560,7 @@ class KiCADInterface(SchematicHandlersMixin):
              "create_netclass": self.routing_commands.create_netclass,
              "set_net_color": self.routing_commands.set_net_color,
              "add_copper_pour": self.routing_commands.add_copper_pour,
@@ -8109,7 +8125,7 @@ index c6ac305..e2683f2 100644
              "route_differential_pair": self.routing_commands.route_differential_pair,
              "refill_zones": self._handle_refill_zones,
              # Design rule commands
-@@ -693,6 +695,8 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -693,6 +696,8 @@ class KiCADInterface(SchematicHandlersMixin):
              "add_schematic_hierarchical_label": self._handle_add_schematic_hierarchical_label,
              "add_schematic_text": self._handle_add_schematic_text,
              "list_schematic_texts": self._handle_list_schematic_texts,
@@ -8118,7 +8134,7 @@ index c6ac305..e2683f2 100644
              "add_sheet_pin": self._handle_add_sheet_pin,
              "import_svg_logo": self._handle_import_svg_logo,
              # UI/Process management commands
-@@ -732,10 +736,15 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -732,10 +737,15 @@ class KiCADInterface(SchematicHandlersMixin):
              "remove_library_table_entry": remove_library_table_entry,
              "set_library_table_uri": set_library_table_uri,
              # Freerouting autoroute commands
@@ -8135,7 +8151,7 @@ index c6ac305..e2683f2 100644
              # Eagle import commands
              "import_eagle_project": self.eagle_commands.import_eagle_project,
              # Schematic migration
-@@ -756,12 +765,14 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -756,12 +766,14 @@ class KiCADInterface(SchematicHandlersMixin):
          "route_trace": "_ipc_route_trace",
          "route_arc_trace": "_ipc_route_arc_trace",
          "add_via": "_ipc_add_via",
@@ -8150,7 +8166,7 @@ index c6ac305..e2683f2 100644
          "refill_zones": "_ipc_refill_zones",
          # Board commands
          "add_text": "_ipc_add_text",
-@@ -771,6 +782,9 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -771,6 +783,9 @@ class KiCADInterface(SchematicHandlersMixin):
          "add_board_outline": "_ipc_add_board_outline",
          "add_mounting_hole": "_ipc_add_mounting_hole",
          "get_layer_list": "_ipc_get_layer_list",
@@ -8160,7 +8176,7 @@ index c6ac305..e2683f2 100644
          # Component commands
          "place_component": "_ipc_place_component",
          "move_component": "_ipc_move_component",
-@@ -779,11 +793,32 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -779,11 +794,32 @@ class KiCADInterface(SchematicHandlersMixin):
          "get_component_list": "_ipc_get_component_list",
          "get_component_properties": "_ipc_get_component_properties",
          "set_footprint_type": "_ipc_set_footprint_type",
@@ -8193,7 +8209,7 @@ index c6ac305..e2683f2 100644
      # Commands that are implemented by the explicit IPC command handlers in
      # command_routes, rather than by the generic IPC_CAPABLE_COMMANDS fast path.
      IPC_DIRECT_COMMANDS = {
-@@ -1021,6 +1056,14 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -1021,6 +1057,14 @@ class KiCADInterface(SchematicHandlersMixin):
                  ):
                      self._downgrade_session_to_swig()
  
@@ -8208,7 +8224,7 @@ index c6ac305..e2683f2 100644
              # Check if we can use IPC for this command (real-time UI sync).
              # A session pinned to SWIG never routes board commands over IPC,
              # even when IPC is connected — the GUI may hold a stale copy of
-@@ -1075,6 +1118,22 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -1075,6 +1119,22 @@ class KiCADInterface(SchematicHandlersMixin):
              if handler:
                  # Execute the command
                  result = handler(params)
@@ -8231,7 +8247,7 @@ index c6ac305..e2683f2 100644
                  logger.debug(f"Command result: {result}")
  
                  # Add backend indicator
-@@ -1236,6 +1295,7 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -1236,6 +1296,7 @@ class KiCADInterface(SchematicHandlersMixin):
          "add_board_text",
          "move_footprint_text",
          "add_copper_pour",
@@ -8239,7 +8255,7 @@ index c6ac305..e2683f2 100644
          "refill_zones",
          "import_svg_logo",
          "sync_schematic_to_board",
-@@ -1848,6 +1908,382 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -1848,6 +1909,376 @@ class KiCADInterface(SchematicHandlersMixin):
          state = self._dirty_state(board_path)
          return {"success": True, "boardPath": board_path, **state}
  
@@ -8257,7 +8273,7 @@ index c6ac305..e2683f2 100644
 +                except Exception as e:
 +                    logger.warning(f"Live autoroute: no board from KiCad: {e}")
 +        try:
-+            return fr.autoroute(params)
++            return self.freerouting_commands.autoroute(params)
 +        finally:
 +            fr.live_board = None
 +
@@ -8478,8 +8494,6 @@ index c6ac305..e2683f2 100644
 +
 +    def _handle_check_part_spacing(self, params: Dict[str, Any]) -> Dict[str, Any]:
 +        """Part-to-part spacing and keep-out areas on the saved board (PowerLab patch)."""
-+        from commands import part_spacing, powerlab_route
-+
 +        board_path = params.get("boardPath") or self._authoritative_board_path()
 +        if not board_path or not os.path.isfile(str(board_path)):
 +            return {"success": False, "message": "No saved board",
@@ -8499,8 +8513,6 @@ index c6ac305..e2683f2 100644
 +
 +    def _handle_powerlab_route(self, params: Dict[str, Any]) -> Dict[str, Any]:
 +        """Start the PowerLab router on the saved board, in the background (PowerLab patch)."""
-+        from commands import powerlab_route
-+
 +        board_path = params.get("boardPath") or self._authoritative_board_path()
 +        if not board_path or not os.path.isfile(str(board_path)):
 +            return {
@@ -8541,8 +8553,6 @@ index c6ac305..e2683f2 100644
 +
 +    def _handle_powerlab_route_status(self, params: Dict[str, Any]) -> Dict[str, Any]:
 +        """Wait for a PowerLab router run, then put its result on the board (PowerLab patch)."""
-+        from commands import powerlab_route
-+
 +        board_path = params.get("boardPath") or self._authoritative_board_path()
 +        if not board_path:
 +            return {"success": False, "message": "No board", "errorDetails": "Pass boardPath"}
@@ -8622,7 +8632,7 @@ index c6ac305..e2683f2 100644
      def _handle_batch_move_components(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """Batch move wrapper that preserves the external-edit save guard."""
          if getattr(self, "session_backend", None) == "ipc" and not self._ipc_session_alive():
-@@ -5079,6 +5515,65 @@ print("ok")
+@@ -5079,6 +5510,65 @@ print("ok")
              logger.error(f"IPC route_arc_trace error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -8688,7 +8698,7 @@ index c6ac305..e2683f2 100644
      def _ipc_add_via(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for add_via - adds via with real-time UI update"""
          try:
-@@ -5131,21 +5626,37 @@ print("ok")
+@@ -5131,21 +5621,37 @@ print("ok")
              net = params.get("net")
              clearance = params.get("clearance", 0.5)
              min_width = params.get("minWidth", 0.25)
@@ -8733,7 +8743,7 @@ index c6ac305..e2683f2 100644
  
              success = self.ipc_board_api.add_zone(
                  points=formatted_points,
-@@ -5156,6 +5667,7 @@ print("ok")
+@@ -5156,6 +5662,7 @@ print("ok")
                  priority=priority,
                  fill_mode=fill_type,
                  name=name,
@@ -8741,7 +8751,7 @@ index c6ac305..e2683f2 100644
              )
  
              return {
-@@ -5349,6 +5861,19 @@ print("ok")
+@@ -5349,6 +5856,19 @@ print("ok")
                  x = x * 0.0254
                  y = y * 0.0254
  
@@ -8761,7 +8771,7 @@ index c6ac305..e2683f2 100644
              success = self.ipc_board_api.move_component(
                  reference=reference, x=x, y=y, rotation=rotation
              )
-@@ -5356,7 +5881,9 @@ print("ok")
+@@ -5356,7 +5876,9 @@ print("ok")
              return {
                  "success": success,
                  "message": (
@@ -8772,7 +8782,7 @@ index c6ac305..e2683f2 100644
                      if success
                      else "Failed to move component"
                  ),
-@@ -5456,11 +5983,182 @@ print("ok")
+@@ -5456,11 +5978,182 @@ print("ok")
              return {"success": False, "message": str(e)}
  
      def _ipc_delete_trace(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -8960,7 +8970,7 @@ index c6ac305..e2683f2 100644
  
      def _ipc_query_traces(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for query_traces - reads traces from the live KiCAD board."""
-@@ -5558,11 +6256,20 @@ print("ok")
+@@ -5558,11 +6251,20 @@ print("ok")
          and correctly generates PCB_SHAPE arcs for rounded corners.
          """
          shape = params.get("shape", "rectangle")
@@ -8981,7 +8991,7 @@ index c6ac305..e2683f2 100644
              return self.board_commands.add_board_outline(params)
  
          try:
-@@ -5614,6 +6321,50 @@ print("ok")
+@@ -5614,6 +6316,50 @@ print("ok")
              logger.error(f"IPC add_board_outline error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -9032,7 +9042,7 @@ index c6ac305..e2683f2 100644
      def _ipc_add_mounting_hole(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for add_mounting_hole - adds mounting hole with real-time UI update"""
          try:
-@@ -5833,6 +6584,100 @@ print("ok")
+@@ -5833,6 +6579,100 @@ print("ok")
              logger.error(f"IPC set_footprint_type error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -9255,10 +9265,10 @@ index 2738ebc..cbb1d7d 100644
  
        if (result.success) {
 diff --git a/src/tools/component.ts b/src/tools/component.ts
-index d3737bc..b33bc28 100644
+index d3737bc..c14b26d 100644
 --- a/src/tools/component.ts
 +++ b/src/tools/component.ts
-@@ -803,6 +803,54 @@ export function registerComponentTools(server: McpServer, callKicadScript: Comma
+@@ -803,6 +803,58 @@ export function registerComponentTools(server: McpServer, callKicadScript: Comma
      },
    );
  
@@ -9278,10 +9288,14 @@ index d3737bc..b33bc28 100644
 +      .array(z.enum(["F", "B"]))
 +      .optional()
 +      .describe("Board sides it keeps parts off (default both: ['F', 'B'])"),
++    allow: z
++      .array(z.string())
++      .optional()
++      .describe("Reference prefixes allowed inside, e.g. ['R', 'C'] where the requirements let passives under an encoder ring"),
 +  });
 +  server.tool(
 +    "check_part_spacing",
-+    "Measure part placement the way a person checks it close up. Library parts often have no courtyard, so DRC and check_courtyard_overlaps can't see parts packed pad to pad; this measures the pad-to-pad gap between neighbouring parts on the same side (minGap, default 1 mm for hand soldering, 0.5 mm for machine assembly; 2 mm round fine-pitch ICs for parts not connected to them), parts whose bodies overlap, parts on the through pads of a part on the other side (thermal vias in a MOSFET or regulator pad, THT pins: a short when the nets differ), parts inside keep-out areas (the board's rule areas that keep out footprints or pads, on their sides, plus circles, rings or polygons given here for either side), and optionally pads too close to the board edge. Net-tie parts are skipped. Reads the saved board file, so save first. Run it after placing each block and in every review.",
++    "Measure part placement the way a person checks it close up. Library parts often have no courtyard, so DRC and check_courtyard_overlaps can't see parts packed pad to pad; this measures the pad-to-pad gap between neighbouring parts on the same side (minGap, default 1 mm for hand soldering, 0.5 mm for machine assembly; 2 mm round fine-pitch ICs for parts not connected to them), parts whose bodies overlap, parts on the through pads of a part on the other side (thermal vias in a MOSFET or regulator pad, THT pins: a short when the nets differ), parts inside keep-out areas (the board's rule areas that keep out footprints or pads, on their sides, plus circles, rings or polygons given here for either side, each with the parts it lets in), and optionally pads too close to the board edge. Net-tie parts are skipped. Reads the saved board file, so save first. Run it after placing each block and in every review.",
 +    {
 +      boardPath: z.string().optional().describe("Path to .kicad_pcb file (default: current board)"),
 +      minGap: z.number().optional().describe("Smallest pad-to-pad gap between parts in mm (default 1.0, for hand soldering; 0.5 for machine assembly)"),
@@ -9703,6 +9717,21 @@ index f2b7f4d..7927796 100644
    // Add free-form text annotation to schematic
    server.tool(
      "add_schematic_text",
+diff --git a/tests/test_autoroute_best_of_n.py b/tests/test_autoroute_best_of_n.py
+index bc5f7ae..3dbf1c6 100644
+--- a/tests/test_autoroute_best_of_n.py
++++ b/tests/test_autoroute_best_of_n.py
+@@ -326,7 +326,9 @@ def test_invalid_attempts_rejected_cleanly(workdir, fake_jar):
+ 
+ 
+ def _project_files(workdir):
+-    return sorted(f.name for f in workdir.iterdir())
++    # PowerLab patch: autoroute-backup/ keeps the board from before the run for
++    # undo_autoroute; it is the one folder a run is meant to leave.
++    return sorted(f.name for f in workdir.iterdir() if f.name != "autoroute-backup")
+ 
+ 
+ @pytest.mark.unit
 diff --git a/tests/test_kicad_common_env_resolution.py b/tests/test_kicad_common_env_resolution.py
 index 168e3a2..3293e49 100644
 --- a/tests/test_kicad_common_env_resolution.py
