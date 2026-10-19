@@ -918,6 +918,48 @@ class McpPatchTests(unittest.TestCase):
         self.assertIn("def _ipc_move_footprint_text", patch)
         self.assertIn("+            board.update_items([target_fp])\n+            board.push_commit(commit, f\"Moved {reference} {field} text\")", patch)
 
+    def test_schematic_text_can_be_deleted_and_moved(self):
+        """Issue #60: free text could be added and listed, but not deleted or moved."""
+        patch = self.patch()
+        for tool in ("delete_schematic_text", "move_schematic_text"):
+            self.assertIn(f'+            "{tool}": self._handle_{tool},', patch)
+            self.assertIn(f'+    "{tool}",', patch)  # the TypeScript tool
+        self.assertIn("def delete_text(", patch)
+        self.assertIn("def move_text(", patch)
+
+    def test_open_board_resolves_symbol_libraries_once(self):
+        """Issue #61: open_board took ~27 s with 300+ symbol libraries and timed out at 30 s."""
+        patch = self.patch()
+        self.assertIn('env_vars = getattr(self, "_uri_env_vars", None)', patch)
+        self.assertIn('+  "open_board", // PowerLab patch (#61)', patch)
+
+    def test_junctions_count_wires_running_through(self):
+        """Issue #62: every wire edit dropped the junctions of T's drawn in KiCad."""
+        patch = self.patch()
+        self.assertIn("def _through_wire_counter(", patch)
+        self.assertIn("return ends + 2 * through(iu) if ends else 0", patch)
+
+    def test_live_board_edits_that_need_a_library_footprint(self):
+        """Issues #63, #65, #67: these changed only the tool's copy with KiCad open."""
+        patch = self.patch()
+        self.assertIn("LIVE_VIA_FILE_COMMANDS = {", patch)
+        for command in ("place_component", "add_mounting_hole", "sync_schematic_to_board",
+                        "edit_component", "replace_component"):
+            self.assertIn(f'+        "{command}",\n', patch)
+        self.assertIn("kicad_board.revert()", patch)
+        self.assertIn('"replace_component": self._handle_replace_component', patch)
+        self.assertIn("cli_nets = self._kicad_cli_pad_net_map(schematic_path)", patch)
+        self.assertIn("nets_renamed.append(", patch)
+        self.assertIn('describe("Net for the pad of a plated hole', patch)
+
+    def test_parts_flip_and_circles_draw_in_live_mode(self):
+        """Issues #64, #66, #68."""
+        patch = self.patch()
+        self.assertIn("def flip_component(self, reference: str, layer: str)", patch)
+        self.assertIn('self._kicad.run_action("pcbnew.InteractiveEdit.flip")', patch)
+        self.assertIn("return self._ipc_add_outline_circle(params)", patch)
+        self.assertIn("circle.radius_point = Vector2.from_xy(", patch)
+
     def test_pour_nets_are_left_out_of_routing(self):
         module = types.ModuleType("pour_nets")
         exec(self.new_file("python/commands/pour_nets.py"), module.__dict__)

@@ -27,7 +27,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 diff --git a/README.md b/README.md
-index 831a2f3..a352c15 100644
+index 831a2f3..aabca60 100644
 --- a/README.md
 +++ b/README.md
 @@ -23,8 +23,8 @@ The [Model Context Protocol](https://modelcontextprotocol.io/) is an open standa
@@ -36,8 +36,8 @@ index 831a2f3..a352c15 100644
  
 -- 233 tools registered, 173 of them indexed for keyword discovery
 -- 173 tools across 16 categories with JSON Schema validation
-+- 237 tools registered, 177 of them indexed for keyword discovery
-+- 177 tools across 16 categories with JSON Schema validation
++- 239 tools registered, 180 of them indexed for keyword discovery
++- 180 tools across 16 categories with JSON Schema validation
  - Keyword tool discovery via `search_tools` / `get_category_tools`
  - 23 dynamic resources exposing project state
  - Complete schematic workflow with 65 tools (authoring, batch edits, hierarchy, layout) and dynamic symbol loading (~10,000 symbols)
@@ -46,7 +46,7 @@ index 831a2f3..a352c15 100644
  - **32 essential tools** that `search_tools` surfaces first, covering the
    operations nearly every session needs
 -- **173 tools indexed across 16 categories** (board, component, export, drc,
-+- **177 tools indexed across 16 categories** (board, component, export, drc,
++- **180 tools indexed across 16 categories** (board, component, export, drc,
    schematic, library, symbol_library, symbol_pins, schematic_hierarchy,
    schematic_layout, schematic_batch, routing, autoroute, validation,
    parts-registry, digikey)
@@ -55,11 +55,11 @@ index 831a2f3..a352c15 100644
  ## Available Tools
  
 -The server exposes every tool directly, so your assistant can call any of them without a discovery step -- just ask for what you want to accomplish. **173 tools** are additionally indexed into 16 functional categories, so `search_tools` and `get_category_tools` can find one by keyword.
-+The server exposes every tool directly, so your assistant can call any of them without a discovery step -- just ask for what you want to accomplish. **177 tools** are additionally indexed into 16 functional categories, so `search_tools` and `get_category_tools` can find one by keyword.
++The server exposes every tool directly, so your assistant can call any of them without a discovery step -- just ask for what you want to accomplish. **180 tools** are additionally indexed into 16 functional categories, so `search_tools` and `get_category_tools` can find one by keyword.
  
  The lists below are a curated tour of the most useful tools, not the full set.
 -For the complete, generated reference of all 233 tools -- including how each one
-+For the complete, generated reference of all 237 tools -- including how each one
++For the complete, generated reference of all 239 tools -- including how each one
  is discovered -- see [Tool Inventory](docs/TOOL_INVENTORY.md).
  
  ### Project Management (12 tools)
@@ -70,7 +70,7 @@ index 831a2f3..a352c15 100644
 -- **Capabilities:** Tools (233), Resources (23)
 -- **Tool discovery:** keyword search catalogue indexing 173 tools in 16 categories
 +- **Capabilities:** Tools (237), Resources (23)
-+- **Tool discovery:** keyword search catalogue indexing 177 tools in 16 categories
++- **Tool discovery:** keyword search catalogue indexing 180 tools in 16 categories
  - **Error Handling:** Standard JSON-RPC error codes
  
  ### TypeScript Server (`src/`)
@@ -79,7 +79,7 @@ index 831a2f3..a352c15 100644
  See [STATUS_SUMMARY.md](docs/STATUS_SUMMARY.md) for the complete status matrix and [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
  
 -**Working Features (233 tools):**
-+**Working Features (237 tools):**
++**Working Features (239 tools):**
  
  - Project management with snapshot checkpointing
  - Complete board design (outline, layers, zones, mounting holes, text, SVG logos)
@@ -145,6 +145,43 @@ index 0000000..ef01ec3
 +    except OSError:
 +        pass
 +    return {"success": True, "restored_from": source, "saved_before_run": taken}
+diff --git a/python/commands/board/outline.py b/python/commands/board/outline.py
+index 3caa343..f488fdc 100644
+--- a/python/commands/board/outline.py
++++ b/python/commands/board/outline.py
+@@ -423,7 +423,8 @@ class BoardOutlineCommands:
+             position = params.get("position")
+             diameter = params.get("diameter")
+             pad_diameter = params.get("padDiameter")
+-            plated = params.get("plated", False)
++            net_name = params.get("net")  # PowerLab patch (#63)
++            plated = bool(params.get("plated", False) or net_name)
+             footprint_lib_id = params.get("footprintLibId")
+ 
+             if not position or not diameter:
+@@ -493,6 +494,13 @@ class BoardOutlineCommands:
+                 mask_only.AddLayer(pcbnew.B_Mask)
+                 pad.SetLayerSet(mask_only)
+ 
++            if net_name:
++                net = self.board.FindNet(net_name)
++                if net is None:
++                    net = pcbnew.NETINFO_ITEM(self.board, net_name)
++                    self.board.Add(net)
++                pad.SetNet(net)
++
+             module.Add(pad)
+ 
+             # Position the mounting hole
+@@ -509,6 +517,8 @@ class BoardOutlineCommands:
+                     "diameter": diameter,
+                     "padDiameter": pad_diameter or diameter + 1,
+                     "plated": plated,
++                    "net": net_name,
++                    "reference": f"MH{next_num}",
+                     "footprintLibId": f"{lib_name}:{fp_name}",
+                 },
+             }
 diff --git a/python/commands/board/view.py b/python/commands/board/view.py
 index 16a4915..922b826 100644
 --- a/python/commands/board/view.py
@@ -279,6 +316,54 @@ index 16a4915..922b826 100644
                      with open(output_path, "wb") as f:
                          f.write(image_bytes)
                      return {
+diff --git a/python/commands/component.py b/python/commands/component.py
+index f635672..fd3e2eb 100644
+--- a/python/commands/component.py
++++ b/python/commands/component.py
+@@ -149,6 +149,8 @@ class ComponentCommands(PlacementOptimizerCommands):
+             if layer == "B.Cu":
+                 if not module.IsFlipped():
+                     module.Flip(module.GetPosition(), False)
++                    # PowerLab patch: Flip mirrors the angle (30 became 150); set it again.
++                    module.SetOrientation(angle)
+ 
+             return {
+                 "success": True,
+@@ -219,10 +221,11 @@ class ComponentCommands(PlacementOptimizerCommands):
+             # Flip to target layer if specified
+             if layer:
+                 current_layer = self.board.GetLayerName(module.GetLayer())
+-                if layer == "B.Cu" and current_layer != "B.Cu":
+-                    module.Flip(module.GetPosition(), False)
+-                elif layer == "F.Cu" and current_layer != "F.Cu":
++                angle = module.GetOrientation()
++                if layer in ("F.Cu", "B.Cu") and current_layer != layer:
+                     module.Flip(module.GetPosition(), False)
++                    # PowerLab patch: Flip mirrors the angle; keep the one asked for.
++                    module.SetOrientation(angle)
+ 
+             return {
+                 "success": True,
+@@ -330,7 +333,9 @@ class ComponentCommands(PlacementOptimizerCommands):
+                     if layer:
+                         current_layer = self.board.GetLayerName(module.GetLayer())
+                         if layer in ("F.Cu", "B.Cu") and current_layer != layer:
++                            angle = module.GetOrientation()
+                             module.Flip(module.GetPosition(), False)
++                            module.SetOrientation(angle)  # PowerLab patch: Flip mirrors it
+                     moved.append(
+                         {
+                             "reference": ref,
+@@ -563,6 +568,9 @@ class ComponentCommands(PlacementOptimizerCommands):
+                 self.board.Add(new_module)
+                 if was_flipped and not new_module.IsFlipped():
+                     new_module.Flip(new_module.GetPosition(), False)
++                    # PowerLab patch: Flip mirrors the angle; keep the old part's.
++                    new_module.SetOrientation(module.GetOrientation())
++                    new_module.SetPosition(module.GetPosition())
+                 delete_board_item(self.board, module)
+                 module = new_module
+ 
 diff --git a/python/commands/dynamic_symbol_loader.py b/python/commands/dynamic_symbol_loader.py
 index 4fd6044..b205dd7 100644
 --- a/python/commands/dynamic_symbol_loader.py
@@ -1387,6 +1472,63 @@ index 0000000..36e1a36
 +            self.errors += 1
 +            logger.warning(f"Live autoroute update skipped: {e}")
 +        self.timings.append(time.time() - t0)
+diff --git a/python/commands/library_symbol.py b/python/commands/library_symbol.py
+index ce1981d..da7ad90 100644
+--- a/python/commands/library_symbol.py
++++ b/python/commands/library_symbol.py
+@@ -222,25 +222,33 @@ class SymbolLibraryManager:
+         """
+         resolved = uri
+ 
+-        # Common KiCAD environment variables
+-        env_vars = {
+-            "KICAD10_SYMBOL_DIR": self._find_kicad_symbol_dir(),
+-            "KICAD9_SYMBOL_DIR": self._find_kicad_symbol_dir(),
+-            "KICAD8_SYMBOL_DIR": self._find_kicad_symbol_dir(),
+-            "KICAD_SYMBOL_DIR": self._find_kicad_symbol_dir(),
+-            "KICAD10_3RD_PARTY": self._find_3rd_party_dir(),
+-            "KICAD9_3RD_PARTY": self._find_3rd_party_dir(),
+-            "KICAD8_3RD_PARTY": self._find_3rd_party_dir(),
+-            "KICAD_3RD_PARTY": self._find_3rd_party_dir(),
+-            "KISYSSYM": self._find_kicad_symbol_dir(),
+-        }
+-
+-        # Merge user-defined env vars from kicad_common.json
+-        env_vars.update(PlatformHelper.load_kicad_env_vars())
+-
+-        # Project directory
+-        if self.project_path:
+-            env_vars["KIPRJMOD"] = str(self.project_path)
++        # PowerLab patch (#61): worked out once per manager, not once per library. With
++        # 300+ libraries the directory probes and kicad_common.json reads took ~27 s, so
++        # open_board hit its 30 s timeout.
++        env_vars = getattr(self, "_uri_env_vars", None)
++        if env_vars is None:
++            symbol_dir = self._find_kicad_symbol_dir()
++            third_party_dir = self._find_3rd_party_dir()
++            # Common KiCAD environment variables
++            env_vars = {
++                "KICAD10_SYMBOL_DIR": symbol_dir,
++                "KICAD9_SYMBOL_DIR": symbol_dir,
++                "KICAD8_SYMBOL_DIR": symbol_dir,
++                "KICAD_SYMBOL_DIR": symbol_dir,
++                "KICAD10_3RD_PARTY": third_party_dir,
++                "KICAD9_3RD_PARTY": third_party_dir,
++                "KICAD8_3RD_PARTY": third_party_dir,
++                "KICAD_3RD_PARTY": third_party_dir,
++                "KISYSSYM": symbol_dir,
++            }
++
++            # Merge user-defined env vars from kicad_common.json
++            env_vars.update(PlatformHelper.load_kicad_env_vars())
++
++            # Project directory
++            if self.project_path:
++                env_vars["KIPRJMOD"] = str(self.project_path)
++            self._uri_env_vars = env_vars
+ 
+         # Replace environment variables
+         for var, value in env_vars.items():
 diff --git a/python/commands/part_spacing.py b/python/commands/part_spacing.py
 new file mode 100644
 index 0000000..f7123e4
@@ -7233,7 +7375,7 @@ index 4f4fea6..e6aa8b6 100644
                      fdata.get("value", "") if isinstance(fdata, dict) else str(fdata)
                  )
 diff --git a/python/commands/schematic_handlers.py b/python/commands/schematic_handlers.py
-index ee10775..0fde965 100644
+index ee10775..b63d79a 100644
 --- a/python/commands/schematic_handlers.py
 +++ b/python/commands/schematic_handlers.py
 @@ -263,7 +263,7 @@ class SchematicHandlersMixin:
@@ -7245,6 +7387,194 @@ index ee10775..0fde965 100644
              footprint = component.get("footprint", "")
              x = component.get("x", 0)
              y = component.get("y", 0)
+@@ -2596,6 +2596,49 @@ class SchematicHandlersMixin:
+             logger.error(traceback.format_exc())
+             return {"success": False, "message": str(e)}
+ 
++    def _schematic_text_target(self, params: Dict[str, Any]) -> Tuple[Optional[Path], Dict]:
++        schematic_path = params.get("schematicPath")
++        if not schematic_path:
++            return None, {"success": False, "message": "schematicPath is required"}
++        sch_file = Path(schematic_path)
++        if not sch_file.exists():
++            return None, {"success": False, "message": f"Schematic not found: {schematic_path}"}
++        return sch_file, {}
++
++    def _handle_delete_schematic_text(self, params: Dict[str, Any]) -> Dict[str, Any]:
++        """Delete a free text or text box (PowerLab patch, #60)."""
++        try:
++            sch_file, error = self._schematic_text_target(params)
++            if sch_file is None:
++                return error
++            return WireManager.delete_text(
++                sch_file, params.get("uuid"), params.get("text"), params.get("position")
++            )
++        except Exception as e:
++            logger.error(f"Error deleting schematic text: {e}")
++            return {"success": False, "message": str(e)}
++
++    def _handle_move_schematic_text(self, params: Dict[str, Any]) -> Dict[str, Any]:
++        """Move (and optionally rotate) a free text or text box (PowerLab patch, #60)."""
++        try:
++            sch_file, error = self._schematic_text_target(params)
++            if sch_file is None:
++                return error
++            new_position = params.get("newPosition")
++            if not new_position or len(new_position) != 2:
++                return {"success": False, "message": "newPosition [x, y] is required"}
++            return WireManager.move_text(
++                sch_file,
++                new_position,
++                params.get("uuid"),
++                params.get("text"),
++                params.get("position"),
++                params.get("angle"),
++            )
++        except Exception as e:
++            logger.error(f"Error moving schematic text: {e}")
++            return {"success": False, "message": str(e)}
++
+     def _handle_add_schematic_text(self, params: Dict[str, Any]) -> Dict[str, Any]:
+         """Add a free-form text annotation (SCH_TEXT) to a schematic."""
+         logger.info("Adding text annotation to schematic")
+@@ -3150,11 +3193,21 @@ class SchematicHandlersMixin:
+                     "message": f"Schematic not found. Provide schematicPath. Tried: {schematic_path}",
+                 }
+ 
+-            # Build the pad->net map from the sheets reachable from the root
++            # Build the pad->net map from the sheets reachable from the root.
++            # PowerLab patch: from KiCad's own netlist (kicad-cli, the one F8 uses) when it
++            # can be exported. The schematic parser below left local labels on the middle of
++            # a wire unmerged and dropped the "/Sheet/" prefix of sheet-local names, so pads
++            # got the wrong nets; it stays as the fallback.
+             sheets_scanned: list = []
+-            pad_net_map, net_names = self._build_hierarchical_pad_net_map(
+-                schematic_path, sheets_out=sheets_scanned
+-            )
++            cli_nets = self._kicad_cli_pad_net_map(schematic_path)
++            if cli_nets is not None:
++                pad_net_map, net_names, sheets_scanned = cli_nets
++                netlist_source = "kicad-cli"
++            else:
++                pad_net_map, net_names = self._build_hierarchical_pad_net_map(
++                    schematic_path, sheets_out=sheets_scanned
++                )
++                netlist_source = "schematic parser"
+ 
+             # Add missing footprints from the schematic to the board *before*
+             # we add nets and assign pads — F8 in KiCad does this implicitly
+@@ -3182,6 +3235,8 @@ class SchematicHandlersMixin:
+             # Assign nets to pads (now also covers any footprints we just added)
+             assigned_pads = 0
+             unmatched = []
++            renamed_to: Dict[str, set] = {}  # PowerLab patch: old net -> new names
++            kept_names: set = set()
+             for fp in board.GetFootprints():
+                 ref = fp.GetReference()
+                 for pad in fp.Pads():
+@@ -3190,10 +3245,30 @@ class SchematicHandlersMixin:
+                     if key in pad_net_map:
+                         net_name = pad_net_map[key]
+                         if nets_by_name.has_key(net_name):
++                            old_name = pad.GetNetname()
++                            if old_name and old_name != net_name:
++                                renamed_to.setdefault(old_name, set()).add(net_name)
++                            else:
++                                kept_names.add(net_name)
+                             pad.SetNet(nets_by_name[net_name])
+                             assigned_pads += 1
+                     else:
+                         unmatched.append(f"{ref}/{pad_num}")
++                        if pad.GetNetname():
++                            kept_names.add(pad.GetNetname())
++
++            # PowerLab patch: a net whose pads all moved to one new name was renamed in
++            # the schematic (e.g. "IO12" -> "/MCU/IO12"). Like F8, its tracks, vias and
++            # zones follow, or they would be left on the old net, shorted to the pads.
++            nets_renamed = []
++            for old_name, new_names in renamed_to.items():
++                if len(new_names) != 1 or old_name in kept_names:
++                    continue
++                new_net = nets_by_name[next(iter(new_names))]
++                for item in list(board.GetTracks()) + list(board.Zones()):
++                    if item.GetNetname() == old_name:
++                        item.SetNet(new_net)
++                nets_renamed.append({"from": old_name, "to": next(iter(new_names))})
+ 
+             with preserve_project_settings(board_path):
+                 board.Save(board_path)
+@@ -3232,6 +3307,8 @@ class SchematicHandlersMixin:
+                     f"{len(added_nets)} nets added, {assigned_pads} pads assigned"
+                 ),
+                 "sheets_scanned": sheet_names,
++                "netlist_source": netlist_source,
++                "nets_renamed": nets_renamed,
+                 "nets_added": added_nets,
+                 "nets_total": len(net_names),
+                 "pads_assigned": assigned_pads,
+@@ -3252,6 +3329,62 @@ class SchematicHandlersMixin:
+             logger.error(traceback.format_exc())
+             return {"success": False, "message": str(e)}
+ 
++    def _kicad_cli_pad_net_map(self, schematic_path: str) -> Optional[Tuple[Dict, set, list]]:
++        """{(ref, pin): net} from KiCad's own netlist, or None (PowerLab patch).
++
++        Returns ``(pad_net_map, net_names, sheet_paths)``. The net names are KiCad's, as
++        F8 gives them: ``/Sheet/LABEL`` for sheet-local labels, ``Net-(R1-Pad1)`` for
++        unlabelled wires.
++        """
++        import subprocess
++        import tempfile
++        import xml.etree.ElementTree as ET
++
++        kicad_cli = self._find_kicad_cli_static()
++        if not kicad_cli:
++            return None
++        with tempfile.NamedTemporaryFile(suffix=".xml", delete=False) as tmp:
++            tmp_path = tmp.name
++        try:
++            cmd = [kicad_cli, "sch", "export", "netlist", "--format", "kicadxml",
++                   "--output", tmp_path, schematic_path]
++            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
++            if result.returncode != 0:
++                logger.warning(
++                    f"kicad-cli netlist export failed (exit {result.returncode}): "
++                    f"{result.stderr.strip()}; using the schematic parser"
++                )
++                return None
++            root = ET.parse(tmp_path).getroot()
++            pad_net_map: Dict[Tuple[str, str], str] = {}
++            net_names: set = set()
++            for net in root.findall("./nets/net"):
++                name = net.get("name", "")
++                if not name:
++                    continue
++                net_names.add(name)
++                for node in net.findall("node"):
++                    ref, pin = node.get("ref"), node.get("pin")
++                    if ref and pin:
++                        pad_net_map[(ref, pin)] = name
++            if not net_names:
++                return None
++            root_dir = Path(schematic_path).parent
++            sheets = [
++                str(root_dir / s.findtext("title_block/source", ""))
++                for s in root.findall("./design/sheet")
++                if s.findtext("title_block/source")
++            ]
++            return pad_net_map, net_names, sheets
++        except Exception as e:
++            logger.warning(f"Could not read KiCad's netlist: {e}; using the schematic parser")
++            return None
++        finally:
++            try:
++                Path(tmp_path).unlink()
++            except OSError:
++                pass
++
+     def _extract_components_from_schematic(self, schematic_path: str) -> List[Dict[str, str]]:
+         """Run kicad-cli netlist export and return the flat list of components.
+ 
 diff --git a/python/commands/update_symbol_from_library.py b/python/commands/update_symbol_from_library.py
 index f876f4b..582a074 100644
 --- a/python/commands/update_symbol_from_library.py
@@ -7354,8 +7684,289 @@ index f876f4b..582a074 100644
 +        "fields_synced": total_synced,
          "results": results,
      }
+diff --git a/python/commands/wire_manager.py b/python/commands/wire_manager.py
+index 2ad29f6..10ddd45 100644
+--- a/python/commands/wire_manager.py
++++ b/python/commands/wire_manager.py
+@@ -12,7 +12,7 @@ import re
+ import tempfile
+ import uuid
+ from pathlib import Path
+-from typing import Any, List, Optional, Tuple
++from typing import Any, Callable, Dict, List, Optional, Tuple
+ 
+ import sexpdata
+ from sexpdata import Symbol
+@@ -671,36 +671,106 @@ class WireManager:
+ 
+         return world_positions
+ 
++    @staticmethod
++    def _collect_sheet_pin_positions(sch_data: list) -> List[Tuple[float, float]]:
++        """Return (x, y) for every hierarchical sheet pin (``(sheet ... (pin ... (at x y)))``).
++
++        PowerLab patch: a wire may end on a sheet pin, which is a connection point too.
++        """
++        positions: List[Tuple[float, float]] = []
++        for item in sch_data:
++            if not (isinstance(item, list) and item and item[0] == Symbol("sheet")):
++                continue
++            for part in item[1:]:
++                if not (isinstance(part, list) and part and part[0] == _SYM_PIN):
++                    continue
++                at = next(
++                    (p for p in part[1:] if isinstance(p, list) and len(p) >= 3 and p[0] == _SYM_AT),
++                    None,
++                )
++                if at is not None:
++                    positions.append((float(at[1]), float(at[2])))
++        return positions
++
++    @staticmethod
++    def _through_wire_counter(sch_data: list) -> Callable[[Tuple[int, int]], int]:
++        """Return a function giving how many wires pass *through* an IU point.
++
++        PowerLab patch (#62): KiCad draws a T as one wire ending on the middle of another,
++        with a junction dot. A wire running through the point is two exits there, as in
++        KiCad's SCH_SCREEN::IsExplicitJunction.
++        """
++        horizontal: Dict[int, List[Tuple[int, int]]] = {}
++        vertical: Dict[int, List[Tuple[int, int]]] = {}
++        diagonal: List[Tuple[int, int, int, int]] = []
++        for item in sch_data:
++            parsed = WireManager._parse_wire(item)
++            if parsed is None:
++                continue
++            (x1, y1), (x2, y2), _, _ = parsed
++            a = (round(x1 * _IU_PER_MM), round(y1 * _IU_PER_MM))
++            b = (round(x2 * _IU_PER_MM), round(y2 * _IU_PER_MM))
++            if a == b:
++                continue
++            if a[1] == b[1]:
++                horizontal.setdefault(a[1], []).append((min(a[0], b[0]), max(a[0], b[0])))
++            elif a[0] == b[0]:
++                vertical.setdefault(a[0], []).append((min(a[1], b[1]), max(a[1], b[1])))
++            else:
++                diagonal.append((a[0], a[1], b[0], b[1]))
++
++        def count(pt: Tuple[int, int]) -> int:
++            px, py = pt
++            n = sum(1 for lo, hi in horizontal.get(py, ()) if lo < px < hi)
++            n += sum(1 for lo, hi in vertical.get(px, ()) if lo < py < hi)
++            for ax, ay, bx, by in diagonal:
++                if (px, py) in ((ax, ay), (bx, by)):
++                    continue
++                cross = (bx - ax) * (py - ay) - (by - ay) * (px - ax)
++                if abs(cross) > abs(bx - ax) + abs(by - ay):  # off the line by > ~1 IU
++                    continue
++                if min(ax, bx) <= px <= max(ax, bx) and min(ay, by) <= py <= max(ay, by):
++                    n += 1
++            return n
++
++        return count
++
+     @staticmethod
+     def sync_junctions(sch_data: list) -> Tuple[int, int]:
+         """Add missing junctions and remove stale ones in sch_data in-place.
+ 
+-        A junction is needed at any point where the total of wire endpoints plus
+-        component pin positions is ≥ 3 and at least one wire endpoint is present.
+-        This covers wire-only T/X junctions and wire-meets-pin-with-another-wire cases.
++        A junction is needed where at least three wires, pins or sheet pins meet. A wire
++        that runs through the point counts twice (PowerLab patch, #62), so a wire ending on
++        the middle of another keeps its junction. New junctions are only added where a
++        wire ends; an existing junction stays wherever three exits still meet.
+ 
+         Returns (added_count, removed_count).
+         """
+         from collections import Counter
+ 
+-        wire_endpoints = WireManager._collect_wire_endpoints(sch_data)
+-        wire_iu: Counter = Counter(
+-            (round(x * _IU_PER_MM), round(y * _IU_PER_MM)) for x, y in wire_endpoints
+-        )
++        def to_iu(points: List[Tuple[float, float]]) -> Counter:
++            return Counter((round(x * _IU_PER_MM), round(y * _IU_PER_MM)) for x, y in points)
+ 
+-        pin_positions = WireManager._collect_pin_positions(sch_data)
+-        pin_iu: Counter = Counter(
+-            (round(x * _IU_PER_MM), round(y * _IU_PER_MM)) for x, y in pin_positions
++        wire_iu = to_iu(WireManager._collect_wire_endpoints(sch_data))
++        pin_iu = to_iu(
++            WireManager._collect_pin_positions(sch_data)
++            + WireManager._collect_sheet_pin_positions(sch_data)
+         )
++        through = WireManager._through_wire_counter(sch_data)
++
++        def exits(iu: Tuple[int, int]) -> int:
++            ends = wire_iu.get(iu, 0) + pin_iu.get(iu, 0)
++            return ends + 2 * through(iu) if ends else 0
+ 
+-        # wire_iu.items() guarantees wire_cnt >= 1, so no extra guard needed
+-        needed_iu = {iu for iu, wire_cnt in wire_iu.items() if wire_cnt + pin_iu.get(iu, 0) >= 3}
++        needed_iu = {iu for iu in wire_iu if exits(iu) >= 3}
+ 
+         existing = WireManager._get_existing_junctions(sch_data)
+         existing_iu = set(existing.keys())
+ 
+         # Remove stale junctions; work in reverse index order to avoid shifting
+-        stale_indices = sorted([existing[iu] for iu in existing_iu - needed_iu], reverse=True)
++        stale_indices = sorted(
++            [existing[iu] for iu in existing_iu - needed_iu if exits(iu) < 3], reverse=True
++        )
+         for idx in stale_indices:
+             del sch_data[idx]
+         removed = len(stale_indices)
+@@ -1024,7 +1094,12 @@ class WireManager:
+ 
+             results = []
+             for item in sch_data:
+-                if not (isinstance(item, list) and len(item) >= 2 and item[0] == _SYM_TEXT):
++                # PowerLab patch (#60): text boxes too, so they can be found and deleted
++                if not (
++                    isinstance(item, list)
++                    and len(item) >= 2
++                    and item[0] in (_SYM_TEXT, Symbol("text_box"))
++                ):
+                     continue
+                 # item[1] is the text string
+                 text_val = item[1] if len(item) > 1 else ""
+@@ -1064,6 +1139,7 @@ class WireManager:
+ 
+                 results.append(
+                     {
++                        "kind": str(item[0]),
+                         "text": text_val,
+                         "position": {"x": pos_x, "y": pos_y},
+                         "angle": angle,
+@@ -1082,6 +1158,125 @@ class WireManager:
+             logger.error(traceback.format_exc())
+             return None
+ 
++    # PowerLab patch (#60): free text could be added and listed, but nothing could delete
++    # or move it, so a wrong note stayed on the sheet.
++    _TEXT_KINDS = (Symbol("text"), Symbol("text_box"))
++
++    @staticmethod
++    def _text_item_info(item: Any) -> Optional[Dict[str, Any]]:
++        if not (isinstance(item, list) and len(item) >= 2 and item[0] in WireManager._TEXT_KINDS):
++            return None
++        info: Dict[str, Any] = {"kind": str(item[0]), "text": str(item[1]), "uuid": "", "at": None}
++        for part in item[2:]:
++            if isinstance(part, list) and part:
++                if part[0] == _SYM_AT and len(part) >= 3:
++                    info["at"] = part
++                elif part[0] == _SYM_UUID and len(part) >= 2:
++                    info["uuid"] = str(part[1])
++        return info
++
++    @staticmethod
++    def _find_texts(
++        sch_data: list,
++        uuid_: Optional[str],
++        text: Optional[str],
++        position: Optional[List[float]],
++        tolerance: float = 0.5,
++    ) -> Tuple[List[int], List[Dict[str, Any]]]:
++        """Indices of the text items that match, and every candidate looked at."""
++        hits: List[int] = []
++        seen: List[Dict[str, Any]] = []
++        for i, item in enumerate(sch_data):
++            info = WireManager._text_item_info(item)
++            if info is None:
++                continue
++            at = info["at"]
++            xy = (float(at[1]), float(at[2])) if at is not None else None
++            seen.append({"kind": info["kind"], "text": info["text"], "uuid": info["uuid"],
++                         "position": {"x": xy[0], "y": xy[1]} if xy else None})
++            if uuid_ and info["uuid"] != uuid_:
++                continue
++            if text is not None and info["text"] != text:
++                continue
++            if position is not None and (
++                xy is None
++                or abs(xy[0] - float(position[0])) > tolerance
++                or abs(xy[1] - float(position[1])) > tolerance
++            ):
++                continue
++            hits.append(i)
++        return hits, seen
++
++    @staticmethod
++    def _edit_text(
++        schematic_path: Path,
++        uuid_: Optional[str],
++        text: Optional[str],
++        position: Optional[List[float]],
++        edit: Callable[[list, int], str],
++    ) -> Dict[str, Any]:
++        if not uuid_ and text is None and position is None:
++            return {"success": False, "message": "Give the text's uuid, or its text (and position)"}
++        with open(schematic_path, "r", encoding="utf-8") as f:
++            sch_data = sexpdata.loads(f.read())
++        hits, seen = WireManager._find_texts(sch_data, uuid_, text, position)
++        if not hits:
++            return {
++                "success": False,
++                "message": "No matching text on this sheet (list_schematic_texts shows them)",
++                "texts": seen[:50],
++            }
++        if len(hits) > 1:
++            return {
++                "success": False,
++                "message": f"{len(hits)} texts match: give the uuid or the position",
++                "matches": [WireManager._text_item_info(sch_data[i])["uuid"] for i in hits],
++            }
++        message = edit(sch_data, hits[0])
++        with open(schematic_path, "w", encoding="utf-8") as f:
++            f.write(kicad_dumps(sch_data))
++        return {"success": True, "message": message}
++
++    @staticmethod
++    def delete_text(
++        schematic_path: Path,
++        uuid_: Optional[str] = None,
++        text: Optional[str] = None,
++        position: Optional[List[float]] = None,
++    ) -> Dict[str, Any]:
++        """Delete one free text or text box, found by uuid or by text (and position)."""
++
++        def edit(sch_data: list, i: int) -> str:
++            info = WireManager._text_item_info(sch_data[i])
++            del sch_data[i]
++            return f"Deleted {info['kind']} '{info['text']}'"
++
++        return WireManager._edit_text(schematic_path, uuid_, text, position, edit)
++
++    @staticmethod
++    def move_text(
++        schematic_path: Path,
++        new_position: List[float],
++        uuid_: Optional[str] = None,
++        text: Optional[str] = None,
++        position: Optional[List[float]] = None,
++        angle: Optional[float] = None,
++    ) -> Dict[str, Any]:
++        """Move (and optionally rotate) one free text or text box."""
++
++        def edit(sch_data: list, i: int) -> str:
++            info = WireManager._text_item_info(sch_data[i])
++            at = info["at"]
++            old_angle = at[3] if len(at) >= 4 else 0
++            at[1:] = [float(new_position[0]), float(new_position[1]),
++                      old_angle if angle is None else angle]
++            return (
++                f"Moved {info['kind']} '{info['text']}' to "
++                f"({float(new_position[0]):g}, {float(new_position[1]):g})"
++            )
++
++        return WireManager._edit_text(schematic_path, uuid_, text, position, edit)
++
+     @staticmethod
+     def add_text(
+         schematic_path: Path,
 diff --git a/python/kicad_api/ipc_backend.py b/python/kicad_api/ipc_backend.py
-index 6f9a813..5d40efc 100644
+index 6f9a813..1c8b1c5 100644
 --- a/python/kicad_api/ipc_backend.py
 +++ b/python/kicad_api/ipc_backend.py
 @@ -471,6 +471,30 @@ class IPCBoardAPI(BoardAPI):
@@ -7389,7 +8000,61 @@ index 6f9a813..5d40efc 100644
      @staticmethod
      def _get_box2_extents(bbox: Any) -> tuple[float, float, float, float]:
          """Return left/top/right/bottom for kipy Box2 wrappers across versions."""
-@@ -905,7 +929,13 @@ class IPCBoardAPI(BoardAPI):
+@@ -879,6 +903,53 @@ class IPCBoardAPI(BoardAPI):
+             logger.error(f"Failed to place placeholder component: {e}")
+             return False
+ 
++    def flip_component(self, reference: str, layer: str) -> Optional[tuple]:
++        """Put a footprint on `layer` ("F.Cu" or "B.Cu") (PowerLab patch, #64/#66).
++
++        Returns (flipped, angle in degrees before the flip), or None on failure. KiCad
++        10.0.5 has no FlipItems handler (it came in 10.0.6), so the footprint is selected
++        and KiCad's own flip action runs on it.
++        """
++        try:
++            from kipy.proto.board.board_types_pb2 import BoardLayer
++
++            board = self._get_board()
++            target = next(
++                (
++                    fp
++                    for fp in board.get_footprints()
++                    if fp.reference_field and fp.reference_field.text.value == reference
++                ),
++                None,
++            )
++            if target is None:
++                logger.error(f"Component not found: {reference}")
++                return None
++            want = BoardLayer.BL_B_Cu if layer == "B.Cu" else BoardLayer.BL_F_Cu
++            angle = target.orientation.degrees if target.orientation else 0.0
++            if target.layer == want:
++                return False, angle
++            try:
++                board.flip_items([target])
++            except Exception as e:  # no handler before KiCad 10.0.6
++                logger.debug(f"FlipItems unavailable ({e}); using KiCad's flip action")
++                board.clear_selection()
++                board.add_to_selection([target])
++                try:
++                    self._kicad.run_action("pcbnew.InteractiveEdit.flip")
++                finally:
++                    board.clear_selection()
++            now = next(
++                (fp for fp in board.get_footprints() if fp.id.value == target.id.value), None
++            )
++            if now is None or now.layer != want:
++                logger.error(f"KiCad did not flip {reference}")
++                return None
++            return True, angle
++        except Exception as e:
++            logger.error(f"Failed to flip component: {e}")
++            return None
++
+     def move_component(
+         self, reference: str, x: float, y: float, rotation: Optional[float] = None
+     ) -> bool:
+@@ -905,7 +976,13 @@ class IPCBoardAPI(BoardAPI):
              target_fp.position = Vector2.from_xy(from_mm(x), from_mm(y))
  
              if rotation is not None:
@@ -7403,7 +8068,7 @@ index 6f9a813..5d40efc 100644
  
              # Apply changes
              commit = board.begin_commit()
-@@ -1387,6 +1417,7 @@ class IPCBoardAPI(BoardAPI):
+@@ -1387,6 +1464,7 @@ class IPCBoardAPI(BoardAPI):
          priority: int = 0,
          fill_mode: str = "solid",
          name: str = "",
@@ -7411,7 +8076,7 @@ index 6f9a813..5d40efc 100644
      ) -> bool:
          """
          Add a copper pour zone to the board.
-@@ -1453,6 +1484,12 @@ class IPCBoardAPI(BoardAPI):
+@@ -1453,6 +1531,12 @@ class IPCBoardAPI(BoardAPI):
              zone._proto.copper_settings.fill_mode = (
                  ZoneFillMode.ZFM_HATCHED if fill_mode == "hatched" else ZoneFillMode.ZFM_SOLID
              )
@@ -7425,10 +8090,18 @@ index 6f9a813..5d40efc 100644
              # Create outline polyline
              outline = PolyLine()
 diff --git a/python/kicad_interface.py b/python/kicad_interface.py
-index c6ac305..c830fd5 100644
+index c6ac305..e2683f2 100644
 --- a/python/kicad_interface.py
 +++ b/python/kicad_interface.py
-@@ -558,6 +558,7 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -525,6 +525,7 @@ class KiCADInterface(SchematicHandlersMixin):
+             "rotate_component": self.component_commands.rotate_component,
+             "delete_component": self.component_commands.delete_component,
+             "edit_component": self.component_commands.edit_component,
++            "replace_component": self._handle_replace_component,  # PowerLab patch (#67)
+             "get_component_properties": self.component_commands.get_component_properties,
+             "get_component_list": self.component_commands.get_component_list,
+             "get_component_geometry": self.component_commands.get_component_geometry,
+@@ -558,6 +559,7 @@ class KiCADInterface(SchematicHandlersMixin):
              "create_netclass": self.routing_commands.create_netclass,
              "set_net_color": self.routing_commands.set_net_color,
              "add_copper_pour": self.routing_commands.add_copper_pour,
@@ -7436,7 +8109,16 @@ index c6ac305..c830fd5 100644
              "route_differential_pair": self.routing_commands.route_differential_pair,
              "refill_zones": self._handle_refill_zones,
              # Design rule commands
-@@ -732,10 +733,15 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -693,6 +695,8 @@ class KiCADInterface(SchematicHandlersMixin):
+             "add_schematic_hierarchical_label": self._handle_add_schematic_hierarchical_label,
+             "add_schematic_text": self._handle_add_schematic_text,
+             "list_schematic_texts": self._handle_list_schematic_texts,
++            "delete_schematic_text": self._handle_delete_schematic_text,  # PowerLab patch (#60)
++            "move_schematic_text": self._handle_move_schematic_text,  # PowerLab patch (#60)
+             "add_sheet_pin": self._handle_add_sheet_pin,
+             "import_svg_logo": self._handle_import_svg_logo,
+             # UI/Process management commands
+@@ -732,10 +736,15 @@ class KiCADInterface(SchematicHandlersMixin):
              "remove_library_table_entry": remove_library_table_entry,
              "set_library_table_uri": set_library_table_uri,
              # Freerouting autoroute commands
@@ -7453,7 +8135,7 @@ index c6ac305..c830fd5 100644
              # Eagle import commands
              "import_eagle_project": self.eagle_commands.import_eagle_project,
              # Schematic migration
-@@ -756,12 +762,14 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -756,12 +765,14 @@ class KiCADInterface(SchematicHandlersMixin):
          "route_trace": "_ipc_route_trace",
          "route_arc_trace": "_ipc_route_arc_trace",
          "add_via": "_ipc_add_via",
@@ -7468,7 +8150,7 @@ index c6ac305..c830fd5 100644
          "refill_zones": "_ipc_refill_zones",
          # Board commands
          "add_text": "_ipc_add_text",
-@@ -771,6 +779,9 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -771,6 +782,9 @@ class KiCADInterface(SchematicHandlersMixin):
          "add_board_outline": "_ipc_add_board_outline",
          "add_mounting_hole": "_ipc_add_mounting_hole",
          "get_layer_list": "_ipc_get_layer_list",
@@ -7478,7 +8160,7 @@ index c6ac305..c830fd5 100644
          # Component commands
          "place_component": "_ipc_place_component",
          "move_component": "_ipc_move_component",
-@@ -779,6 +790,7 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -779,11 +793,32 @@ class KiCADInterface(SchematicHandlersMixin):
          "get_component_list": "_ipc_get_component_list",
          "get_component_properties": "_ipc_get_component_properties",
          "set_footprint_type": "_ipc_set_footprint_type",
@@ -7486,7 +8168,47 @@ index c6ac305..c830fd5 100644
          "add_component_3d_model": "_ipc_add_component_3d_model",
          # Save command
          "save_project": "_ipc_save_project",
-@@ -1075,6 +1087,22 @@ class KiCADInterface(SchematicHandlersMixin):
+     }
+ 
++    # PowerLab patch: commands KiCad 10's API can't do on the open board (it can't load a
++    # footprint from a library: ParseAndCreateItemsFromString is an empty stub in 10.0.5,
++    # and pcbnew has no GetGlobalFootprintLib). Without this they changed the tool's offline
++    # copy and the saved file, KiCad never showed it, and KiCad's next save wrote over it
++    # (#63, #64, #65, #67). With KiCad open on the board they run on its saved file instead:
++    # KiCad saves, the SWIG handler edits the file, KiCad reverts to it.
++    LIVE_VIA_FILE_COMMANDS = {
++        "place_component",
++        "add_mounting_hole",
++        "sync_schematic_to_board",
++        "edit_component",
++        "replace_component",
++        "add_layer",
++        "replace_board_outline",
++        "update_graphic",
++        "import_svg_logo",
++        "place_component_array",
++        "duplicate_component",
++    }
++
+     # Commands that are implemented by the explicit IPC command handlers in
+     # command_routes, rather than by the generic IPC_CAPABLE_COMMANDS fast path.
+     IPC_DIRECT_COMMANDS = {
+@@ -1021,6 +1056,14 @@ class KiCADInterface(SchematicHandlersMixin):
+                 ):
+                     self._downgrade_session_to_swig()
+ 
++            # PowerLab patch: commands KiCad's API can't do live work on KiCad's saved board.
++            if command in self.LIVE_VIA_FILE_COMMANDS:
++                live = self._live_board_for_file_edit()
++                if live is not None:
++                    return self._edit_saved_board_then_revert(
++                        command, self.command_routes[command], params, live
++                    )
++
+             # Check if we can use IPC for this command (real-time UI sync).
+             # A session pinned to SWIG never routes board commands over IPC,
+             # even when IPC is connected — the GUI may hold a stale copy of
+@@ -1075,6 +1118,22 @@ class KiCADInterface(SchematicHandlersMixin):
              if handler:
                  # Execute the command
                  result = handler(params)
@@ -7509,7 +8231,7 @@ index c6ac305..c830fd5 100644
                  logger.debug(f"Command result: {result}")
  
                  # Add backend indicator
-@@ -1236,6 +1264,7 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -1236,6 +1295,7 @@ class KiCADInterface(SchematicHandlersMixin):
          "add_board_text",
          "move_footprint_text",
          "add_copper_pour",
@@ -7517,7 +8239,7 @@ index c6ac305..c830fd5 100644
          "refill_zones",
          "import_svg_logo",
          "sync_schematic_to_board",
-@@ -1848,6 +1877,300 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -1848,6 +1908,382 @@ class KiCADInterface(SchematicHandlersMixin):
          state = self._dirty_state(board_path)
          return {"success": True, "boardPath": board_path, **state}
  
@@ -7672,6 +8394,88 @@ index c6ac305..c830fd5 100644
 +                logger.warning(f"No board from KiCad: {e}")
 +        return None
 +
++    def _live_board_for_file_edit(self) -> Optional[Tuple[str, Any]]:
++        """(board path, KiCad's kipy board) when KiCad has this session's board open, else
++        None (PowerLab patch, see LIVE_VIA_FILE_COMMANDS)."""
++        if not self._session_allows_ipc():
++            return None
++        self._try_enable_ipc_backend()
++        backend = getattr(self, "ipc_backend", None)
++        if not (self.use_ipc and backend and backend.is_connected()):
++            return None
++        try:
++            path = backend.get_open_board_path()
++        except Exception:
++            return None
++        if not path or not os.path.isfile(str(path)):
++            return None
++        session_path = getattr(self, "session_board_path", None)
++        if session_path and self._normalize_board_path(path) != session_path:
++            return None
++        try:
++            return str(path), backend._kicad.get_board()
++        except Exception as e:
++            logger.warning(f"No board from KiCad: {e}")
++            return None
++
++    def _edit_saved_board_then_revert(
++        self, command: str, handler: Any, params: Dict[str, Any], live: Tuple[str, Any]
++    ) -> Dict[str, Any]:
++        """Run a SWIG handler on KiCad's saved board and load the result into KiCad
++        (PowerLab patch, see LIVE_VIA_FILE_COMMANDS)."""
++        board_path, kicad_board = live
++        try:
++            kicad_board.save()
++        except Exception as e:
++            return {"success": False, "message": f"{command}: KiCad could not save the board: {e}"}
++        self._reload_board_file(board_path)
++        if getattr(self, "board", None) is None:
++            return {"success": False, "message": f"{command}: could not load {board_path}"}
++        if self.session_board_path is None:
++            self.session_board_path = self._normalize_board_path(board_path)
++            self.session_backend = "ipc"
++
++        result = handler(params)
++        if not (isinstance(result, dict) and result.get("success")):
++            self._reload_board_file(board_path)  # drop anything half done
++            return result
++
++        current = self.board.GetFileName() or board_path
++        if self._normalize_board_path(current) == self._normalize_board_path(board_path):
++            with preserve_project_settings(board_path):
++                pcbnew.SaveBoard(board_path, self.board)
++        self._record_board_signature()
++        try:
++            kicad_board.revert()
++        except Exception as e:
++            result["warnings"] = list(result.get("warnings") or []) + [
++                f"Saved to the board file, but KiCad did not reload it ({e}): "
++                "use File > Revert in KiCad before editing or saving there."
++            ]
++            return result
++        result["_backend"] = "ipc"
++        result["_realtime"] = True
++        result["liveNote"] = (
++            "KiCad's API can't do this on the open board, so KiCad saved the board, the "
++            "change was made on the saved file and KiCad reloaded it. KiCad's undo "
++            "history starts again from here."
++        )
++        return result
++
++    def _handle_replace_component(self, params: Dict[str, Any]) -> Dict[str, Any]:
++        """replace_component had a tool but no Python command ("Unknown command", #67).
++        It swaps the footprint like edit_component; the same footprint reloads it from
++        its library (PowerLab patch)."""
++        footprint = params.get("newFootprint") or params.get("newComponentId")
++        if not params.get("reference") or not footprint:
++            return {
++                "success": False,
++                "message": "reference and newComponentId (or newFootprint) are required",
++            }
++        return self.component_commands.edit_component(
++            {"reference": params["reference"], "footprint": footprint, "value": params.get("newValue")}
++        )
++
 +    def _handle_check_part_spacing(self, params: Dict[str, Any]) -> Dict[str, Any]:
 +        """Part-to-part spacing and keep-out areas on the saved board (PowerLab patch)."""
 +        from commands import part_spacing, powerlab_route
@@ -7818,7 +8622,7 @@ index c6ac305..c830fd5 100644
      def _handle_batch_move_components(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """Batch move wrapper that preserves the external-edit save guard."""
          if getattr(self, "session_backend", None) == "ipc" and not self._ipc_session_alive():
-@@ -5079,6 +5402,65 @@ print("ok")
+@@ -5079,6 +5515,65 @@ print("ok")
              logger.error(f"IPC route_arc_trace error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -7884,7 +8688,7 @@ index c6ac305..c830fd5 100644
      def _ipc_add_via(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for add_via - adds via with real-time UI update"""
          try:
-@@ -5131,21 +5513,37 @@ print("ok")
+@@ -5131,21 +5626,37 @@ print("ok")
              net = params.get("net")
              clearance = params.get("clearance", 0.5)
              min_width = params.get("minWidth", 0.25)
@@ -7929,7 +8733,7 @@ index c6ac305..c830fd5 100644
  
              success = self.ipc_board_api.add_zone(
                  points=formatted_points,
-@@ -5156,6 +5554,7 @@ print("ok")
+@@ -5156,6 +5667,7 @@ print("ok")
                  priority=priority,
                  fill_mode=fill_type,
                  name=name,
@@ -7937,7 +8741,38 @@ index c6ac305..c830fd5 100644
              )
  
              return {
-@@ -5456,11 +5855,182 @@ print("ok")
+@@ -5349,6 +5861,19 @@ print("ok")
+                 x = x * 0.0254
+                 y = y * 0.0254
+ 
++            # PowerLab patch (#64, #66): `layer` was ignored live, so parts couldn't go to
++            # the other side. Flip first (KiCad mirrors the angle), then place; without a
++            # rotation the part keeps the angle it had.
++            flipped = False
++            layer = params.get("layer")
++            if layer in ("F.Cu", "B.Cu"):
++                flip = self.ipc_board_api.flip_component(reference, layer)
++                if flip is None:
++                    return {"success": False, "message": f"Could not move {reference} to {layer}"}
++                flipped, angle_before = flip
++                if flipped and rotation is None:
++                    rotation = angle_before
++
+             success = self.ipc_board_api.move_component(
+                 reference=reference, x=x, y=y, rotation=rotation
+             )
+@@ -5356,7 +5881,9 @@ print("ok")
+             return {
+                 "success": success,
+                 "message": (
+-                    f"Moved component {reference} (visible in KiCAD UI)"
++                    f"Moved component {reference}"
++                    + (f" to {layer}" if flipped else "")
++                    + " (visible in KiCAD UI)"
+                     if success
+                     else "Failed to move component"
+                 ),
+@@ -5456,11 +5983,182 @@ print("ok")
              return {"success": False, "message": str(e)}
  
      def _ipc_delete_trace(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -8125,7 +8960,79 @@ index c6ac305..c830fd5 100644
  
      def _ipc_query_traces(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for query_traces - reads traces from the live KiCAD board."""
-@@ -5833,6 +6403,100 @@ print("ok")
+@@ -5558,11 +6256,20 @@ print("ok")
+         and correctly generates PCB_SHAPE arcs for rounded corners.
+         """
+         shape = params.get("shape", "rectangle")
++        if shape == "circle":
++            return self._ipc_add_outline_circle(params)  # PowerLab patch (#68)
+         if shape in ("rounded_rectangle", "rectangle"):
+             # IPC path only supports straight segments from a points list,
+             # but Claude sends rectangle/rounded_rectangle as shape+width+height.
+             # Fall back to the SWIG path which correctly handles both shapes.
++            # PowerLab patch: on KiCad's saved board, then reloaded in KiCad; the SWIG
++            # path alone changed only the tool's copy, which KiCad's next save overwrote.
+             logger.info(f"_ipc_add_board_outline: delegating {shape} to SWIG path")
++            live = self._live_board_for_file_edit()
++            if live is not None:
++                return self._edit_saved_board_then_revert(
++                    "add_board_outline", self.board_commands.add_board_outline, params, live
++                )
+             return self.board_commands.add_board_outline(params)
+ 
+         try:
+@@ -5614,6 +6321,50 @@ print("ok")
+             logger.error(f"IPC add_board_outline error: {e}")
+             return {"success": False, "message": str(e)}
+ 
++    def _ipc_add_outline_circle(self, params: Dict[str, Any]) -> Dict[str, Any]:
++        """A round board outline (Edge.Cuts circle) on KiCad's open board (PowerLab patch,
++        #68: the live handler wanted a points list, so circles failed with "At least 2
++        points required"). Centre: centerX/centerY, or x/y as the SWIG path reads them."""
++        try:
++            from kipy.board_types import BoardCircle
++            from kipy.geometry import Vector2
++            from kipy.proto.board.board_types_pb2 import BoardLayer
++            from kipy.util.units import from_mm
++
++            inner = params.get("params", params)
++            scale = {"mm": 1.0, "mil": 0.0254, "inch": 25.4}.get(inner.get("unit", "mm"), 1.0)
++            radius = inner.get("radius")
++            if radius is None and inner.get("diameter") is not None:
++                radius = inner["diameter"] / 2
++            if radius is None:
++                return {
++                    "success": False,
++                    "message": "Missing radius",
++                    "errorDetails": "Radius is required for circle",
++                }
++            cx = inner.get("centerX", inner.get("x", 0)) or 0
++            cy = inner.get("centerY", inner.get("y", 0)) or 0
++            cx, cy, radius = cx * scale, cy * scale, radius * scale
++
++            board = self.ipc_board_api._get_board()
++            circle = BoardCircle()
++            circle.center = Vector2.from_xy(from_mm(cx), from_mm(cy))
++            circle.radius_point = Vector2.from_xy(from_mm(cx + radius), from_mm(cy))
++            circle.layer = BoardLayer.BL_Edge_Cuts
++            circle.attributes.stroke.width = from_mm(inner.get("lineWidth", 0.1))
++            commit = board.begin_commit()
++            board.create_items(circle)
++            board.push_commit(commit, "Added round board outline")
++            return {
++                "success": True,
++                "message": f"Added round board outline, radius {radius:g} mm at ({cx:g}, {cy:g}) mm",
++                "center": {"x": cx, "y": cy, "unit": "mm"},
++                "radius": radius,
++            }
++        except Exception as e:
++            logger.error(f"IPC add_board_outline circle error: {e}")
++            return {"success": False, "message": str(e)}
++
+     def _ipc_add_mounting_hole(self, params: Dict[str, Any]) -> Dict[str, Any]:
+         """IPC handler for add_mounting_hole - adds mounting hole with real-time UI update"""
+         try:
+@@ -5833,6 +6584,100 @@ print("ok")
              logger.error(f"IPC set_footprint_type error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -8226,21 +9133,38 @@ index c6ac305..c830fd5 100644
      # =========================================================================
      # Legacy IPC command handlers (explicit ipc_* commands)
  
+diff --git a/python/schemas/tool_schemas.py b/python/schemas/tool_schemas.py
+index e739f90..7642a10 100644
+--- a/python/schemas/tool_schemas.py
++++ b/python/schemas/tool_schemas.py
+@@ -585,6 +585,10 @@ BOARD_TOOLS = [
+                     "default": False,
+                     "description": "True for plated through-hole (PTH) with copper pad; false (default) for NPTH (mask only).",
+                 },
++                "net": {
++                    "type": "string",
++                    "description": "Net for the pad of a plated hole, e.g. 'GND' (implies plated). PowerLab patch (#63).",
++                },
+                 "footprintLibId": {
+                     "type": "string",
+                     "description": "Optional library:name FPID (e.g. 'MountingHole:MountingHole_3.2mm'). Defaults to MountingHole:MountingHole_<diameter>mm. A non-empty FPID is required for the footprint to be selectable in KiCad's GUI Move tool.",
 diff --git a/src/command-timeout.ts b/src/command-timeout.ts
-index dfd876c..0c3e2d9 100644
+index dfd876c..1f020d4 100644
 --- a/src/command-timeout.ts
 +++ b/src/command-timeout.ts
-@@ -35,6 +35,9 @@ export const LONG_RUNNING_COMMANDS = [
+@@ -35,6 +35,11 @@ export const LONG_RUNNING_COMMANDS = [
    "list_schematic_labels",
    "get_schematic_view",
    "digikey_check_library_availability",
 +  "clean_up_routing", // PowerLab patch: several kicad-cli DRC runs
 +  "powerlab_route", // PowerLab patch: copies the board, compares it with KiCad's
 +  "undo_autoroute", // PowerLab patch: refills the zones in KiCad
++  "open_board", // PowerLab patch (#61): a large board with 300+ symbol libraries
++  "open_project", // PowerLab patch (#61): loads the board too
  ] as const;
  
  /**
-@@ -66,6 +69,13 @@ export function computeCommandTimeout(command: string, params?: unknown): number
+@@ -66,6 +71,13 @@ export function computeCommandTimeout(command: string, params?: unknown): number
      return Math.max(budgetMs, LONG_COMMAND_TIMEOUT_MS);
    }
  
@@ -8255,10 +9179,36 @@ index dfd876c..0c3e2d9 100644
      return LONG_COMMAND_TIMEOUT_MS;
    }
 diff --git a/src/tools/board.ts b/src/tools/board.ts
-index 2738ebc..dfb3b1d 100644
+index 2738ebc..cbb1d7d 100644
 --- a/src/tools/board.ts
 +++ b/src/tools/board.ts
-@@ -522,8 +522,34 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
+@@ -353,13 +353,24 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
+         .describe("Position of the mounting hole"),
+       diameter: z.number().describe("Diameter of the hole"),
+       padDiameter: z.number().optional().describe("Optional diameter of the pad around the hole"),
++      // PowerLab patch (#63): plated holes with a net (e.g. a GND-bonded mounting hole)
++      plated: z
++        .boolean()
++        .optional()
++        .describe("Plated through hole with a copper pad (default false: NPTH)"),
++      net: z
++        .string()
++        .optional()
++        .describe("Net for the pad of a plated hole, e.g. 'GND' (implies plated)"),
+     },
+-    async ({ position, diameter, padDiameter }) => {
++    async ({ position, diameter, padDiameter, plated, net }) => {
+       logger.debug(`Adding mounting hole at (${position.x},${position.y}) ${position.unit}`);
+       const result = await callKicadScript("add_mounting_hole", {
+         position,
+         diameter,
+         padDiameter,
++        plated,
++        net,
+       });
+ 
+       return {
+@@ -522,8 +533,34 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
          .describe(
            '"inline" (default): image returned directly; "file": written to disk, filePath returned',
          ),
@@ -8294,7 +9244,7 @@ index 2738ebc..dfb3b1d 100644
        logger.debug("Getting 2D board view");
        const result = await callKicadScript("get_board_2d_view", {
          pcbPath,
-@@ -532,6 +558,9 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
+@@ -532,6 +569,9 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
          height,
          format,
          responseMode,
@@ -8545,7 +9495,7 @@ index d9942f7..2429611 100644
    server.tool(
      "export_dsn",
 diff --git a/src/tools/registry.ts b/src/tools/registry.ts
-index 902f7b1..805fe5b 100644
+index 902f7b1..495b53e 100644
 --- a/src/tools/registry.ts
 +++ b/src/tools/registry.ts
 @@ -59,6 +59,7 @@ export const toolCategories: ToolCategory[] = [
@@ -8556,7 +9506,16 @@ index 902f7b1..805fe5b 100644
        "move_footprint_text",
        "add_component_annotation",
        "group_components",
-@@ -235,7 +236,8 @@ export const toolCategories: ToolCategory[] = [
+@@ -143,6 +144,8 @@ export const toolCategories: ToolCategory[] = [
+       "export_schematic_pdf",
+       "add_schematic_text",
+       "list_schematic_texts",
++      "delete_schematic_text", // PowerLab patch (#60)
++      "move_schematic_text", // PowerLab patch (#60)
+     ],
+   },
+   {
+@@ -235,7 +238,8 @@ export const toolCategories: ToolCategory[] = [
    {
      name: "autoroute",
      description: "Freerouting autorouter: automatic PCB routing via Specctra DSN/SES",
@@ -8659,7 +9618,7 @@ index dd067be..5e4ee2e 100644
        schematicPath: z.string().describe("Path to the .kicad_sch file"),
        reference: z.string().describe("Reference of the component to replace (e.g., D1)"),
 diff --git a/src/tools/schematic.ts b/src/tools/schematic.ts
-index f2b7f4d..d93f9d8 100644
+index f2b7f4d..7927796 100644
 --- a/src/tools/schematic.ts
 +++ b/src/tools/schematic.ts
 @@ -37,7 +37,12 @@ export function registerSchematicTools(server: McpServer, callKicadScript: Funct
@@ -8676,6 +9635,105 @@ index f2b7f4d..d93f9d8 100644
        footprint: z
          .string()
          .optional()
+@@ -2153,12 +2158,13 @@ edit_schematic_component and set its value to an empty string.`,
+         }
+         const lines = texts.map(
+           (t: any) =>
+-            `  "${t.text}" at (${t.position.x}, ${t.position.y})` +
++            `  ${t.kind === "text_box" ? "text box " : ""}"${t.text}" at (${t.position.x}, ${t.position.y})` +
+             (t.angle ? ` angle=${t.angle}` : "") +
+             ` size=${t.font_size}` +
+             (t.bold ? " bold" : "") +
+             (t.italic ? " italic" : "") +
+-            ` justify=${t.justify}`,
++            ` justify=${t.justify}` +
++            (t.uuid ? ` uuid=${t.uuid}` : ""), // PowerLab patch (#60): for delete/move
+         );
+         return {
+           content: [
+@@ -2181,6 +2187,51 @@ edit_schematic_component and set its value to an empty string.`,
+     },
+   );
+ 
++  // PowerLab patch (#60): free text could be added but not deleted or moved
++  const textTarget = {
++    schematicPath: z.string().describe("Path to the .kicad_sch file"),
++    uuid: z.string().optional().describe("The text's uuid, from list_schematic_texts"),
++    text: z.string().optional().describe("The exact text, when no uuid is given"),
++    position: z
++      .array(z.number())
++      .length(2)
++      .optional()
++      .describe("Its current position [x, y], when several texts read the same"),
++  };
++  const textResult = (verb: string, result: any) => ({
++    content: [
++      {
++        type: "text" as const,
++        text: result.success
++          ? result.message
++          : `Failed to ${verb} text: ${result.message || "Unknown error"}` +
++            (result.texts ? `\n${JSON.stringify(result.texts)}` : "") +
++            (result.matches ? `\nmatching uuids: ${result.matches.join(", ")}` : ""),
++      },
++    ],
++    ...(result.success ? {} : { isError: true }),
++  });
++
++  server.tool(
++    "delete_schematic_text",
++    "Delete a free-form text annotation or text box from the schematic. " +
++      "Find it with list_schematic_texts and pass its uuid (or its exact text).",
++    textTarget,
++    async (args: any) => textResult("delete", await callKicadScript("delete_schematic_text", args)),
++  );
++
++  server.tool(
++    "move_schematic_text",
++    "Move (and optionally rotate) a free-form text annotation or text box in the schematic. " +
++      "Find it with list_schematic_texts and pass its uuid (or its exact text).",
++    {
++      ...textTarget,
++      newPosition: z.array(z.number()).length(2).describe("New position [x, y] in mm"),
++      angle: z.number().optional().describe("New angle in degrees (default: unchanged)"),
++    },
++    async (args: any) => textResult("move", await callKicadScript("move_schematic_text", args)),
++  );
++
+   // Add free-form text annotation to schematic
+   server.tool(
+     "add_schematic_text",
+diff --git a/tests/test_kicad_common_env_resolution.py b/tests/test_kicad_common_env_resolution.py
+index 168e3a2..3293e49 100644
+--- a/tests/test_kicad_common_env_resolution.py
++++ b/tests/test_kicad_common_env_resolution.py
+@@ -130,3 +130,26 @@ def test_user_defined_and_builtin_vars_coexist(monkeypatch, tmp_path):
+ 
+     assert manager._resolve_uri("${MY_CUSTOM_LIB}/lib.kicad_sym") == str(lib_file)
+     assert manager._resolve_uri("${KIPRJMOD}") == str(project_dir)
++
++
++@pytest.mark.unit
++def test_symbol_manager_reads_env_vars_once(monkeypatch, tmp_path):
++    """PowerLab patch (#61): resolving 300+ libraries re-read kicad_common.json and
++    re-probed the KiCad directories for every library, so open_board took ~27 s and hit
++    its 30 s timeout. They are worked out once per manager."""
++    calls = []
++
++    def load():
++        calls.append(1)
++        return {"MY_CUSTOM_LIB": str(tmp_path)}
++
++    monkeypatch.setattr(library_symbol.PlatformHelper, "load_kicad_env_vars", staticmethod(load))
++    for i in range(5):
++        (tmp_path / f"lib{i}.kicad_sym").touch()
++
++    manager = _make_symbol_manager()
++    for i in range(5):
++        assert manager._resolve_uri(f"${{MY_CUSTOM_LIB}}/lib{i}.kicad_sym") == str(
++            tmp_path / f"lib{i}.kicad_sym"
++        )
++    assert len(calls) == 1
 diff --git a/tests/test_lab_symbol_fields.py b/tests/test_lab_symbol_fields.py
 new file mode 100644
 index 0000000..009b312
@@ -8984,6 +10042,220 @@ index 0000000..009b312
 +
 +        with pytest.raises(ValueError):
 +            parse_schematic_color("reddish")
+diff --git a/tests/test_powerlab_live_board_edits.py b/tests/test_powerlab_live_board_edits.py
+new file mode 100644
+index 0000000..3b62dee
+--- /dev/null
++++ b/tests/test_powerlab_live_board_edits.py
+@@ -0,0 +1,192 @@
++"""PowerLab patch: board edits with KiCad open on the board (issues #63-#68).
++
++KiCad 10.0.5's API can't load a footprint from a library (ParseAndCreateItemsFromString
++is an empty stub, FlipItems came in 10.0.6), so these tools changed only the tool's
++offline copy and KiCad never showed it. Checked live against KiCad 10.0.5 too; these
++tests pin the dispatch and the pieces that don't need a KiCad window.
++"""
++
++import sys
++from pathlib import Path
++from typing import Any
++from unittest.mock import MagicMock, patch
++
++import pytest
++
++sys.path.insert(0, str(Path(__file__).parent.parent / "python"))
++
++
++def _iface() -> Any:
++    with patch("kicad_interface.USE_IPC_BACKEND", True):
++        from kicad_interface import KiCADInterface
++
++        iface = KiCADInterface.__new__(KiCADInterface)
++    iface.use_ipc = True
++    iface.board = MagicMock()
++    iface.ipc_board_api = MagicMock()
++    iface.session_backend = "ipc"
++    iface.session_board_path = None
++    return iface
++
++
++def test_library_footprint_commands_edit_the_saved_board():
++    from kicad_interface import KiCADInterface
++
++    for command in (
++        "place_component",
++        "add_mounting_hole",
++        "sync_schematic_to_board",
++        "edit_component",
++        "replace_component",
++    ):
++        assert command in KiCADInterface.LIVE_VIA_FILE_COMMANDS
++
++
++def test_live_place_goes_through_the_saved_board():
++    iface = _iface()
++    handler = MagicMock(return_value={"success": True})
++    iface.command_routes = {"place_component": handler}
++    live = ("C:/b/board.kicad_pcb", MagicMock())
++    with patch.object(iface, "_try_enable_ipc_backend"), patch.object(
++        iface, "_ipc_session_alive", return_value=True
++    ), patch.object(iface, "_live_board_for_file_edit", return_value=live), patch.object(
++        iface, "_edit_saved_board_then_revert", return_value={"success": True, "x": 1}
++    ) as edit:
++        result = iface.handle_command("place_component", {"componentId": "A:B"})
++    assert result == {"success": True, "x": 1}
++    edit.assert_called_once_with("place_component", handler, {"componentId": "A:B"}, live)
++
++
++def test_round_trip_saves_edits_saves_and_reverts_in_order():
++    iface = _iface()
++    order = []
++    kicad_board = MagicMock()
++    kicad_board.save.side_effect = lambda: order.append("kicad save")
++    kicad_board.revert.side_effect = lambda: order.append("kicad revert")
++    iface.board.GetFileName.return_value = "C:/b/board.kicad_pcb"
++
++    def reload(path):
++        order.append("load file")
++
++    def handler(params):
++        order.append("handler")
++        return {"success": True}
++
++    with patch.object(iface, "_reload_board_file", side_effect=reload), patch.object(
++        iface, "_record_board_signature"
++    ), patch("kicad_interface.pcbnew") as pcbnew, patch(
++        "kicad_interface.preserve_project_settings"
++    ):
++        pcbnew.SaveBoard.side_effect = lambda *a: order.append("save file")
++        result = iface._edit_saved_board_then_revert(
++            "place_component", handler, {}, ("C:/b/board.kicad_pcb", kicad_board)
++        )
++    assert result["success"] and result["_realtime"]
++    assert order == ["kicad save", "load file", "handler", "save file", "kicad revert"]
++
++
++def test_round_trip_failure_leaves_kicad_alone():
++    iface = _iface()
++    kicad_board = MagicMock()
++    with patch.object(iface, "_reload_board_file"), patch("kicad_interface.pcbnew") as pcbnew:
++        result = iface._edit_saved_board_then_revert(
++            "place_component",
++            lambda p: {"success": False, "message": "Footprint not found"},
++            {},
++            ("C:/b/board.kicad_pcb", kicad_board),
++        )
++    assert result["success"] is False
++    pcbnew.SaveBoard.assert_not_called()
++    kicad_board.revert.assert_not_called()
++
++
++def test_replace_component_is_a_command():
++    """#67: the tool existed, the Python command didn't ("Unknown command")."""
++    iface = _iface()
++    iface.component_commands = MagicMock()
++    iface.component_commands.edit_component.return_value = {"success": True}
++    result = iface._handle_replace_component(
++        {"reference": "R5", "newComponentId": "Lib:R_0603", "newValue": "10k"}
++    )
++    assert result["success"]
++    iface.component_commands.edit_component.assert_called_once_with(
++        {"reference": "R5", "footprint": "Lib:R_0603", "value": "10k"}
++    )
++
++
++def test_live_move_flips_before_placing():
++    """#64/#66: `layer` was ignored live. The flip comes first (it mirrors the angle)."""
++    iface = _iface()
++    calls = []
++    iface.ipc_board_api.flip_component.side_effect = lambda r, l: calls.append("flip") or (True, -90.0)
++    iface.ipc_board_api.move_component.side_effect = lambda **k: calls.append(("move", k["rotation"])) or True
++    result = iface._ipc_move_component(
++        {"reference": "R1", "position": {"x": 1, "y": 2, "unit": "mm"}, "layer": "B.Cu"}
++    )
++    assert result["success"]
++    assert calls == ["flip", ("move", -90.0)]  # keeps the angle it had
++
++
++def test_flip_falls_back_to_kicads_flip_action():
++    """KiCad 10.0.5 answers FlipItems with "no handler available"."""
++    from kicad_api.ipc_backend import IPCBoardAPI
++    from kipy.proto.board.board_types_pb2 import BoardLayer
++
++    api = IPCBoardAPI.__new__(IPCBoardAPI)
++    api._kicad = MagicMock()
++    fp = MagicMock()
++    fp.reference_field.text.value = "R1"
++    fp.layer = BoardLayer.BL_F_Cu
++    fp.orientation.degrees = 30.0
++    flipped = MagicMock()
++    flipped.id.value = fp.id.value
++    flipped.layer = BoardLayer.BL_B_Cu
++    board = MagicMock()
++    board.get_footprints.side_effect = [[fp], [flipped]]
++    board.flip_items.side_effect = RuntimeError("no handler available for FlipItems")
++    api._get_board = lambda: board
++
++    assert api.flip_component("R1", "B.Cu") == (True, 30.0)
++    board.add_to_selection.assert_called_once_with([fp])
++    api._kicad.run_action.assert_called_once_with("pcbnew.InteractiveEdit.flip")
++
++
++def test_live_circle_outline():
++    """#68: the live handler wanted a points list, so circles failed."""
++    iface = _iface()
++    board = iface.ipc_board_api._get_board.return_value
++    result = iface._ipc_add_board_outline(
++        {"shape": "circle", "params": {"x": 50, "y": 40, "radius": 5, "unit": "mm"}}
++    )
++    assert result["success"], result
++    circle = board.create_items.call_args[0][0]
++    assert circle.center.x == 50_000_000 and circle.center.y == 40_000_000
++    assert circle.radius() == pytest.approx(5_000_000)
++
++
++def test_kicad_cli_netlist_gives_pad_nets(tmp_path):
++    """#65: pad nets come from KiCad's own netlist, as F8 gives them."""
++    from commands.schematic_handlers import SchematicHandlersMixin  # noqa: F401
++    from kicad_interface import KiCADInterface
++
++    xml = """<export><design>
++      <sheet number="1" name="/"><title_block><source>top.kicad_sch</source></title_block></sheet>
++      <sheet number="2" name="/MCU/"><title_block><source>mcu.kicad_sch</source></title_block></sheet>
++    </design><nets>
++      <net code="1" name="/MCU/IO12"><node ref="U1" pin="14"/><node ref="R3" pin="2"/></net>
++      <net code="2" name="GND"><node ref="U1" pin="1"/></net>
++    </nets></export>"""
++
++    def fake_run(cmd, **kwargs):
++        Path(cmd[cmd.index("--output") + 1]).write_text(xml, encoding="utf-8")
++        return MagicMock(returncode=0, stderr="")
++
++    iface = KiCADInterface.__new__(KiCADInterface)
++    sch = tmp_path / "top.kicad_sch"
++    with patch.object(KiCADInterface, "_find_kicad_cli_static", return_value="kicad-cli"), patch(
++        "subprocess.run", side_effect=fake_run
++    ):
++        pad_nets, names, sheets = iface._kicad_cli_pad_net_map(str(sch))
++    assert pad_nets == {("U1", "14"): "/MCU/IO12", ("R3", "2"): "/MCU/IO12", ("U1", "1"): "GND"}
++    assert names == {"/MCU/IO12", "GND"}
++    assert [Path(s).name for s in sheets] == ["top.kicad_sch", "mcu.kicad_sch"]
+diff --git a/tests/test_schema_param_names.py b/tests/test_schema_param_names.py
+index 995406c..37ebbed 100644
+--- a/tests/test_schema_param_names.py
++++ b/tests/test_schema_param_names.py
+@@ -93,11 +93,9 @@ KNOWN_JSONRPC_UNREAD: Dict[str, Set[str]] = {
+ # every call answers "unknown command".
+ KNOWN_UNROUTED: Set[str] = {
+     "add_component_annotation",
+-    "add_zone",
+     "export_position_file",
+     "export_vrml",
+     "group_components",
+-    "replace_component",
+ }
+ 
+ # --- TypeScript side ---------------------------------------------------------
 diff --git a/tests/test_schematic_batch.py b/tests/test_schematic_batch.py
 index 7fd9dfa..4cebe47 100644
 --- a/tests/test_schematic_batch.py
@@ -9001,6 +10273,88 @@ index 7fd9dfa..4cebe47 100644
          )
          monkeypatch.setattr(sb, "DynamicSymbolLoader", fake_loader_cls)
          fake_pins = types.SimpleNamespace(
+diff --git a/tests/test_schematic_text_edit.py b/tests/test_schematic_text_edit.py
+new file mode 100644
+index 0000000..2d98d57
+--- /dev/null
++++ b/tests/test_schematic_text_edit.py
+@@ -0,0 +1,76 @@
++"""PowerLab patch (#60): free schematic text can be deleted and moved, not only added."""
++
++import shutil
++import sys
++from pathlib import Path
++
++sys.path.insert(0, str(Path(__file__).parent.parent / "python"))
++
++from commands.wire_manager import WireManager  # noqa: E402
++
++EMPTY_SCH = Path(__file__).parent.parent / "python" / "templates" / "empty.kicad_sch"
++
++
++def _sheet(tmp_path: Path) -> Path:
++    sch = tmp_path / "t.kicad_sch"
++    shutil.copy(EMPTY_SCH, sch)
++    assert WireManager.add_text(sch, "Wrong note", [50, 40])
++    assert WireManager.add_text(sch, "Keep me", [50, 50])
++    return sch
++
++
++def _texts(sch: Path) -> dict:
++    return {t["text"]: t for t in WireManager.list_texts(sch)}
++
++
++def test_delete_by_text(tmp_path):
++    sch = _sheet(tmp_path)
++    result = WireManager.delete_text(sch, text="Wrong note")
++    assert result["success"], result
++    assert set(_texts(sch)) == {"Keep me"}
++
++
++def test_delete_by_uuid(tmp_path):
++    sch = _sheet(tmp_path)
++    uid = _texts(sch)["Keep me"]["uuid"]
++    assert WireManager.delete_text(sch, uuid_=uid)["success"]
++    assert set(_texts(sch)) == {"Wrong note"}
++
++
++def test_move_keeps_angle_unless_given(tmp_path):
++    sch = _sheet(tmp_path)
++    assert WireManager.move_text(sch, [60, 55], text="Keep me", angle=90)["success"]
++    moved = _texts(sch)["Keep me"]
++    assert moved["position"] == {"x": 60, "y": 55} and moved["angle"] == 90
++    assert WireManager.move_text(sch, [70, 55], text="Keep me")["success"]
++    assert _texts(sch)["Keep me"]["angle"] == 90
++
++
++def test_ambiguous_or_missing_text_changes_nothing(tmp_path):
++    sch = _sheet(tmp_path)
++    WireManager.add_text(sch, "Keep me", [80, 80])
++    before = sch.read_text(encoding="utf-8")
++    result = WireManager.delete_text(sch, text="Keep me")
++    assert not result["success"] and len(result["matches"]) == 2
++    assert not WireManager.delete_text(sch, text="Not there")["success"]
++    assert sch.read_text(encoding="utf-8") == before
++    # the position picks one
++    assert WireManager.delete_text(sch, text="Keep me", position=[80, 80])["success"]
++    assert [t["position"] for t in WireManager.list_texts(sch) if t["text"] == "Keep me"] == [
++        {"x": 50, "y": 50}
++    ]
++
++
++def test_text_boxes_are_listed_and_deleted(tmp_path):
++    sch = _sheet(tmp_path)
++    content = sch.read_text(encoding="utf-8")
++    box = (
++        '(text_box "Boxed" (exclude_from_sim no) (at 20 20 0) (size 10 5) '
++        "(stroke (width 0) (type solid)) (fill (type none)) "
++        "(effects (font (size 1.27 1.27))) (uuid \"11111111-2222-3333-4444-555555555555\"))"
++    )
++    idx = content.rindex("(sheet_instances")
++    sch.write_text(content[:idx] + box + "\n" + content[idx:], encoding="utf-8")
++    assert _texts(sch)["Boxed"]["kind"] == "text_box"
++    assert WireManager.delete_text(sch, uuid_="11111111-2222-3333-4444-555555555555")["success"]
++    assert "Boxed" not in _texts(sch)
 diff --git a/tests/test_update_symbol_from_library.py b/tests/test_update_symbol_from_library.py
 index 6119fce..57ba624 100644
 --- a/tests/test_update_symbol_from_library.py
@@ -9019,3 +10373,109 @@ index 6119fce..57ba624 100644
  
 -        assert result == {"updated": 0, "injected": 0, "skipped": 0}
 +        assert result == {"updated": 0, "injected": 0, "skipped": 0, "fields_synced": 0}
+diff --git a/tests/test_wire_junction_changes.py b/tests/test_wire_junction_changes.py
+index f0c1b12..21f06e2 100644
+--- a/tests/test_wire_junction_changes.py
++++ b/tests/test_wire_junction_changes.py
+@@ -1008,6 +1008,71 @@ class TestSyncJunctionsUnit:
+         assert removed == 0
+         assert len(_find_elements(data, "junction")) == 1
+ 
++    def test_t_on_unbroken_wire_keeps_junction(self) -> None:
++        """PowerLab patch (#62): KiCad draws a T as a wire ending on the middle of another
++        wire. Its junction must survive a sync."""
++        from commands.wire_manager import WireManager
++
++        data = self._base_data()
++        data.insert(1, self._wire(0, 0, 20, 0))  # not split at (10, 0)
++        data.insert(1, self._wire(10, -10, 10, 0))
++        data.insert(1, self._junction(10, 0))
++
++        added, removed = WireManager.sync_junctions(data)
++
++        assert (added, removed) == (0, 0)
++        assert len(_find_elements(data, "junction")) == 1
++
++    def test_t_on_unbroken_wire_gets_junction(self) -> None:
++        """A wire ending on the middle of another gets the junction KiCad would add."""
++        from commands.wire_manager import WireManager
++
++        data = self._base_data()
++        data.insert(1, self._wire(0, 0, 20, 0))
++        data.insert(1, self._wire(10, -10, 10, 0))
++
++        added, removed = WireManager.sync_junctions(data)
++
++        assert (added, removed) == (1, 0)
++
++    def test_t_on_diagonal_wire_keeps_junction(self) -> None:
++        from commands.wire_manager import WireManager
++
++        data = self._base_data()
++        data.insert(1, self._wire(0, 0, 20, 20))
++        data.insert(1, self._wire(10, 10, 10, 0))
++        data.insert(1, self._junction(10, 10))
++
++        assert WireManager.sync_junctions(data) == (0, 0)
++
++    def test_wire_crossing_without_junction_stays_unconnected(self) -> None:
++        """Two wires crossing (no wire ends there) get no junction."""
++        from commands.wire_manager import WireManager
++
++        data = self._base_data()
++        data.insert(1, self._wire(0, 0, 20, 0))
++        data.insert(1, self._wire(10, -10, 10, 10))
++
++        assert WireManager.sync_junctions(data) == (0, 0)
++
++    def test_sheet_pin_counts_as_connection(self) -> None:
++        """Two wires ending on a hierarchical sheet pin keep their junction."""
++        from commands.wire_manager import WireManager
++
++        data = self._base_data()
++        sheet = [
++            Symbol("sheet"),
++            [Symbol("at"), 30, -10],
++            [Symbol("size"), 20, 20],
++            [Symbol("pin"), "IN", Symbol("input"), [Symbol("at"), 30, 0, 180]],
++        ]
++        data.insert(1, sheet)
++        data.insert(1, self._wire(20, 0, 30, 0))
++        data.insert(1, self._wire(30, 0, 30, 10))
++        data.insert(1, self._junction(30, 0))
++
++        assert WireManager.sync_junctions(data) == (0, 0)
++
+ 
+ @pytest.mark.integration
+ class TestSyncJunctionsIntegration:
+@@ -1060,6 +1125,29 @@ class TestSyncJunctionsIntegration:
+         junctions = _find_elements(data, "junction")
+         assert junctions == [], f"Expected junction removed, got {len(junctions)}"
+ 
++    def test_editing_elsewhere_keeps_kicad_t_junctions(self, sch: Any) -> None:
++        """PowerLab patch (#62): adding or deleting an unrelated wire left every T that
++        KiCad drew (wire ending mid-wire) without its junction, so those pins came apart."""
++        from commands.wire_manager import WireManager
++
++        data = _parse_sch(sch)
++        idx = next(
++            i for i, it in enumerate(data) if isinstance(it, list) and it[0] == Symbol("sheet_instances")
++        )
++        data[idx:idx] = [
++            WireManager._make_wire_sexp([0, 10], [20, 10]),
++            WireManager._make_wire_sexp([10, 0], [10, 10]),
++            WireManager._make_junction_sexp(10, 10),
++        ]
++        from utils.sexpr_format import dumps as kicad_dumps
++
++        sch.write_text(kicad_dumps(data), encoding="utf-8")
++
++        WireManager.add_wire(sch, [50, 50], [60, 50])
++        assert len(_find_elements(_parse_sch(sch), "junction")) == 1
++        WireManager.delete_wire(sch, [50, 50], [60, 50])
++        assert len(_find_elements(_parse_sch(sch), "junction")) == 1
++
+     def test_polyline_t_junction_auto_inserted(self, sch: Any) -> None:
+         """Polyline whose endpoint hits a wire midpoint auto-inserts a junction."""
+         from commands.wire_manager import WireManager
