@@ -27,7 +27,7 @@ Problem reports from the panel arrive as public issues on odtu/PowerLabKiCadAssi
 - a member or collaborator opens an issue, or
 - a maintainer adds the `auto-fix` label to anyone's issue.
 
-Claude reproduces the bug with a test, fixes it and runs the tests. The workflow then opens a pull request into `test` (`Fixes #N`) and comments on the issue as `github-actions[bot]`. Its changes are limited to `plugin/`, `tests/`, `tools/`, `README.md` and the install scripts.
+Claude reproduces the bug with a test, fixes it and runs the tests. The workflow then opens a pull request into `test` (`Fixes #N`) and comments on the issue as `github-actions[bot]`. Its changes are limited to `plugin/`, `tests/`, `tools/`, `patches/kicad-mcp.patch`, `README.md` and the install scripts. Most reports are about the KiCad MCP server's tools, so the workflow checks the server out at the pin with the patch applied (`tools/mcp_patch.py checkout`); Claude fixes it there and `tools/mcp_patch.py regen` writes the change into the patch. Claude can't edit `CLAUDE.md`, so its summary gives the line for "Fixes to the KiCad MCP server"; add it when you merge.
 
 A maintainer still reviews and merges the PR, tests it on `test`, then releases (below) and replies with the version. The workflow file itself runs from `main`, so changes to it take effect once released. Bugs that need the KiCad window can't be verified on the runner; Claude lists them under "Needs a human".
 
@@ -98,7 +98,7 @@ Users only learn about fixes through releases. Every panel reads `VERSION` from 
 
 To change it:
 1. Edit the files in `%LOCALAPPDATA%\PowerLabKiCadAssistant\KiCAD-MCP-Server`.
-2. Regenerate the patch there with `git add -N <new files>; git diff > <repo>\patches\kicad-mcp.patch`, then `git reset`. Put back the MIT license header from the old patch: everything before the first `diff --git`, which `git apply` ignores.
+2. Regenerate the patch with `python tools/mcp_patch.py regen` (it takes the checkout's folder; that one is the default). It keeps the MIT license header (everything before the first `diff --git`, which `git apply` ignores) and includes new files. By hand: `git add -N <new files>; git diff <pin> > <repo>\patches\kicad-mcp.patch`, `git reset`, then put the header back.
 3. Check that it applies to a clean checkout of the pin.
 
 ## Third-party licenses

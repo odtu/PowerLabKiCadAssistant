@@ -884,6 +884,21 @@ class McpPatchTests(unittest.TestCase):
         body = text.split("\ndiff --git", 1)[0].split("\n")[1:]  # skip the @@ header
         return "\n".join(line[1:] for line in body if line.startswith("+"))
 
+    def test_patch_tool(self):
+        """tools/mcp_patch.py (the auto-fix workflow's checkout) uses install.ps1's pin, and a
+        regenerated patch that differs only in git's abbreviated index lines isn't a change."""
+        import mcp_patch
+        with open(os.path.join(ROOT, "install.ps1"), encoding="utf-8") as f:
+            text = f.read()
+        repo, commit = mcp_patch.pin()
+        self.assertIn(f'$McpRepo = "{repo}"', text)
+        self.assertIn(f'[string]$McpCommit = "{commit}"', text)
+        old = self.patch().encode("utf-8")
+        other_clone = re.sub(rb"(?m)^index \w+\.\.\w+", b"index 1234567890..abcdef1234", old)
+        self.assertNotEqual(other_clone, old)
+        self.assertEqual(mcp_patch._body(old), mcp_patch._body(other_clone))
+        self.assertNotEqual(mcp_patch._body(old), mcp_patch._body(old + b"+# one more line\n"))
+
     def test_rotation_keeps_3d_models(self):
         patch = self.patch()
         self.assertIn("models = list(target_fp.definition.models)", patch)
@@ -1608,6 +1623,11 @@ class McpPatchTests(unittest.TestCase):
     def test_powerlab_router_patches(self):
         """A net's copper is kept as a patch round it, not a full-board array per net and
         layer (5.8 GB on a 4-layer board with 100 nets)."""
+        try:
+            import numpy  # noqa: F401
+            import PIL  # noqa: F401
+        except ImportError:
+            self.skipTest("needs numpy and Pillow (KiCad's Python has both)")
         module = types.ModuleType("grid")
         exec(self.new_file("python/commands/powerlab_router/grid.py"), module.__dict__)
         g = module.Grid(0, 0, 30, 20, 0.1)
@@ -1689,9 +1709,8 @@ class McpPatchTests(unittest.TestCase):
     def test_part_spacing(self):
         """check_part_spacing: parts closer than the lab's 1 mm pad to pad, and parts in a
         keep-out area on either side, measured on the board (the lab parts have no courtyard)."""
-        try:
-            import pcbnew
-        except ImportError:
+        import pcbnew  # KiCad's, or the stand-in above (which has no BOARD)
+        if not hasattr(pcbnew, "BOARD"):
             self.skipTest("needs KiCad's Python")
         module = types.ModuleType("part_spacing")
         exec(self.new_file("python/commands/part_spacing.py"), module.__dict__)
