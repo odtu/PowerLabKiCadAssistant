@@ -7,7 +7,7 @@ description: Place the parts of a KiCad PCB the METU Power Lab way, starting fro
 
 Most placement mistakes are block mistakes: the gate driver on the wrong side of the legs, the MCU in the place the driver needed, a connector across the board from its circuit. Found after 150 parts are placed, they mean starting again. So **plan the blocks first, show the plan, and ask the user before placing any part.**
 
-Example: on TestPCB2 the DRV8323 sat between legs A and B, so its gate lines were 8–12 mm to leg A, 20–24 mm to leg B and 37–40 mm to leg C. One of the lab's own motor drivers has the same parts on a round board: the three MOSFETs are on the bottom about 21° apart, the DRV8323 is on top right behind the middle leg, and the MCU went round the board to where there was room.
+For example, on TestPCB2 the DRV8323 sat between legs A and B, so its gate lines were 8–12 mm to leg A, 20–24 mm to leg B and 37–40 mm to leg C. One of the lab's own motor drivers has the same parts on a round board: the three MOSFETs are on the bottom about 21° apart, the DRV8323 is on top right behind the middle leg, and the MCU went round the board to where there was room.
 
 ## 1. Collect
 - `design-requirements.md`, the design rules (`powerlab-pcb-design-rules` §3.1, §3.2), and the schematic's `LAYOUT:` notes.
@@ -32,12 +32,34 @@ Also keep: power flowing one way (input connector → protection → bulk → le
 When two blocks want the same place, the one with the higher-ranked links gets it and the other moves.
 
 ## 3. Draw the plan and ask
-- Write the plan as an SVG in the views folder, e.g. `00-block-plan.svg`, in board millimetres (viewBox from the outline's extents; `get_board_extents`, `get_component_list` for the fixed parts):
-  - the outline, holes, keep-outs and fixed parts as they are on the board;
-  - each block as a labelled box (or ring sector on a round board) of about its real size, at its planned place and angle; top side solid, bottom side dashed, and a legend saying so;
-  - the top-ranked links as lines with their expected length in mm (e.g. "gate A 14 mm"), thickest for gate drive and hot loops;
-  - a dark background (`#001023`), light lines and text, like the board views.
-- Open it with the Read tool so the panel shows it. Then, in a few short lines: where each main block goes and on which side, the expected lengths of the top-ranked links (gate lines to every leg), and the trade-offs you made. End with the question:
+- Write the plan to `placement\block-plan.json` in the project folder. The panel shows it as soon as the file is written: a card with the board, each block on it, and a list of the blocks. When the user hovers a block, it lights up. When they click it, KiCad selects the block's parts in the PCB editor, and the schematic editor shows them too. So every block lists its parts in `refs`, and every part on the board belongs to one block.
+- Everything is in board millimetres, in KiCad's coordinates (y down). Angles are degrees clockwise from +x, as they look on the board. Take the outline, holes and fixed parts from the board (`get_board_extents`, `list_graphics`, `get_component_list`, `get_component_pads`).
+- Shapes: `{"circle": {"center": [x, y], "diameter": d}}`, `{"ring": {"center": [x, y], "inner": d1, "outer": d2}}`, `{"sector": {"center": [x, y], "r": [r0, r1], "angle": [a0, a1]}}` (ring sectors, for round boards), `{"rect": {"center": [x, y], "size": [w, h], "angle": a}}`, `{"polygon": [[x, y], ...]}`. Size each block to about its real area (footprints plus room for their passives).
+- The file:
+
+  ```json
+  {
+    "title": "<board> block plan",
+    "outline": {"circle": {"center": [100, 100], "diameter": 91.25}},
+    "cutouts": [{"circle": {"center": [100, 100], "diameter": 20}}],
+    "holes": [{"circle": {"center": [140, 100], "diameter": 4}}],
+    "keepouts": [{"name": "Encoder area", "sides": ["top"], "circle": {"center": [100, 100], "diameter": 47}}],
+    "blocks": [
+      {"id": "legB", "name": "Leg B", "detail": "Q2 · shunt · caps", "side": "top", "kind": "power",
+       "refs": ["Q2", "R10", "R11", "C28", "C29"], "sector": {"center": [100, 100], "r": [29, 42], "angle": [333, 355]}},
+      {"id": "u3", "name": "U3", "detail": "DRV8323", "side": "bottom", "kind": "gate",
+       "refs": ["U3", "C20", "C21"], "sector": {"center": [100, 100], "r": [20, 28], "angle": [335, 353]}}
+    ],
+    "links": [{"from": "u3", "to": "legB", "label": "gate B ~6 mm", "kind": "gate"}],
+    "notes": ["**U3 sits under leg B**, so all three legs get the same short gate lines."]
+  }
+  ```
+
+  - `kind` sets the colour: `power`, `gate`, `mcu`, `supply`, `comms`, `sensor`, `analog`, `connector`, `debug`, `other`.
+  - `side`: `top` (solid) or `bottom` (hatched).
+  - `links`: the top-ranked connections between blocks, with their expected length. `kind`: `gate`, `power`, `signal` or `analog`.
+  - `notes`: two to four short lines: the trade-offs, and what changed from the last plan.
+- Then, in a few short lines: where each main block goes and on which side, the expected lengths of the top-ranked links (gate lines to every leg), and the trade-offs you made. End with the question:
 
   ```
   <choices>
@@ -47,7 +69,7 @@ When two blocks want the same place, the one with the higher-ranked links gets i
   </choices>
   ```
 
-- **Stop and wait for the answer.** Don't place parts before the user agrees. If they move a block, redraw the plan and ask again.
+- **Stop and wait for the answer.** Don't place parts before the user agrees. If they want a block moved, change the file (the panel shows the new plan) and ask again.
 - Skip the plan only when the user says so, or when you add one small block to an existing placement (then say in one line where it goes and why).
 
 ## 4. Place

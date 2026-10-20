@@ -16,7 +16,7 @@ import time
 import wx
 import wx.html2
 
-from . import attachments, config, history, library, report, review, updates, usage
+from . import attachments, config, history, library, plan, report, review, updates, usage
 from .common import find_gh, open_console, open_terminal, clean_env
 
 # Tools Claude may use without asking. Headless runs can't show permission
@@ -278,6 +278,7 @@ class ClaudePanel(wx.Frame):
         self.image_reads = {}
         self.review_writes = {}  # tool id -> design-review.md being written in this run
         self.review_md = None  # the review written in this run, shown when the run ends
+        self.plan_writes = {}  # tool id -> block-plan.json being written (shown once written)
         self.activity, self.activity_sent = ("waiting", ""), 0.0
         self.thinking_tokens = 0
         self.thought, self.thought_started = "", 0.0
@@ -362,6 +363,8 @@ class ClaudePanel(wx.Frame):
                 self.show_image(event.get("path", ""), record=False)
             elif event["kind"] == "review":
                 self.emit(**dict(event, **review.card(event.get("path", ""))))
+            elif event["kind"] == "plan":
+                self.emit(**dict(event, **plan.card(event.get("path", ""))))
             else:
                 self.emit(**event)
         if self.events:
@@ -942,6 +945,8 @@ class ClaudePanel(wx.Frame):
                         args.get("file_path", "") if block.get("name") == "Read" else "")
                     if block.get("name") in ("Write", "Edit") and review.is_review(args.get("file_path")):
                         self.review_writes[block.get("id")] = args["file_path"]
+                    if block.get("name") in ("Write", "Edit") and plan.is_plan(args.get("file_path")):
+                        self.plan_writes[block.get("id")] = args["file_path"]
         elif kind == "user":
             content = msg.get("message", {}).get("content", [])
             for block in content if isinstance(content, list) else []:
@@ -959,6 +964,9 @@ class ClaudePanel(wx.Frame):
                 written = self.review_writes.pop(block.get("tool_use_id"), None)
                 if written and not failed:
                     self.review_md = written
+                plan_path = self.plan_writes.pop(block.get("tool_use_id"), None)
+                if plan_path and not failed:
+                    self.show_plan(plan_path)
                 report.note_event("tool", f"{name} {'error' if failed else 'ok'}")
                 if image and not failed and os.path.splitext(image)[1].lower() in IMAGE_TYPES:
                     self.show_image(image)
@@ -1022,6 +1030,17 @@ class ClaudePanel(wx.Frame):
         mime = IMAGE_TYPES[os.path.splitext(path)[1].lower()]
         (self.say if record else self.emit)("image", src=f"data:{mime};base64,{data}",
                                             name=os.path.basename(path), path=path)
+
+    def show_plan(self, path):
+        """The block plan (powerlab-placement), as soon as Claude has written it."""
+        if not os.path.isabs(path) and self.chat_cwd:
+            path = os.path.join(self.chat_cwd, path)
+        try:
+            data = plan.card(path)
+        except Exception as e:  # a bad plan never breaks the chat
+            self.problem("error", "The block plan couldn't be shown.", "plan failed", type(e).__name__)
+            return
+        self.say("plan", **data)
 
     def show_review(self, md_path):
         """The final design review (powerlab-design-review) in the chat, and as a PDF."""

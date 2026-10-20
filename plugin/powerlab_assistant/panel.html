@@ -219,6 +219,62 @@ a.loc:hover { text-decoration-style: solid; }
 .review .body img { display: block; width: 100%; max-height: 320px; object-fit: contain; cursor: zoom-in; border-radius: 6px; background: var(--surface-2); }
 .review .body figcaption { font-size: 11px; color: var(--muted); padding-top: 3px; }
 .review .body .missing { color: var(--err); font-size: 12px; }
+/* the block plan (powerlab-placement): click a block to select its parts in KiCad */
+.plan {
+  margin: 0 0 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface);
+  animation: rise .18s ease-out; overflow: hidden; box-shadow: var(--shadow);
+}
+.plan .head { display: flex; align-items: center; gap: 8px; padding: 9px 10px 8px; }
+.plan .head .t { font-weight: 600; font-size: 13px; }
+.plan .head .v { font-size: 11.5px; color: var(--muted); }
+.plan .seg { margin-left: auto; display: flex; background: var(--surface-2); border-radius: 7px; padding: 2px; flex: none; }
+.plan .seg button { border: 0; background: transparent; font-size: 11px; padding: 2px 8px; border-radius: 5px; color: var(--muted); }
+.plan .seg button.on { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.15); }
+.plan .canvas {
+  position: relative; margin: 0 8px; border-radius: 9px; overflow: hidden;
+  background: radial-gradient(120% 90% at 50% 40%, #13213a 0%, #0a1222 70%, #070d19 100%);
+}
+.plan .plan-svg { display: block; width: 100%; height: auto; max-height: 460px; font-family: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif; }
+.plan .board { fill: #0e1a2e; }
+.plan .grid { stroke: #7f9cc4; stroke-opacity: .07; stroke-width: .12; }
+.plan .edge { fill: none; stroke: #c8d6ea; stroke-width: .35; stroke-opacity: .85; }
+.plan .cut { fill: #070d19; stroke: #c8d6ea; stroke-width: .3; stroke-opacity: .7; }
+.plan .hole { fill: #070d19; stroke: #e5c07b; stroke-width: .45; }
+.plan .keepout { fill: #8aa0bf; fill-opacity: .07; stroke: #8aa0bf; stroke-opacity: .35; stroke-width: .2; stroke-dasharray: .8 .6; pointer-events: none; }
+.plan .blk { cursor: pointer; outline: none; transition: opacity .15s; }
+.plan .blk .body { stroke-width: .35; stroke-linejoin: round; transition: stroke-width .12s, fill-opacity .12s; }
+.plan .blk.top .body { fill-opacity: .16; }
+.plan .blk .nm { fill: #f3f6fb; font-weight: 600; text-anchor: middle; letter-spacing: .02em; pointer-events: none; }
+.plan .blk .dt { fill: #b7c3d6; text-anchor: middle; pointer-events: none; }
+.plan .blk:hover .body, .plan .blk.hot .body { stroke-width: .6; filter: url(#glow); }
+.plan .blk.top:hover .body, .plan .blk.top.hot .body { fill-opacity: .32; }
+.plan .blk.sel .body { stroke: #ffffff; stroke-width: .7; filter: url(#glow); }
+.plan .link, .plan .pill-g { pointer-events: none; }
+.plan .blk .base { fill: #0e1a2e; }
+.plan .pill { fill: #0a1222; fill-opacity: .92; stroke-width: .18; }
+.plan .pt { text-anchor: middle; font-weight: 600; pointer-events: none; }
+.plan svg.only-top .blk.bottom, .plan svg.only-bottom .blk.top { opacity: .12; pointer-events: none; }
+.plan svg.only-top .keepout:not([data-sides~="top"]), .plan svg.only-bottom .keepout:not([data-sides~="bottom"]) { display: none; }
+.plan svg.dim .blk:not(.hot):not(.sel) { opacity: .35; }
+.plan svg.dim .link, .plan svg.dim .pill-g { opacity: .5; }
+.plan .legend { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 7px 12px 0; font-size: 11px; color: var(--muted); }
+.plan .legend i { display: inline-block; width: 14px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; border: 1.5px solid var(--muted); }
+.plan .legend i.b { border-style: dashed; background: repeating-linear-gradient(45deg, transparent 0 2px, color-mix(in srgb, var(--muted) 45%, transparent) 2px 3px); }
+.plan .legend i.g { border: 0; height: 3px; border-radius: 2px; background: #e0a800; width: 16px; vertical-align: 2px; }
+.plan .rows { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; padding: 8px 10px 4px; }
+.plan .row { display: flex; align-items: center; gap: 7px; padding: 4px 6px; border-radius: 7px; cursor: pointer; min-width: 0; }
+.plan .row:hover, .plan .row.hot { background: var(--surface-2); }
+.plan .row.sel { background: color-mix(in srgb, var(--accent) 12%, var(--surface-2)); }
+.plan .row .dot { flex: none; width: 9px; height: 9px; border-radius: 3px; }
+.plan .row .dot.b { background: transparent !important; border: 1.5px dashed; }
+.plan .row .n { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.plan .row .c { margin-left: auto; flex: none; font-size: 10.5px; color: var(--muted); }
+.plan .row .s { flex: none; font-size: 9.5px; letter-spacing: .04em; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
+.plan .notes { margin: 4px 10px 0; padding: 0 0 0 16px; font-size: 12px; color: var(--text); }
+.plan .notes li { margin: 2px 0; }
+.plan .hint { font-size: 11px; color: var(--muted); padding: 6px 12px 10px; }
+.plan .err { font-size: 11.5px; color: var(--warn); padding: 0 10px 8px; }
+@media (max-width: 380px) { .plan .rows { grid-template-columns: 1fr; } }
 .typing { padding: 4px 2px 12px; }
 .typing .row { display: flex; align-items: center; gap: 4px; }
 .typing span { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--muted); animation: blink 1.2s infinite; }
@@ -438,6 +494,88 @@ function add(el) {
   return el;
 }
 
+// The block plan (powerlab-placement). The panel builds the drawing and escapes all of its
+// text; a click on a block (or its row) selects that block's parts in KiCad.
+function planCard(e) {
+  const card = div('plan');
+  const head = div('head');
+  const words = div('');
+  words.append(div('t', esc(e.title || 'Block plan')));
+  const sides = new Set((e.blocks || []).map(b => b.side));
+  words.append(div('v', `${(e.blocks || []).length} blocks · click one to select its parts in KiCad`));
+  head.append(words);
+  card.append(head);
+  if (e.error) { card.append(div('err', esc(e.error))); return card; }
+  const canvas = div('canvas', e.svg || '');
+  const svg = canvas.querySelector('svg');
+  card.append(canvas);
+  if (sides.size > 1 && svg) {
+    const seg = div('seg');
+    [['both', 'Both'], ['top', 'Top'], ['bottom', 'Bottom']].forEach(([k, label]) => {
+      const b = document.createElement('button');
+      b.textContent = label; b.className = k === 'both' ? 'on' : '';
+      b.onclick = () => {
+        seg.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+        svg.classList.toggle('only-top', k === 'top');
+        svg.classList.toggle('only-bottom', k === 'bottom');
+      };
+      seg.append(b);
+    });
+    head.append(seg);
+  }
+  const legend = div('legend');
+  legend.innerHTML = '<span><i></i>top side</span><span><i class="b"></i>bottom side</span>' +
+    ((e.links || []).some(l => l.kind === 'gate') ? '<span><i class="g"></i>gate drive</span>' : '');
+  card.append(legend);
+  const rows = div('rows');
+  const parts = {};  // block id -> [svg group, list row]
+  (svg ? svg.querySelectorAll('g.blk') : []).forEach(g => { parts[g.dataset.id] = [g, null]; });
+  (e.blocks || []).forEach(b => {
+    const r = div('row');
+    const dot = div('dot' + (b.side === 'bottom' ? ' b' : ''));
+    dot.style.background = b.colour; dot.style.borderColor = b.colour;
+    const n = div('n'); n.textContent = b.name; n.title = b.detail || b.name;
+    const s = div('s'); s.textContent = b.side === 'bottom' ? 'BOT' : 'TOP';
+    const c = div('c'); c.textContent = b.count ? `${b.count} part${b.count > 1 ? 's' : ''}` : '';
+    r.append(dot, n, s, c);
+    rows.append(r);
+    (parts[b.id] = parts[b.id] || [null, null])[1] = r;
+    r.dataset.loc = b.loc || '';
+  });
+  const hot = (id, on) => {
+    const [g, r] = parts[id] || [];
+    if (g) g.classList.toggle('hot', on);
+    if (r) r.classList.toggle('hot', on);
+    if (svg) svg.classList.toggle('dim', on && !!g);
+  };
+  const pick = id => {
+    Object.entries(parts).forEach(([k, [g, r]]) => {
+      if (g) g.classList.toggle('sel', k === id);
+      if (r) r.classList.toggle('sel', k === id);
+    });
+    const [g, r] = parts[id] || [];
+    const loc = (g && g.dataset.loc) || (r && r.dataset.loc);
+    if (loc) post({ type: 'locate', target: loc });
+  };
+  Object.entries(parts).forEach(([id, [g, r]]) => {
+    [g, r].forEach(el => {
+      if (!el) return;
+      el.addEventListener('mouseenter', () => hot(id, true));
+      el.addEventListener('mouseleave', () => hot(id, false));
+      el.addEventListener('click', () => pick(id));
+      el.addEventListener('keydown', k => { if (k.key === 'Enter') pick(id); });
+    });
+  });
+  card.append(rows);
+  if ((e.notes || []).length) {
+    const ul = document.createElement('ul'); ul.className = 'notes';
+    e.notes.forEach(t => { const li = document.createElement('li'); li.innerHTML = inline(t); ul.append(li); });
+    card.append(ul);
+  }
+  card.append(div('hint', 'Hover a block to see it, click to select its parts in the PCB editor (and the schematic).'));
+  return card;
+}
+
 function div(cls, html) { const d = document.createElement('div'); d.className = cls; if (html != null) d.innerHTML = html; return d; }
 
 function setBusy(v) {
@@ -602,6 +740,7 @@ const app = {
         log.scrollTop = card.offsetTop - log.offsetTop - 8;  // a long review is read from its top
         break;
       }
+      case 'plan': add(planCard(e)); toolGroup = null; break;
       case 'busy':
         setBusy(e.value);
         if (!e.value) {

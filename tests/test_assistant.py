@@ -274,7 +274,7 @@ class ChatHistoryTests(unittest.TestCase):
         except ImportError as exc:
             self.skipTest(f"panel needs wx.html2: {exc}")
         names = ("say", "save_chat", "open_chat", "handle", "finished", "show_image", "set_activity",
-                 "show_review")
+                 "show_review", "show_plan")
 
         class Fake:
             pass
@@ -286,7 +286,7 @@ class ChatHistoryTests(unittest.TestCase):
         panel.session_id, panel.chat_cwd, panel.events = None, None, []
         panel.retry, panel.stale_session, panel.proc = None, False, None
         panel.got_result, panel.watched, panel.image_reads = False, {}, {}
-        panel.review_writes, panel.review_md = {}, None
+        panel.review_writes, panel.review_md, panel.plan_writes = {}, None, {}
         panel.last_text, panel.limits, panel.started, panel.effort = "", [], 0.0, "high"
         panel.activity, panel.activity_sent = ("waiting", ""), time.time()
         panel.thinking_tokens = 0
@@ -455,6 +455,23 @@ class ChatHistoryTests(unittest.TestCase):
         self.assertEqual(shown(), [("retry", "")])
         # Activity isn't part of the saved chat.
         self.assertFalse(any(e["kind"] == "activity" for e in panel.events))
+
+    def test_written_block_plan_shows_as_a_card(self):
+        import json
+        panel = self.fake_panel()
+        path = os.path.join(self.tmp.name, "placement", "block-plan.json")
+        os.makedirs(os.path.dirname(path))
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"title": "Plan", "blocks": [{"id": "a", "name": "A", "refs": ["U1"],
+                                                    "rect": {"center": [0, 0], "size": [5, 5]}}]}, f)
+        panel.handle({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "w", "name": "Write", "input": {"file_path": path, "content": "{}"}}]}})
+        panel.handle({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "w"}]}})
+        plans = [e for e in panel.emitted if e["kind"] == "plan"]
+        self.assertEqual(len(plans), 1)
+        self.assertEqual(plans[0]["blocks"][0]["loc"], "refs=U1")
+        self.assertNotIn("svg", panel.events[-1])  # the chat keeps the path, not the drawing
+        self.assertEqual(panel.events[-1]["path"], path)
 
     def test_expired_session_is_sent_again_as_a_new_chat(self):
         panel = self.fake_panel()
@@ -711,6 +728,103 @@ class DesignReviewTests(unittest.TestCase):
         with open(data["pdf"], "rb") as f:
             self.assertEqual(f.read(5), b"%PDF-")
         self.assertFalse(os.path.exists(os.path.join(self.folder, "design-review.html")))
+
+
+class BlockPlanTests(unittest.TestCase):
+    """The block plan card (powerlab-placement): drawn from block-plan.json, a click on a
+    block selects its parts in KiCad."""
+
+    def setUp(self):
+        import json
+        from powerlab_assistant import history, plan
+        self.plan, self.history = plan, history
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = os.path.join(self.tmp.name, "placement", "block-plan.json")
+        os.makedirs(os.path.dirname(self.path))
+        self.data = {
+            "title": "Board <b>plan</b>",
+            "outline": {"circle": {"center": [100, 100], "diameter": 90}},
+            "cutouts": [{"circle": {"center": [100, 100], "diameter": 20}}],
+            "holes": [{"circle": {"center": [140, 100], "diameter": 4}}],
+            "keepouts": [{"name": "Ring", "ring": {"center": [100, 100], "inner": 84, "outer": 90}}],
+            "blocks": [
+                {"id": "legB", "name": "Leg <B>", "detail": "Q2 & shunt", "side": "top", "kind": "power",
+                 "refs": ["Q2", "R10", 'X" onclick="alert(1)'],
+                 "sector": {"center": [100, 100], "r": [29, 42], "angle": [333, 355]}},
+                {"id": "u3", "name": "U3", "side": "bottom", "kind": "gate", "refs": ["U3"],
+                 "rect": {"center": [125, 95], "size": [7, 7], "angle": 30}},
+                {"id": "x", "name": "Odd", "kind": "nope", "polygon": [[60, 60], [70, 60], [65, 70]]},
+            ],
+            "links": [{"from": "u3", "to": "legB", "label": "gate <6>", "kind": "gate"}],
+            "notes": ["**U3** under [leg B](kicad:refs=Q2)"],
+        }
+        with open(self.path, "w", encoding="utf-8") as f:
+            json.dump(self.data, f)
+
+    def test_is_plan(self):
+        self.assertTrue(self.plan.is_plan(self.path))
+        self.assertTrue(self.plan.is_plan(r"C:\p\placement\Block-Plan.json"))
+        self.assertFalse(self.plan.is_plan(r"C:\p\placement\notes.json"))
+
+    def test_card_escapes_text_and_keeps_only_clean_refs(self):
+        card = self.plan.card(self.path)
+        self.assertNotIn("error", card)
+        svg = card["svg"]
+        self.assertTrue(svg.startswith("<svg"))
+        for raw in ("<b>", "Leg <B>", "gate <6>", "onclick", "alert("):
+            self.assertNotIn(raw, svg)
+        self.assertIn("Leg &lt;B&gt;", svg)
+        self.assertIn('data-loc="refs=Q2,R10"', svg)
+        legb = next(b for b in card["blocks"] if b["id"] == "legB")
+        self.assertEqual((legb["loc"], legb["count"], legb["side"]), ("refs=Q2,R10", 2, "top"))
+        odd = next(b for b in card["blocks"] if b["id"] == "x")
+        self.assertEqual((odd["kind"], odd["side"], odd["loc"]), ("other", "top", ""))
+        self.assertEqual(card["title"], "Board <b>plan</b>")  # the page escapes it
+
+    def test_bottom_blocks_are_hatched_and_drawn_under_the_top(self):
+        svg = self.plan.card(self.path)["svg"]
+        self.assertIn('class="blk bottom"', svg)
+        self.assertIn('fill="url(#h-gate)"', svg)
+        self.assertLess(svg.index('data-id="u3"'), svg.index('data-id="legB"'))
+        # the gate link and its pill: the line under the blocks, the pill over them
+        self.assertLess(svg.index('class="link"'), svg.index('data-id="u3"'))
+        self.assertGreater(svg.index('class="pill-g"'), svg.index('data-id="legB"'))
+
+    def test_sector_spans_its_angles(self):
+        s = self.plan.Shape({"sector": {"center": [0, 0], "r": [10, 20], "angle": [350, 10]}})
+        self.assertAlmostEqual(math.hypot(*s.anchor), 15, places=6)
+        self.assertAlmostEqual(math.degrees(math.atan2(s.anchor[1], s.anchor[0])), 0, places=6)
+        self.assertIn(" A20 20 0 0 1 ", s.d)
+
+    def test_a_broken_plan_shows_an_error(self):
+        with open(self.path, "w", encoding="utf-8") as f:
+            f.write("{not json")
+        card = self.plan.card(self.path)
+        self.assertIn("can't be read", card["error"])
+        self.assertEqual(card["svg"], "")
+
+    def test_chat_keeps_the_plan_by_path(self):
+        card = dict(self.plan.card(self.path), kind="plan")
+        kept = self.history.stored("plan", card)
+        self.assertEqual(kept["path"], self.path)
+        for key in ("svg", "blocks", "notes", "links"):
+            self.assertNotIn(key, kept)
+        self.assertIn("plan", self.history.KINDS)
+
+    def test_panel_shows_written_plans(self):
+        with open(os.path.join(ROOT, "plugin", "powerlab_assistant", "panel.py"), encoding="utf-8") as f:
+            panel = f.read()
+        self.assertIn("plan.is_plan(args.get(\"file_path\"))", panel)
+        self.assertIn("self.show_plan(plan_path)", panel)
+        with open(os.path.join(ROOT, "plugin", "powerlab_assistant", "panel.html"), encoding="utf-8") as f:
+            page = f.read()
+        self.assertIn("case 'plan': add(planCard(e))", page)
+        self.assertIn("post({ type: 'locate', target: loc })", page)
+        with open(os.path.join(ROOT, "skills", "powerlab-placement", "SKILL.md"), encoding="utf-8") as f:
+            skill = f.read()
+        self.assertIn("placement\\block-plan.json", skill)
+        self.assertIn("Stop and wait for the answer", skill)
 
 
 class OnePanelTests(unittest.TestCase):
