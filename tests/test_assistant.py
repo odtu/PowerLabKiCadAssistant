@@ -1140,6 +1140,16 @@ class McpPatchTests(unittest.TestCase):
         self.assertEqual(mcp_patch._body(old), mcp_patch._body(other_clone))
         self.assertNotEqual(mcp_patch._body(old), mcp_patch._body(old + b"+# one more line\n"))
 
+    def test_update_rebuilds_for_a_changed_patch(self):
+        """A maintainer's checkout already has the new patch applied (CLAUDE.md: edit, then
+        regen), so -Update saw nothing to do and kept the old build: padNets and
+        edit_board_text were missing. Every build now records the patch it was made from."""
+        with open(os.path.join(ROOT, "install.ps1"), encoding="utf-8") as f:
+            text = f.read()
+        self.assertIn('"dist\\.powerlab-patch"', text)
+        self.assertIn("elseif ((Get-McpBuildStamp) -ne (Get-PatchHash))", text)
+        self.assertEqual(text.count("Save-McpBuildStamp"), 4)  # defined, and after each of the 3 builds
+
     def test_rotation_keeps_3d_models(self):
         patch = self.patch()
         self.assertIn("models = list(target_fp.definition.models)", patch)
