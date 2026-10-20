@@ -250,6 +250,8 @@ a.loc:hover { text-decoration-style: solid; }
 .plan .blk.top:hover .body, .plan .blk.top.hot .body { fill-opacity: .32; }
 .plan .blk.sel .body { stroke: #ffffff; stroke-width: .7; filter: url(#glow); }
 .plan .link, .plan .pill-g { pointer-events: none; }
+.plan .pill-g.empty { display: none; }
+.plan .pill-g.live .pill { fill: #101c33; stroke-width: .3; }
 .plan .blk .base { fill: #0e1a2e; }
 .plan .blk.drag { cursor: grabbing; }
 .plan .blk.drag .body { stroke: #ffffff; stroke-width: .6; fill-opacity: .4; }
@@ -266,7 +268,8 @@ a.loc:hover { text-decoration-style: solid; }
 .plan .selbar .dot.b { background: transparent !important; border: 1.5px dashed; }
 .plan .selbar .n { font-size: 12.5px; font-weight: 600; }
 .plan .selbar .w { font-size: 11.5px; color: var(--muted); }
-.plan .selbar .btn { margin-left: auto; padding: 2px 10px; font-size: 12px; flex: none; }
+.plan .selbar .w { margin-right: auto; }
+.plan .selbar .btn { padding: 2px 10px; font-size: 12px; flex: none; }
 .plan .pill { fill: #0a1222; fill-opacity: .92; stroke-width: .18; }
 .plan .pt { text-anchor: middle; font-weight: 600; pointer-events: none; }
 .plan svg.only-top .blk.bottom, .plan svg.only-bottom .blk.top { opacity: .12; pointer-events: none; }
@@ -603,6 +606,13 @@ function planCard(e, state) {
     flip.className = 'btn'; flip.textContent = other === 'bottom' ? 'Move to bottom side ↓' : 'Move to top side ↑';
     flip.onclick = () => sendMove({ id: b.id, side: other, prev: b.side });
     selbar.append(dot, n, where, flip);
+    const g = parts[id] && parts[id][0];
+    if (g && g.dataset.turn) {  // boxes and polygons turn in 90° steps (§3.2 on rectangular boards)
+      const turn = document.createElement('button');
+      turn.className = 'btn'; turn.textContent = 'Rotate 90° ↻';
+      turn.onclick = () => sendMove({ id: b.id, rot: 90 });
+      flip.before(turn);
+    }
   };
   const pick = id => {
     state.sel = id;
@@ -617,6 +627,54 @@ function planCard(e, state) {
     return p.matrixTransform(svg.getScreenCTM().inverse());
   };
   const half = v => Math.round(v * 2) / 2;  // drags snap to 0.5 mm / 0.5 degree
+  // The links of a dragged block follow it, with the gap to the other block measured live
+  // (edge to edge, like the panel measures it after the drop).
+  const ptsOf = g => g._pts || (g._pts = (g.dataset.pts || '').split(' ').filter(Boolean).map(s => s.split(',').map(Number)));
+  const inside = (p, poly) => {
+    let hit = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const [x0, y0] = poly[i], [x1, y1] = poly[j];
+      if ((y0 > p[1]) !== (y1 > p[1]) && p[0] < (x1 - x0) * (p[1] - y0) / (y1 - y0) + x0) hit = !hit;
+    }
+    return hit;
+  };
+  const gapOf = (a, b) => {
+    if (!a.length || !b.length) return null;
+    if (a.some(p => inside(p, b)) || b.some(p => inside(p, a))) return 0;
+    let m = Infinity;
+    for (const p of a) for (const q of b) { const d = (p[0] - q[0]) ** 2 + (p[1] - q[1]) ** 2; if (d < m) m = d; }
+    return Math.sqrt(m);
+  };
+  const baseLabel = t => t.replace(/\s*·\s*(overlap|stacked|[\d.]+ mm gap)$/, '').replace(/[\s·:]*[~≈]?\s*\d+(\.\d+)?\s*(mm)?(\s*gap)?\s*$/, '');
+  const follow = (id, tf) => {
+    if (!svg) return;
+    const g = parts[id] && parts[id][0];
+    const moved = ptsOf(g).map(tf);
+    const anchor = tf([+g.dataset.ax, +g.dataset.ay]);
+    svg.querySelectorAll('line.link').forEach(line => {
+      const from = line.dataset.from, to = line.dataset.to;
+      if (from !== id && to !== id) return;
+      const other = parts[from === id ? to : from];
+      if (!other || !other[0]) return;
+      const og = other[0];
+      if (from === id) { line.setAttribute('x1', anchor[0]); line.setAttribute('y1', anchor[1]); }
+      else { line.setAttribute('x2', anchor[0]); line.setAttribute('y2', anchor[1]); }
+      const pill = svg.querySelector(`g.pill-g[data-i="${line.dataset.i}"]`);
+      if (!pill) return;
+      const gap = gapOf(moved, ptsOf(og));
+      const base = baseLabel(pill.dataset.label || '');
+      const text = pill.querySelector('text'), rect = pill.querySelector('rect');
+      const stacked = g.dataset.side !== og.dataset.side;  // over each other on the two sides
+      text.textContent = (base ? base + ' · ' : '') +
+        (gap === 0 ? (stacked ? 'stacked' : 'overlap') : `${gap.toFixed(1)} mm gap`);
+      pill.classList.remove('empty'); pill.classList.add('live');
+      const x1 = +line.getAttribute('x1'), y1 = +line.getAttribute('y1');
+      const x2 = +line.getAttribute('x2'), y2 = +line.getAttribute('y2');
+      const mx = (x1 + x2) / 2, my = (y1 + y2) / 2, w = text.getComputedTextLength() + 1.4;
+      text.setAttribute('x', mx); text.setAttribute('y', my + 0.52);
+      rect.setAttribute('x', mx - w / 2); rect.setAttribute('y', my - 1.13); rect.setAttribute('width', w);
+    });
+  };
   Object.entries(parts).forEach(([id, [g, r]]) => {
     [g, r].forEach(el => {
       if (!el) return;
@@ -638,19 +696,27 @@ function planCard(e, state) {
       try { g.setPointerCapture(ev.pointerId); } catch (_) { /* still drags while over the block */ }
       const onMove = ev2 => {
         const p = toSvg(ev2);
+        let tf;  // where a point of the block is now
         if (sector) {
           let da = (Math.atan2(p.y - cy, p.x - cx) - Math.atan2(p0.y - cy, p0.x - cx)) * 180 / Math.PI;
           da = half(((da + 540) % 360) - 180);
           const dr = half(Math.hypot(p.x - cx, p.y - cy) - Math.hypot(p0.x - cx, p0.y - cy));
           const am = Math.atan2(ay - cy, ax - cx);
-          g.setAttribute('transform', `rotate(${da} ${cx} ${cy}) translate(${dr * Math.cos(am)} ${dr * Math.sin(am)})`);
+          const tx = dr * Math.cos(am), ty = dr * Math.sin(am), t = da * Math.PI / 180;
+          g.setAttribute('transform', `rotate(${da} ${cx} ${cy}) translate(${tx} ${ty})`);
+          tf = ([x, y]) => {
+            const ux = x + tx - cx, uy = y + ty - cy;
+            return [cx + ux * Math.cos(t) - uy * Math.sin(t), cy + ux * Math.sin(t) + uy * Math.cos(t)];
+          };
           move = (da || dr) ? { id, da, dr } : null;
         } else {
           const dx = half(p.x - p0.x), dy = half(p.y - p0.y);
           g.setAttribute('transform', `translate(${dx} ${dy})`);
+          tf = ([x, y]) => [x + dx, y + dy];
           move = (dx || dy) ? { id, dx, dy } : null;
         }
         g.classList.toggle('drag', !!move);
+        follow(id, tf);
       };
       const onUp = () => {
         g.removeEventListener('pointermove', onMove);
@@ -678,7 +744,7 @@ function planCard(e, state) {
       const last = state.moves.pop();
       if (!last) return;
       const m = last.move;
-      const back = m.side ? { id: m.id, side: m.prev }
+      const back = m.side ? { id: m.id, side: m.prev } : m.rot ? { id: m.id, rot: -m.rot }
         : 'da' in m ? { id: m.id, da: -m.da, dr: -m.dr } : { id: m.id, dx: -m.dx, dy: -m.dy };
       sendMove(back, true);
     };

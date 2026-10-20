@@ -73,6 +73,7 @@ class Shape:
 
     def __init__(self, spec):
         self.d, self.points, self.anchor, self.room, self.angle = "", [], (0.0, 0.0), (10.0, 10.0), 0.0
+        self.outline = []  # the boundary as a closed polygon, for gaps between blocks
         if "circle" in spec:
             c = spec["circle"] or {}
             o, r = _pt(c.get("center")), _num(c.get("diameter")) / 2
@@ -95,10 +96,12 @@ class Shape:
                             o[1] + x * math.sin(t) + y * math.cos(t)) for x, y in corners]
             self.d = _poly_path(self.points)
             self.anchor, self.room, self.angle = o, (w, h), _upright(a)
+            self.outline = list(self.points)
         elif "polygon" in spec:
             pts = [_pt(p) for p in (spec["polygon"] or [])[:MAX_SHAPES]]
             if len(pts) >= 3:
                 self.points = pts
+                self.outline = list(pts)
                 self.d = _poly_path(pts)
                 xs, ys = [p[0] for p in pts], [p[1] for p in pts]
                 self.anchor = (sum(xs) / len(xs), sum(ys) / len(ys))
@@ -108,6 +111,7 @@ class Shape:
         self.d = _circle_path(o, r)
         self.points = [(o[0] - r, o[1] - r), (o[0] + r, o[1] + r)]
         self.anchor, self.room = o, (r * 1.4, r * 1.4)
+        self.outline = [_polar(o, r, i * 7.5) for i in range(48)]
 
     def _sector(self, c):
         o = _pt(c.get("center"))
@@ -122,11 +126,43 @@ class Shape:
                   f"L{_f(q1[0])} {_f(q1[1])} A{_f(r0)} {_f(r0)} 0 {large} 0 {_f(q0[0])} {_f(q0[1])} Z")
         steps = max(2, int((a1 - a0) / 10) + 1)
         self.points = [_polar(o, r, a0 + (a1 - a0) * i / steps) for r in (r0, r1) for i in range(steps + 1)]
+        n = max(2, int((a1 - a0) / 2) + 1)
+        self.outline = ([_polar(o, r1, a0 + (a1 - a0) * i / n) for i in range(n + 1)]
+                        + [_polar(o, r0, a1 - (a1 - a0) * i / n) for i in range(n + 1)])
         mid = (a0 + a1) / 2
         self.anchor = _polar(o, (r0 + r1) / 2, mid)
         arc = (r0 + r1) / 2 * math.radians(a1 - a0)
         self.angle = _upright(mid + 90)  # labels run along the arc
         self.room = (arc, r1 - r0)
+
+
+def _densify(poly, step=0.5):
+    """The closed polygon's boundary as points at most `step` mm apart."""
+    out = []
+    for i, (x0, y0) in enumerate(poly):
+        x1, y1 = poly[(i + 1) % len(poly)]
+        n = max(1, int(math.hypot(x1 - x0, y1 - y0) / step))
+        out += [(x0 + (x1 - x0) * k / n, y0 + (y1 - y0) * k / n) for k in range(n)]
+    return out
+
+
+def _inside(p, poly):
+    x, y, hit = p[0], p[1], False
+    for i, (x0, y0) in enumerate(poly):
+        x1, y1 = poly[i - 1]
+        if (y0 > y) != (y1 > y) and x < (x1 - x0) * (y - y0) / (y1 - y0) + x0:
+            hit = not hit
+    return hit
+
+
+def gap(a, b):
+    """The edge-to-edge distance between two shapes in mm: 0 when they touch or overlap."""
+    if not a.outline or not b.outline:
+        return None
+    pa, pb = _densify(a.outline), _densify(b.outline)
+    if any(_inside(p, b.outline) for p in pa[::4]) or any(_inside(p, a.outline) for p in pb[::4]):
+        return 0.0
+    return min(math.hypot(x0 - x1, y0 - y1) for x0, y0 in pa for x1, y1 in pb)
 
 
 def _upright(a):
@@ -239,14 +275,14 @@ def svg(data):
         s = _shape_of(c) if isinstance(c, dict) else None
         if s:
             o.append(f'<path d="{s.d}" class="hole"/>')
-    anchors = {}
+    anchors, by_id = {}, {}
     for i, (b, s) in enumerate(shapes):
         if not s:
             continue
         bid = block_id(b, i)
-        anchors[bid] = s.anchor
+        anchors[bid], by_id[bid] = s.anchor, s
     pills = []
-    for ln in (data.get("links") or [])[:MAX_SHAPES]:
+    for n, ln in enumerate((data.get("links") or [])[:MAX_SHAPES]):
         if not isinstance(ln, dict):
             continue
         a, z = ln.get("from"), ln.get("to")
@@ -256,17 +292,21 @@ def svg(data):
             continue
         colour, width, dash = LINK_KINDS.get(ln.get("kind"), LINK_KINDS["signal"])
         dash = f' stroke-dasharray="{dash}"' if dash else ""
-        o.append(f'<line class="link" x1="{_f(p[0])}" y1="{_f(p[1])}" x2="{_f(q[0])}" y2="{_f(q[1])}" '
-                 f'stroke="{colour}" stroke-width="{width}" stroke-linecap="round"{dash}/>')
+        ends = (f'data-i="{n}" data-from="{html.escape(str(a), True)}" data-to="{html.escape(str(z), True)}"'
+                if isinstance(a, str) and isinstance(z, str) else f'data-i="{n}"')
+        o.append(f'<line class="link" {ends} x1="{_f(p[0])}" y1="{_f(p[1])}" x2="{_f(q[0])}" '
+                 f'y2="{_f(q[1])}" stroke="{colour}" stroke-width="{width}" stroke-linecap="round"{dash}/>')
         label = str(ln.get("label") or "")
-        if label:
-            mx, my = (p[0] + q[0]) / 2, (p[1] + q[1]) / 2
-            fs = 1.45
-            bw = 0.56 * fs * len(label) + 1.4
-            pills.append(f'<g class="pill-g"><rect x="{_f(mx - bw / 2)}" y="{_f(my - fs * 0.78)}" '
-                         f'width="{_f(bw)}" height="{_f(fs * 1.56)}" rx="{_f(fs * 0.78)}" class="pill" '
-                         f'stroke="{colour}"/><text x="{_f(mx)}" y="{_f(my + fs * 0.36)}" '
-                         f'font-size="{_f(fs)}" fill="{colour}" class="pt">{html.escape(label)}</text></g>')
+        g = gap(by_id[a], by_id[z]) if a in by_id and z in by_id else None
+        tip = f"<title>{html.escape(label)}{' · ' if label else ''}gap {g:.1f} mm</title>" if g is not None else ""
+        mx, my = (p[0] + q[0]) / 2, (p[1] + q[1]) / 2
+        fs = 1.45
+        bw = 0.56 * fs * len(label) + 1.4
+        pills.append(f'<g class="pill-g{"" if label else " empty"}" {ends} data-label="{html.escape(label, True)}">'
+                     f'{tip}<rect x="{_f(mx - bw / 2)}" y="{_f(my - fs * 0.78)}" '
+                     f'width="{_f(bw)}" height="{_f(fs * 1.56)}" rx="{_f(fs * 0.78)}" class="pill" '
+                     f'stroke="{colour}"/><text x="{_f(mx)}" y="{_f(my + fs * 0.36)}" '
+                     f'font-size="{_f(fs)}" fill="{colour}" class="pt">{html.escape(label)}</text></g>')
     # Bottom-side blocks first, so the top side is drawn over them.
     order = sorted(range(len(shapes)), key=lambda i: shapes[i][0].get("side") != "bottom")
     for i in order:
@@ -289,6 +329,11 @@ def svg(data):
             drag = f' data-drag="sector" data-cx="{_f(c[0])}" data-cy="{_f(c[1])}"'
         else:
             drag = ' data-drag="move"'
+        if "rect" in b or "polygon" in b:
+            drag += ' data-turn="1"'  # can be turned in 90° steps
+        pts = _densify(s.outline, 1.0) if s.outline else []
+        pts = pts[::max(1, len(pts) // 160 + 1)]
+        drag += f' data-pts="{" ".join(f"{_f(x)},{_f(y)}" for x, y in pts)}"'
         o.append(f'<g class="blk {side}" data-id="{html.escape(bid, True)}" data-side="{side}"{loc}{drag} '
                  f'data-ax="{_f(s.anchor[0])}" data-ay="{_f(s.anchor[1])}" '
                  f'style="--c:{colour}" tabindex="0">'
@@ -336,12 +381,27 @@ def move(path, moves):
     Returns one line per move for Claude, e.g. "Leg A: turned 12° clockwise, now 313–335°"."""
     data = load(path)
     blocks = {block_id(b, i): b for i, b in enumerate(_blocks(data))}
-    lines = []
+    lines, moved = [], set()
     for m in moves if isinstance(moves, list) else []:
         b = blocks.get(str((m or {}).get("id")))
         if b is None:
             continue
         name = str(b.get("name") or b.get("id"))
+        moved.add(str(m.get("id")))
+        if m.get("rot") in (90, -90, 180):
+            turn = int(m["rot"])
+            if isinstance(b.get("rect"), dict):
+                b["rect"]["angle"] = round((_num(b["rect"].get("angle")) + turn) % 360, 2)
+            elif isinstance(b.get("polygon"), list):
+                ox, oy = Shape({"polygon": b["polygon"]}).anchor
+                t = math.radians(turn)
+                b["polygon"] = [[round(ox + (x - ox) * math.cos(t) - (y - oy) * math.sin(t), 2),
+                                 round(oy + (x - ox) * math.sin(t) + (y - oy) * math.cos(t), 2)]
+                                for x, y in (_pt(q) for q in b["polygon"])]
+            else:
+                continue
+            lines.append(f"{name}: turned {abs(turn)}° {'clockwise' if turn > 0 else 'counter-clockwise'}")
+            continue
         if m.get("side") in SIDES:
             b["side"] = m["side"]
             lines.append(f"{name}: to the {m['side']} side")
@@ -367,23 +427,47 @@ def move(path, moves):
         dx, dy = clamp(m.get("dx")), clamp(m.get("dy"))
         if abs(dx) < 0.05 and abs(dy) < 0.05:
             continue
-        moved = False
+        shifted = False
         for key in ("rect", "circle", "ring"):
             if isinstance(b.get(key), dict):
                 x, y = _pt(b[key].get("center"))
                 b[key]["center"] = [round(x + dx, 2), round(y + dy, 2)]
                 where = b[key]["center"]
-                moved = True
+                shifted = True
         if isinstance(b.get("polygon"), list):
             b["polygon"] = [[round(_pt(q)[0] + dx, 2), round(_pt(q)[1] + dy, 2)] for q in b["polygon"]]
             shape = Shape({"polygon": b["polygon"]})
             where = [round(shape.anchor[0], 2), round(shape.anchor[1], 2)]
-            moved = True
-        if moved:
+            shifted = True
+        if shifted:
             lines.append(f"{name}: moved {dx:+.1f} mm in x, {dy:+.1f} mm in y; "
                          f"centre now ({_f(where[0])}, {_f(where[1])})")
+    relabel(data, moved)
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=1)
     os.replace(tmp, path)
     return lines
+
+
+NUMBER_AT_END = re.compile(r"[\s·:]*[~≈]?\s*\d+(\.\d+)?\s*(mm)?(\s*gap)?\s*$")
+
+
+def relabel(data, moved):
+    """A link of a moved block gets the measured gap instead of Claude's old length,
+    e.g. "gate A ~16" -> "gate A · 7.5 mm gap", until Claude measures it again."""
+    shapes = {block_id(b, i): _shape_of(b) for i, b in enumerate(_blocks(data))}
+    sides = {block_id(b, i): b.get("side") == "bottom" for i, b in enumerate(_blocks(data))}
+    for ln in data.get("links") or []:
+        if not isinstance(ln, dict) or not ({ln.get("from"), ln.get("to")} & moved):
+            continue
+        a, z = shapes.get(ln.get("from")), shapes.get(ln.get("to"))
+        g = gap(a, z) if a and z else None
+        if g is None:
+            continue
+        base = NUMBER_AT_END.sub("", re.sub(r"\s*·\s*(overlap|stacked|[\d.]+ mm gap)$", "",
+                                            str(ln.get("label") or "")))
+        # Over each other on the two sides is a stack (a via apart), on one side a collision.
+        stacked = sides.get(ln.get("from")) != sides.get(ln.get("to"))
+        ln["label"] = (base + " · " if base else "") + (
+            ("stacked" if stacked else "overlap") if g == 0 else f"{g:.1f} mm gap")

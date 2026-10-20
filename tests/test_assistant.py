@@ -838,6 +838,30 @@ class BlockPlanTests(unittest.TestCase):
         self.assertIn('data-drag="sector" data-cx="100" data-cy="100"', svg)
         self.assertIn('data-drag="move"', svg)
 
+    def test_boxes_turn_and_moved_links_show_the_measured_gap(self):
+        import json
+        g = self.plan.gap(self.plan.Shape({"rect": {"center": [0, 0], "size": [10, 10]}}),
+                          self.plan.Shape({"rect": {"center": [20, 0], "size": [6, 6]}}))
+        self.assertAlmostEqual(g, 12.0, places=6)  # edges at x = 5 and x = 17
+        self.assertEqual(self.plan.gap(self.plan.Shape({"rect": {"center": [0, 0], "size": [10, 10]}}),
+                                       self.plan.Shape({"circle": {"center": [4, 0], "diameter": 6}})), 0.0)
+        lines = self.plan.move(self.path, [{"id": "u3", "rot": 90}, {"id": "u3", "dx": -10, "dy": 0}])
+        self.assertEqual(lines[0], "U3: turned 90° clockwise")
+        with open(self.path, encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertEqual(data["blocks"][1]["rect"]["angle"], 120)
+        label = data["links"][0]["label"]
+        self.assertRegex(label, r"^gate <6> · (stacked|\d+\.\d mm gap)$")  # U3 is on the other side
+        self.assertEqual(self.plan.NUMBER_AT_END.sub("", "gate A ~16 mm"), "gate A")  # old lengths go
+        self.plan.move(self.path, [{"id": "u3", "dx": 1}])
+        with open(self.path, encoding="utf-8") as f:
+            again = json.load(f)["links"][0]["label"]
+        self.assertEqual(again.count("·"), 1)  # measured again, not appended twice
+        svg = self.plan.card(self.path)["svg"]
+        self.assertIn('data-turn="1"', svg)  # boxes and polygons can turn
+        self.assertRegex(svg, r'data-pts="[\d.]+,[\d.]+ ')
+        self.assertIn('data-from="u3" data-to="legB"', svg)
+
     def test_panel_moves_only_plans_of_its_project(self):
         try:
             from powerlab_assistant.panel import ClaudePanel
@@ -871,6 +895,8 @@ class BlockPlanTests(unittest.TestCase):
         self.assertIn("'Move to bottom side ↓' : 'Move to top side ↑'", page)
         self.assertIn("case 'plan_update':", page)
         self.assertIn("Send moves to Claude", page)
+        self.assertIn("'Rotate 90° ↻'", page)
+        self.assertIn("follow(id, tf);", page)  # links follow a drag, with the gap measured live
         with open(os.path.join(ROOT, "skills", "powerlab-placement", "SKILL.md"), encoding="utf-8") as f:
             skill = f.read()
         self.assertIn("placement\\block-plan.json", skill)
