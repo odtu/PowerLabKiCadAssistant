@@ -317,7 +317,7 @@ index 16a4915..922b826 100644
                          f.write(image_bytes)
                      return {
 diff --git a/python/commands/component.py b/python/commands/component.py
-index f635672..fd3e2eb 100644
+index f635672..7ea84f4 100644
 --- a/python/commands/component.py
 +++ b/python/commands/component.py
 @@ -149,6 +149,8 @@ class ComponentCommands(PlacementOptimizerCommands):
@@ -354,7 +354,35 @@ index f635672..fd3e2eb 100644
                      moved.append(
                          {
                              "reference": ref,
-@@ -563,6 +568,9 @@ class ComponentCommands(PlacementOptimizerCommands):
+@@ -495,6 +500,27 @@ class ComponentCommands(PlacementOptimizerCommands):
+                     "errorDetails": f"Could not find component: {reference}",
+                 }
+ 
++            # PowerLab patch: {pad number: net name}, "*" for every pad, "" for no net.
++            # Checked before anything changes; NPTH pads can't take a net.
++            pad_nets = params.get("padNets") or {}
++            if pad_nets and not footprint:
++                pads = list(module.Pads())
++                numbers = sorted({pad.GetNumber() for pad in pads})
++                unknown = [n for n in pad_nets if n != "*" and n not in numbers]
++                if unknown:
++                    return {
++                        "success": False,
++                        "message": "Pad not found",
++                        "errorDetails": f"{reference} has no pad {', '.join(unknown)} "
++                        f"(pads: {', '.join(numbers) or 'none'})",
++                    }
++                if all(pad.GetAttribute() == pcbnew.PAD_ATTRIB_NPTH for pad in pads):
++                    return {
++                        "success": False,
++                        "message": "No pad can take a net",
++                        "errorDetails": f"{reference} has only non-plated (NPTH) pads",
++                    }
++
+             # Update properties
+             if new_reference:
+                 module.SetReference(new_reference)
+@@ -563,12 +589,32 @@ class ComponentCommands(PlacementOptimizerCommands):
                  self.board.Add(new_module)
                  if was_flipped and not new_module.IsFlipped():
                      new_module.Flip(new_module.GetPosition(), False)
@@ -364,6 +392,29 @@ index f635672..fd3e2eb 100644
                  delete_board_item(self.board, module)
                  module = new_module
  
++            # PowerLab patch: pad nets, e.g. a mounting hole on GND. No other tool sets
++            # the net of a pad already on the board.
++            changed_pads = []
++            if pad_nets:
++                for pad in module.Pads():
++                    number = pad.GetNumber()
++                    net_name = pad_nets.get(number, pad_nets.get("*"))
++                    if net_name is None or pad.GetAttribute() == pcbnew.PAD_ATTRIB_NPTH:
++                        continue
++                    net = self.board.FindNet(net_name)
++                    if net is None:
++                        net = pcbnew.NETINFO_ITEM(self.board, net_name)
++                        self.board.Add(net)
++                    pad.SetNet(net)
++                    changed_pads.append({"pad": number, "net": net_name})
++
+             return {
+                 "success": True,
+                 "message": f"Updated component: {reference}",
++                "padNets": changed_pads,
+                 "component": {
+                     "reference": new_reference or reference,
+                     "value": value or module.GetValue(),
 diff --git a/python/commands/dynamic_symbol_loader.py b/python/commands/dynamic_symbol_loader.py
 index 4fd6044..b205dd7 100644
 --- a/python/commands/dynamic_symbol_loader.py
@@ -9144,7 +9195,7 @@ index c6ac305..b7ea0b9 100644
      # Legacy IPC command handlers (explicit ipc_* commands)
  
 diff --git a/python/schemas/tool_schemas.py b/python/schemas/tool_schemas.py
-index e739f90..7642a10 100644
+index e739f90..56f07ff 100644
 --- a/python/schemas/tool_schemas.py
 +++ b/python/schemas/tool_schemas.py
 @@ -585,6 +585,10 @@ BOARD_TOOLS = [
@@ -9158,6 +9209,19 @@ index e739f90..7642a10 100644
                  "footprintLibId": {
                      "type": "string",
                      "description": "Optional library:name FPID (e.g. 'MountingHole:MountingHole_3.2mm'). Defaults to MountingHole:MountingHole_<diameter>mm. A non-empty FPID is required for the footprint to be selectable in KiCad's GUI Move tool.",
+@@ -803,6 +807,12 @@ COMPONENT_TOOLS = [
+                     "type": "string",
+                     "description": "New footprint library:name",
+                 },
++                "padNets": {
++                    "type": "object",
++                    "additionalProperties": {"type": "string"},
++                    "description": "Pad nets: {pad number: net name}, '*' for every pad, "
++                    "'' for no net, e.g. {'*': 'GND'} for a plated mounting hole",
++                },
+             },
+             "required": ["reference"],
+         },
 diff --git a/src/command-timeout.ts b/src/command-timeout.ts
 index dfd876c..1f020d4 100644
 --- a/src/command-timeout.ts
@@ -9265,10 +9329,40 @@ index 2738ebc..cbb1d7d 100644
  
        if (result.success) {
 diff --git a/src/tools/component.ts b/src/tools/component.ts
-index d3737bc..c14b26d 100644
+index d3737bc..b227256 100644
 --- a/src/tools/component.ts
 +++ b/src/tools/component.ts
-@@ -803,6 +803,58 @@ export function registerComponentTools(server: McpServer, callKicadScript: Comma
+@@ -212,20 +212,27 @@ export function registerComponentTools(server: McpServer, callKicadScript: Comma
+   // ------------------------------------------------------
+   server.tool(
+     "edit_component",
+-    "Edit properties of an existing PCB component (reference, value, footprint).",
++    "Edit properties of an existing PCB component (reference, value, footprint, pad nets).",
+     {
+       reference: z.string().describe("Reference designator of the component (e.g., 'R5')"),
+       newReference: z.string().optional().describe("Optional new reference designator"),
+       value: z.string().optional().describe("Optional new component value"),
+       footprint: z.string().optional().describe("Optional new footprint"),
++      padNets: z
++        .record(z.string(), z.string())
++        .optional()
++        .describe(
++          "Optional pad nets: {pad number: net name}, '*' for every pad, '' for no net, e.g. {'*': 'GND'} for a plated mounting hole. The net is created if the board has none of that name. Non-plated (NPTH) pads are skipped. Update PCB from Schematic (F8) may reset the nets of footprints that have a symbol.",
++        ),
+     },
+-    async ({ reference, newReference, value, footprint }) => {
++    async ({ reference, newReference, value, footprint, padNets }) => {
+       logger.debug(`Editing component: ${reference}`);
+       const result = await callKicadScript("edit_component", {
+         reference,
+         newReference,
+         value,
+         footprint,
++        padNets,
+       });
+ 
+       return {
+@@ -803,6 +810,58 @@ export function registerComponentTools(server: McpServer, callKicadScript: Comma
      },
    );
  
@@ -10269,6 +10363,123 @@ index 0000000..3b62dee
 +    assert pad_nets == {("U1", "14"): "/MCU/IO12", ("R3", "2"): "/MCU/IO12", ("U1", "1"): "GND"}
 +    assert names == {"/MCU/IO12", "GND"}
 +    assert [Path(s).name for s in sheets] == ["top.kicad_sch", "mcu.kicad_sch"]
+diff --git a/tests/test_powerlab_pad_nets.py b/tests/test_powerlab_pad_nets.py
+new file mode 100644
+index 0000000..04dc2b6
+--- /dev/null
++++ b/tests/test_powerlab_pad_nets.py
+@@ -0,0 +1,111 @@
++"""PowerLab patch: edit_component sets pad nets (padNets), e.g. a mounting hole on GND.
++
++No tool could set the net of a pad already on the board, so plated mounting holes placed
++without a net stayed unconnected.
++"""
++
++import sys
++from pathlib import Path
++from unittest.mock import MagicMock
++
++import pytest
++
++sys.path.insert(0, str(Path(__file__).parent.parent / "python"))
++
++pytestmark = pytest.mark.unit
++
++import pcbnew as _pcbnew_stub  # noqa: E402
++
++PTH, NPTH = "PTH", "NPTH"
++
++
++def _pad(number, attribute=PTH):
++    pad = MagicMock(name=f"pad:{number}")
++    pad.GetNumber.return_value = number
++    pad.GetAttribute.return_value = attribute
++    return pad
++
++
++def _commands(pads, nets=("GND",)):
++    from commands.component import ComponentCommands
++
++    module = MagicMock(name="footprint:HOLE1")
++    module.Pads.return_value = pads
++    board = MagicMock(name="board")
++    board.FindFootprintByReference.return_value = module
++    known = {name: f"net:{name}" for name in ("",) + tuple(nets)}
++    board.FindNet.side_effect = known.get
++
++    cmd = ComponentCommands.__new__(ComponentCommands)
++    cmd.board = board
++    cmd.library_manager = MagicMock()
++    _pcbnew_stub.reset_mock()
++    _pcbnew_stub.PAD_ATTRIB_NPTH = NPTH
++    _pcbnew_stub.NETINFO_ITEM.side_effect = lambda _board, name: f"new:{name}"
++    return cmd, board
++
++
++def test_star_puts_every_plated_pad_on_the_net():
++    pads = [_pad("1"), _pad("1"), _pad("", NPTH)]
++    cmd, _board = _commands(pads)
++
++    result = cmd.edit_component({"reference": "HOLE1", "padNets": {"*": "GND"}})
++
++    assert result["success"] is True
++    pads[0].SetNet.assert_called_once_with("net:GND")
++    pads[1].SetNet.assert_called_once_with("net:GND")
++    pads[2].SetNet.assert_not_called()
++    assert result["padNets"] == [{"pad": "1", "net": "GND"}, {"pad": "1", "net": "GND"}]
++
++
++def test_named_pad_wins_over_star_and_empty_clears():
++    pads = [_pad("1"), _pad("2"), _pad("3")]
++    cmd, _board = _commands(pads)
++
++    result = cmd.edit_component({"reference": "J9", "padNets": {"*": "GND", "2": ""}})
++
++    assert result["success"] is True
++    pads[0].SetNet.assert_called_once_with("net:GND")
++    pads[1].SetNet.assert_called_once_with("net:")
++    pads[2].SetNet.assert_called_once_with("net:GND")
++
++
++def test_missing_net_is_created():
++    pads = [_pad("1")]
++    cmd, board = _commands(pads, nets=())
++
++    result = cmd.edit_component({"reference": "HOLE1", "padNets": {"1": "CHASSIS"}})
++
++    assert result["success"] is True
++    board.Add.assert_called_once_with("new:CHASSIS")
++    pads[0].SetNet.assert_called_once_with("new:CHASSIS")
++
++
++def test_unknown_pad_fails_before_anything_changes():
++    pads = [_pad("1")]
++    cmd, _board = _commands(pads)
++
++    result = cmd.edit_component(
++        {"reference": "HOLE1", "value": "M3", "padNets": {"2": "GND"}}
++    )
++
++    assert result["success"] is False
++    assert "no pad 2" in result["errorDetails"]
++    cmd.board.FindFootprintByReference.return_value.SetValue.assert_not_called()
++    pads[0].SetNet.assert_not_called()
++
++
++def test_npth_only_footprint_fails():
++    pads = [_pad("", NPTH)]
++    cmd, _board = _commands(pads)
++
++    result = cmd.edit_component({"reference": "HOLE1", "padNets": {"*": "GND"}})
++
++    assert result["success"] is False
++    pads[0].SetNet.assert_not_called()
++
++
++def test_edit_component_is_still_done_on_the_saved_file_live():
++    from kicad_interface import KiCADInterface
++
++    assert "edit_component" in KiCADInterface.LIVE_VIA_FILE_COMMANDS
 diff --git a/tests/test_schema_param_names.py b/tests/test_schema_param_names.py
 index 995406c..37ebbed 100644
 --- a/tests/test_schema_param_names.py

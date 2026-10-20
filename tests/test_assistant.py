@@ -160,6 +160,7 @@ class SkillToolsEnvTests(unittest.TestCase):
         skills = os.path.join(ROOT, "skills")
         names = sorted(os.listdir(skills))
         self.assertIn("powerlab-autoroute", names)
+        self.assertIn("powerlab-placement", names)
         for name in names:
             with open(os.path.join(skills, name, "SKILL.md"), encoding="utf-8") as f:
                 head = f.read().split("---")
@@ -2130,6 +2131,7 @@ class PanelDefaultsTests(unittest.TestCase):
         self.assertIn("the chat is kept", c["PANEL_NOTE"])
         self.assertIn("powerlab-visual-review", c["PANEL_NOTE"])  # look at the board while working
         self.assertIn("powerlab-board-requirements", c["PANEL_NOTE"])  # ask before a new board
+        self.assertIn("powerlab-placement", c["PANEL_NOTE"])  # block plan agreed before placing
         self.assertIn("design-requirements.md", c["PANEL_NOTE"])
         self.assertIn("<choices>", c["PANEL_NOTE"])  # questions come back as answer buttons
         self.assertIn("never add an 'Other'", c["PANEL_NOTE"])  # the card has its own Other…
