@@ -190,13 +190,16 @@ def _shape_of(item):
     return None
 
 
-def _label(shape, name, detail, cls):
-    """Name and detail lines, level and sized to the room round the block's centre."""
+def _label(shape, name, detail, cls, silk=False):
+    """Name and detail lines, level and sized to the room round the block's centre.
+    A silkscreen block (board text) shows its words at about the height they print."""
     xs, ys = [p[0] for p in shape.points], [p[1] for p in shape.points]
     w = min(shape.room[0], shape.room[1], max(xs) - min(xs)) if shape.angle else shape.room[0]
     w = max(w, 0.7 * (max(xs) - min(xs)))
     h = max(ys) - min(ys) if shape.angle else shape.room[1]
     size = max(1.1, min(2.8, w / max(3.0, 0.6 * len(name)), h * 0.3))
+    if silk:
+        size, detail = max(0.9, min(3.0, h * 0.62, w / max(1.0, 0.58 * len(name)))), ""
     x, y = shape.anchor
     out = [f'<g class="{cls}">']
     small = size * 0.58
@@ -352,7 +355,7 @@ def svg(data):
                  f"{' · click to select its parts in KiCad' if refs else ''} · drag to move it</title>"
                  f'<path d="{s.d}" class="base"/>'
                  f'<path d="{s.d}" fill="{fill}" stroke="{colour}"{dash} class="body"/>'
-                 + _label(s, name, detail, "lbl") + "</g>")
+                 + _label(s, name, detail, "lbl", kind in ("text", "logo")) + "</g>")
     o += pills
     o.append("</svg>")
     return "".join(o)
