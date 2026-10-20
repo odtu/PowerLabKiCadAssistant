@@ -862,6 +862,40 @@ class BlockPlanTests(unittest.TestCase):
         self.assertRegex(svg, r'data-pts="[\d.]+,[\d.]+ ')
         self.assertIn('data-from="u3" data-to="legB"', svg)
 
+    def test_any_board_shape_comes_from_edge_cuts(self):
+        import json
+        project = os.path.dirname(os.path.dirname(self.path))
+        edge = '(layer "Edge.Cuts")'
+        with open(os.path.join(project, "odd.kicad_pcb"), "w", encoding="utf-8") as f:
+            f.write("(kicad_pcb\n"
+                    # a 40 x 20 board with a rounded top-left corner, drawn out of order
+                    f'\t(gr_line (start 10 0) (end 40 0) (stroke (width 0.1)) {edge})\n'
+                    f'\t(gr_line (start 40 20) (end 40 0) (stroke (width 0.1)) {edge})\n'
+                    f'\t(gr_line (start 40 20) (end 0 20) (stroke (width 0.1)) {edge})\n'
+                    f'\t(gr_arc (start 10 0) (mid 2.928932 2.928932) (end 0 10) (stroke (width 0.1)) {edge})\n'
+                    f'\t(gr_line (start 0 10) (end 0 20) (stroke (width 0.1)) {edge})\n'
+                    f'\t(gr_circle (center 30 10) (end 32 10) (stroke (width 0.1)) {edge})\n'
+                    '\t(gr_line (start 0 0) (end 99 99) (stroke (width 0.1)) (layer "F.SilkS"))\n'
+                    '\t(gr_text "a (layer \\"Edge.Cuts\\") in text" (at 5 5) (layer "F.SilkS"))\n)\n')
+        loops = self.plan.edge_cuts(os.path.join(project, "odd.kicad_pcb"))
+        self.assertEqual(len(loops), 2)
+        self.assertAlmostEqual(self.plan._area(loops[0]), 800 - 100 + math.pi * 25, delta=0.5)
+        self.assertAlmostEqual(self.plan._area(loops[1]), math.pi * 4, delta=0.05)
+        self.data["outline"] = "board"
+        self.data.pop("cutouts")
+        with open(self.path, "w", encoding="utf-8") as f:
+            json.dump(self.data, f)
+        card = self.plan.card(self.path)
+        self.assertNotIn("error", card)
+        self.assertIn('class="board"', card["svg"])
+        self.assertIn('class="cut"', card["svg"])  # the round cutout
+        os.remove(os.path.join(project, "odd.kicad_pcb"))
+        self.assertIn("can't be read", self.plan.card(self.path)["error"])
+
+    def test_any_angle_turns_a_box(self):
+        lines = self.plan.move(self.path, [{"id": "u3", "rot": -22.5}, {"id": "u3", "rot": 1000}])
+        self.assertEqual(lines, ["U3: turned 22.5° counter-clockwise"])  # 1000° isn't a real turn
+
     def test_panel_moves_only_plans_of_its_project(self):
         try:
             from powerlab_assistant.panel import ClaudePanel
@@ -895,7 +929,8 @@ class BlockPlanTests(unittest.TestCase):
         self.assertIn("'Move to bottom side ↓' : 'Move to top side ↑'", page)
         self.assertIn("case 'plan_update':", page)
         self.assertIn("Send moves to Claude", page)
-        self.assertIn("'Rotate 90° ↻'", page)
+        self.assertIn("[[90, '↻ 90°'], [45, '↻ 45°'], [-45, '↺ 45°']]", page)  # common angles first
+        self.assertIn("inp.placeholder = 'any °'", page)  # then any angle
         self.assertIn("follow(id, tf);", page)  # links follow a drag, with the gap measured live
         with open(os.path.join(ROOT, "skills", "powerlab-placement", "SKILL.md"), encoding="utf-8") as f:
             skill = f.read()

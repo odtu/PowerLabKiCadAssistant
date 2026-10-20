@@ -38,6 +38,7 @@ LINK_KINDS = {"gate": ("#ffd166", 0.7, ""), "power": ("#ff7a7a", 0.9, ""),
 SIDES = ("top", "bottom")
 REF = re.compile(r"^[A-Za-z0-9_+.\-]{1,40}$")
 MAX_SHAPES = 400
+MAX_POINTS = 4000  # of one polygon: board outlines read from Edge.Cuts can be long
 
 
 def is_plan(path):
@@ -98,7 +99,7 @@ class Shape:
             self.anchor, self.room, self.angle = o, (w, h), _upright(a)
             self.outline = list(self.points)
         elif "polygon" in spec:
-            pts = [_pt(p) for p in (spec["polygon"] or [])[:MAX_SHAPES]]
+            pts = [_pt(p) for p in (spec["polygon"] or [])[:MAX_POINTS]]
             if len(pts) >= 3:
                 self.points = pts
                 self.outline = list(pts)
@@ -347,10 +348,154 @@ def svg(data):
     return "".join(o)
 
 
+# --- The board's own outline -------------------------------------------------------------
+# "outline": "board" (or {"board": "<file>.kicad_pcb"}) draws the board's Edge.Cuts exactly:
+# any shape, with arcs, notches and cutouts. It's read from the saved file's text, not with
+# pcbnew.LoadBoard, which inside KiCad's process can switch KiCad's open project.
+
+_EDGE_CACHE = {}
+_NUM = r"(-?[\d.]+)"
+
+
+def _items(text, head):
+    """The balanced `(head ...)` expressions in a .kicad_pcb text."""
+    i = text.find(head)
+    while i != -1:
+        depth, j = 0, i
+        while j < len(text):
+            c = text[j]
+            if c == "(":
+                depth += 1
+            elif c == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+            elif c == '"':
+                j = text.find('"', j + 1)
+                while j != -1 and text[j - 1] == "\\":
+                    j = text.find('"', j + 1)
+                if j == -1:
+                    return
+            j += 1
+        yield text[i:j + 1]
+        i = text.find(head, j)
+
+
+def _arc_points(a, m, b):
+    """Points along the arc through a, m and b (KiCad's start, mid, end)."""
+    ax, ay = a
+    bx, by = m
+    cx, cy = b
+    d = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
+    if abs(d) < 1e-12:
+        return [a, b]
+    ux = ((ax * ax + ay * ay) * (by - cy) + (bx * bx + by * by) * (cy - ay) + (cx * cx + cy * cy) * (ay - by)) / d
+    uy = ((ax * ax + ay * ay) * (cx - bx) + (bx * bx + by * by) * (ax - cx) + (cx * cx + cy * cy) * (bx - ax)) / d
+    r = math.hypot(ax - ux, ay - uy)
+    t0, tm, t1 = (math.atan2(y - uy, x - ux) for x, y in (a, m, b))
+    sweep = (t1 - t0) % (2 * math.pi)
+    if (tm - t0) % (2 * math.pi) > sweep:  # the mid point says it runs the other way
+        sweep -= 2 * math.pi
+    n = max(2, int(abs(sweep) / math.radians(3)) + 1)
+    return [(ux + r * math.cos(t0 + sweep * k / n), uy + r * math.sin(t0 + sweep * k / n)) for k in range(n + 1)]
+
+
+def _area(loop):
+    return abs(sum(x0 * y1 - x1 * y0 for (x0, y0), (x1, y1) in zip(loop, loop[1:] + loop[:1]))) / 2
+
+
+def edge_cuts(pcb_path):
+    """The closed loops on Edge.Cuts of a saved board, largest first (the outline, then
+    cutouts), each a list of points in mm. Cached until the file changes."""
+    key = (os.path.abspath(pcb_path), os.path.getmtime(pcb_path))
+    if key in _EDGE_CACHE:
+        return _EDGE_CACHE[key]
+    with open(pcb_path, encoding="utf-8", errors="replace") as f:
+        text = f.read()
+    loops, pieces = [], []
+    for head in ("(gr_line", "(gr_arc", "(gr_circle", "(gr_rect", "(gr_poly", "(gr_curve"):
+        for item in _items(text, head):
+            if '(layer "Edge.Cuts")' not in item:
+                continue
+            pt = {k: (float(x), float(y)) for k, x, y in re.findall(r"\((start|mid|end|center) " + _NUM + " " + _NUM + r"\)", item)}
+            xy = [(float(x), float(y)) for x, y in re.findall(r"\(xy " + _NUM + " " + _NUM + r"\)", item)]
+            if head == "(gr_line" and "start" in pt and "end" in pt:
+                pieces.append([pt["start"], pt["end"]])
+            elif head == "(gr_arc" and {"start", "mid", "end"} <= pt.keys():
+                pieces.append(_arc_points(pt["start"], pt["mid"], pt["end"]))
+            elif head == "(gr_circle" and "center" in pt and "end" in pt:
+                (x, y), (ex, ey) = pt["center"], pt["end"]
+                r = math.hypot(ex - x, ey - y)
+                loops.append([(x + r * math.cos(math.radians(a)), y + r * math.sin(math.radians(a))) for a in range(0, 360, 2)])
+            elif head == "(gr_rect" and "start" in pt and "end" in pt:
+                (x0, y0), (x1, y1) = pt["start"], pt["end"]
+                loops.append([(x0, y0), (x1, y0), (x1, y1), (x0, y1)])
+            elif head == "(gr_poly" and len(xy) >= 3:
+                loops.append(xy)
+            elif head == "(gr_curve" and len(xy) == 4:  # a cubic Bezier: start, two controls, end
+                (x0, y0), (x1, y1), (x2, y2), (x3, y3) = xy
+                pieces.append([((1 - t) ** 3 * x0 + 3 * (1 - t) ** 2 * t * x1 + 3 * (1 - t) * t * t * x2 + t ** 3 * x3,
+                                (1 - t) ** 3 * y0 + 3 * (1 - t) ** 2 * t * y1 + 3 * (1 - t) * t * t * y2 + t ** 3 * y3)
+                               for t in (k / 16 for k in range(17))])
+    close = lambda a, b: abs(a[0] - b[0]) < 0.01 and abs(a[1] - b[1]) < 0.01  # noqa: E731
+    while pieces:  # chain lines, arcs and curves end to end into closed loops
+        loop = list(pieces.pop())
+        grown = True
+        while grown and not close(loop[0], loop[-1]):
+            grown = False
+            for i, piece in enumerate(pieces):
+                if close(piece[0], loop[-1]):
+                    loop += piece[1:]
+                elif close(piece[-1], loop[-1]):
+                    loop += piece[-2::-1]
+                else:
+                    continue
+                pieces.pop(i)
+                grown = True
+                break
+        if close(loop[0], loop[-1]) and len(loop) > 3:
+            loops.append(loop[:-1])
+    loops.sort(key=_area, reverse=True)
+    _EDGE_CACHE.clear()
+    _EDGE_CACHE[key] = loops
+    return loops
+
+
+def _board_file(data, plan_path):
+    """The board a plan means: its "board" file, or the one .kicad_pcb in the project
+    (the folder that holds the placement folder)."""
+    outline = data.get("outline")
+    project = os.path.dirname(os.path.dirname(os.path.abspath(plan_path)))
+    named = data.get("board") or (outline.get("board") if isinstance(outline, dict) else None)
+    if isinstance(named, str) and named.lower().endswith(".kicad_pcb"):
+        path = named if os.path.isabs(named) else os.path.join(project, named)
+        return path if os.path.isfile(path) else None
+    boards = [f for f in os.listdir(project) if f.lower().endswith(".kicad_pcb")] if os.path.isdir(project) else []
+    return os.path.join(project, boards[0]) if len(boards) == 1 else None
+
+
+def with_board_outline(data, plan_path):
+    """The plan with "outline": "board" replaced by the board's Edge.Cuts (outline and
+    cutouts). Plans that draw their own outline come back as they are."""
+    outline = data.get("outline")
+    if not (outline == "board" or (isinstance(outline, dict) and "board" in outline)):
+        return data
+    pcb = _board_file(data, plan_path)
+    loops = edge_cuts(pcb) if pcb else []
+    if not loops:
+        raise ValueError("the board outline can't be read: no closed outline on Edge.Cuts"
+                         + ("" if pcb else " (no .kicad_pcb found next to the plan)"))
+    data = dict(data)
+    data["outline"] = {"polygon": [[round(x, 3), round(y, 3)] for x, y in loops[0]]}
+    data["cutouts"] = list(data.get("cutouts") or []) + [
+        {"polygon": [[round(x, 3), round(y, 3)] for x, y in loop]} for loop in loops[1:]]
+    return data
+
+
 def card(path):
     """What the panel shows for a plan: title, the drawing, the block list and the notes."""
     try:
-        data = load(path)
+        data = with_board_outline(load(path), path)
     except (OSError, ValueError) as e:
         return {"path": path, "title": "Block plan", "error": f"The block plan can't be read: {e}",
                 "svg": "", "blocks": [], "notes": []}
@@ -388,8 +533,8 @@ def move(path, moves):
             continue
         name = str(b.get("name") or b.get("id"))
         moved.add(str(m.get("id")))
-        if m.get("rot") in (90, -90, 180):
-            turn = int(m["rot"])
+        turn = _num(m.get("rot")) if "rot" in m else 0.0
+        if turn and abs(turn) <= 360:  # any angle; the card offers 90° and 45° first
             if isinstance(b.get("rect"), dict):
                 b["rect"]["angle"] = round((_num(b["rect"].get("angle")) + turn) % 360, 2)
             elif isinstance(b.get("polygon"), list):
@@ -400,7 +545,7 @@ def move(path, moves):
                                 for x, y in (_pt(q) for q in b["polygon"])]
             else:
                 continue
-            lines.append(f"{name}: turned {abs(turn)}° {'clockwise' if turn > 0 else 'counter-clockwise'}")
+            lines.append(f"{name}: turned {_f(abs(turn))}° {'clockwise' if turn > 0 else 'counter-clockwise'}")
             continue
         if m.get("side") in SIDES:
             b["side"] = m["side"]
