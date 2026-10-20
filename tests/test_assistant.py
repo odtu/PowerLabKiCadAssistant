@@ -812,6 +812,52 @@ class BlockPlanTests(unittest.TestCase):
             self.assertNotIn(key, kept)
         self.assertIn("plan", self.history.KINDS)
 
+    def test_drags_are_written_into_the_plan(self):
+        import json
+        lines = self.plan.move(self.path, [
+            {"id": "legB", "da": -12, "dr": 1.5},          # a sector turns and moves outward
+            {"id": "u3", "dx": 2, "dy": -1},               # a rect moves in x and y
+            {"id": "x", "dx": 1, "dy": 1},                 # a polygon moves every point
+            {"id": "u3", "side": "top"},                   # and a block changes side
+            {"id": "nope", "dx": 5},                       # unknown blocks are ignored
+            {"id": "legB", "da": 1e9},                     # huge numbers are clamped, not kept
+        ])
+        with open(self.path, encoding="utf-8") as f:
+            data = json.load(f)
+        blocks = {b["id"]: b for b in data["blocks"]}
+        self.assertEqual(blocks["legB"]["sector"]["r"], [30.5, 43.5])
+        self.assertEqual(blocks["legB"]["sector"]["angle"][0], (333 - 12 + 500) % 360)
+        self.assertEqual(blocks["u3"]["rect"]["center"], [127, 94])
+        self.assertEqual(blocks["u3"]["side"], "top")
+        self.assertEqual(blocks["x"]["polygon"][0], [61, 61])
+        self.assertIn("Leg <B>: turned 12.0° counter-clockwise, 1.5 mm outward", lines[0])
+        self.assertIn("U3: moved +2.0 mm in x, -1.0 mm in y; centre now (127, 94)", lines[1])
+        self.assertIn("U3: to the top side", lines)
+        self.assertEqual(len(lines), 5)
+        svg = self.plan.card(self.path)["svg"]
+        self.assertIn('data-drag="sector" data-cx="100" data-cy="100"', svg)
+        self.assertIn('data-drag="move"', svg)
+
+    def test_panel_moves_only_plans_of_its_project(self):
+        try:
+            from powerlab_assistant.panel import ClaudePanel
+        except ImportError as exc:
+            self.skipTest(f"panel needs wx.html2: {exc}")
+        panel = types.SimpleNamespace(chat_cwd=self.tmp.name, emitted=[])
+        panel.emit = lambda kind, **data: panel.emitted.append(dict(data, kind=kind))
+        ClaudePanel.msg_plan_move(panel, {"path": self.path, "moves": [{"id": "u3", "side": "top"}]})
+        self.assertEqual([e["kind"] for e in panel.emitted], ["plan_update"])
+        self.assertEqual(panel.emitted[0]["lines"], ["U3: to the top side"])
+        self.assertIn('class="blk top" data-id="u3"', panel.emitted[0]["svg"])
+        other = tempfile.TemporaryDirectory()
+        self.addCleanup(other.cleanup)
+        panel.chat_cwd, panel.emitted = other.name, []
+        ClaudePanel.msg_plan_move(panel, {"path": self.path, "moves": [{"id": "u3", "side": "bottom"}]})
+        self.assertEqual(panel.emitted, [])  # not this chat's project
+        panel.chat_cwd = self.tmp.name
+        ClaudePanel.msg_plan_move(panel, {"path": self.path.replace("block-plan", "other"), "moves": []})
+        self.assertEqual(panel.emitted, [])  # not a block plan
+
     def test_panel_shows_written_plans(self):
         with open(os.path.join(ROOT, "plugin", "powerlab_assistant", "panel.py"), encoding="utf-8") as f:
             panel = f.read()
@@ -821,6 +867,10 @@ class BlockPlanTests(unittest.TestCase):
             page = f.read()
         self.assertIn("case 'plan': add(planCard(e))", page)
         self.assertIn("post({ type: 'locate', target: loc })", page)
+        self.assertIn("post({ type: 'plan_move', path: e.path, moves: [move], undo: !!undo })", page)
+        self.assertIn("'Move to bottom side ↓' : 'Move to top side ↑'", page)
+        self.assertIn("case 'plan_update':", page)
+        self.assertIn("Send moves to Claude", page)
         with open(os.path.join(ROOT, "skills", "powerlab-placement", "SKILL.md"), encoding="utf-8") as f:
             skill = f.read()
         self.assertIn("placement\\block-plan.json", skill)

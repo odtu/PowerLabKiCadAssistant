@@ -484,6 +484,23 @@ class ClaudePanel(wx.Frame):
 
         self.in_background(lambda: locate(target), done)
 
+    def msg_plan_move(self, msg):
+        """The user dragged a block (or switched its side) on a block plan card: write it
+        into the plan file and redraw the card. Their moves reach Claude when they send them."""
+        path = str(msg.get("path", ""))
+        if not plan.is_plan(path) or not os.path.isfile(path):
+            return
+        if self.chat_cwd and not os.path.normcase(os.path.abspath(path)).startswith(
+                os.path.normcase(os.path.abspath(self.chat_cwd)) + os.sep):
+            return  # only plans in this chat's project
+        try:
+            lines = plan.move(path, list(msg.get("moves") or [])[:50])
+            data = plan.card(path)
+        except (OSError, ValueError) as e:
+            self.emit("note", level="warn", text=f"The block plan couldn't be changed: {e}")
+            return
+        self.emit("plan_update", **dict(data, lines=lines, undo=bool(msg.get("undo"))))
+
     def msg_reload(self, msg):
         self.reload_editor()
 

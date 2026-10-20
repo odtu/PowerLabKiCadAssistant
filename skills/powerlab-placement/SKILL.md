@@ -70,6 +70,7 @@ When two blocks want the same place, the one with the higher-ranked links gets i
   ```
 
 - **Stop and wait for the answer.** Don't place parts before the user agrees. If they want a block moved, change the file (the panel shows the new plan) and ask again.
+- **The user can move blocks on the card themselves:** drag a block (a ring sector turns round its centre and moves in or out; other shapes move in x and y), or switch its side with "Move to bottom side" / "Move to top side". The panel writes each move into `block-plan.json` at once. "Send moves to Claude" then sends you a list of the moves. Read the file again: the shapes and sides there are the user's. Keep their positions; measure the links again, update `links` and `notes`, and write the file (the panel shows the new card). Then say what their moves change (gate-line lengths, rules, blocks that now overlap) and ask again. Don't move their blocks back without asking.
 - Skip the plan only when the user says so, or when you add one small block to an existing placement (then say in one line where it goes and why).
 
 ## 4. Place

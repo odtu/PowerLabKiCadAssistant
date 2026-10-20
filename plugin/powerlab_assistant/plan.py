@@ -172,6 +172,14 @@ def _label(shape, name, detail, cls):
     return "".join(out)
 
 
+def _blocks(data):
+    return [b for b in (data.get("blocks") or [])[:MAX_SHAPES] if isinstance(b, dict)]
+
+
+def block_id(b, i):
+    return str(b.get("id") or b.get("name") or i)
+
+
 def load(path):
     with open(path, encoding="utf-8-sig") as f:
         data = json.load(f)
@@ -183,8 +191,7 @@ def load(path):
 def svg(data):
     """The plan as an SVG drawing; every text is escaped."""
     outline = _shape_of(data.get("outline") or {})
-    blocks = [b for b in (data.get("blocks") or [])[:MAX_SHAPES] if isinstance(b, dict)]
-    shapes = [(b, _shape_of(b)) for b in blocks]
+    shapes = [(b, _shape_of(b)) for b in _blocks(data)]
     pts = list(outline.points if outline else [])
     for _b, s in shapes:
         if s:
@@ -233,10 +240,10 @@ def svg(data):
         if s:
             o.append(f'<path d="{s.d}" class="hole"/>')
     anchors = {}
-    for b, s in shapes:
+    for i, (b, s) in enumerate(shapes):
         if not s:
             continue
-        bid = str(b.get("id") or b.get("name") or "")
+        bid = block_id(b, i)
         anchors[bid] = s.anchor
     pills = []
     for ln in (data.get("links") or [])[:MAX_SHAPES]:
@@ -269,16 +276,24 @@ def svg(data):
         kind = b.get("kind") if b.get("kind") in KINDS else "other"
         colour = KINDS[kind]
         side = "bottom" if b.get("side") == "bottom" else "top"
-        bid = str(b.get("id") or b.get("name") or i)
+        bid = block_id(b, i)
         fill = f"url(#h-{kind})" if side == "bottom" else colour
         dash = ' stroke-dasharray="1.6 1"' if side == "bottom" else ""
         refs = [r for r in (str(x) for x in b.get("refs") or []) if REF.match(r)]
         loc = f' data-loc="refs={",".join(refs)}"' if refs else ""
         name, detail = str(b.get("name") or bid), str(b.get("detail") or "")
-        o.append(f'<g class="blk {side}" data-id="{html.escape(bid, True)}" data-side="{side}"{loc} '
+        # How a drag moves it: a ring sector turns round its centre and moves in or out
+        # along its radius; any other shape moves in x and y.
+        if "sector" in b:
+            c = _pt((b["sector"] or {}).get("center"))
+            drag = f' data-drag="sector" data-cx="{_f(c[0])}" data-cy="{_f(c[1])}"'
+        else:
+            drag = ' data-drag="move"'
+        o.append(f'<g class="blk {side}" data-id="{html.escape(bid, True)}" data-side="{side}"{loc}{drag} '
+                 f'data-ax="{_f(s.anchor[0])}" data-ay="{_f(s.anchor[1])}" '
                  f'style="--c:{colour}" tabindex="0">'
                  f"<title>{html.escape(name)}{(' — ' + html.escape(detail)) if detail else ''}"
-                 f"{' · click to select its parts in KiCad' if refs else ''}</title>"
+                 f"{' · click to select its parts in KiCad' if refs else ''} · drag to move it</title>"
                  f'<path d="{s.d}" class="base"/>'
                  f'<path d="{s.d}" fill="{fill}" stroke="{colour}"{dash} class="body"/>'
                  + _label(s, name, detail, "lbl") + "</g>")
@@ -295,12 +310,10 @@ def card(path):
         return {"path": path, "title": "Block plan", "error": f"The block plan can't be read: {e}",
                 "svg": "", "blocks": [], "notes": []}
     blocks = []
-    for i, b in enumerate((data.get("blocks") or [])[:MAX_SHAPES]):
-        if not isinstance(b, dict):
-            continue
+    for i, b in enumerate(_blocks(data)):
         kind = b.get("kind") if b.get("kind") in KINDS else "other"
         refs = [r for r in (str(x) for x in b.get("refs") or []) if REF.match(r)]
-        blocks.append({"id": str(b.get("id") or b.get("name") or i), "name": str(b.get("name") or ""),
+        blocks.append({"id": block_id(b, i), "name": str(b.get("name") or ""),
                        "detail": str(b.get("detail") or ""), "kind": kind, "colour": KINDS[kind],
                        "side": "bottom" if b.get("side") == "bottom" else "top",
                        "loc": ("refs=" + ",".join(refs)) if refs else "", "count": len(refs)})
@@ -310,3 +323,67 @@ def card(path):
             "links": [{"label": str(ln.get("label") or ""), "from": str(ln.get("from")), "to": str(ln.get("to")),
                        "kind": str(ln.get("kind") or "signal")}
                       for ln in (data.get("links") or [])[:MAX_SHAPES] if isinstance(ln, dict)]}
+
+
+MAX_MOVE = 500.0  # mm or degrees: anything larger is a broken message, not a drag
+
+
+def move(path, moves):
+    """Apply the user's drags from the card to the plan file, and write it back.
+
+    Each move is {"id", "da", "dr"} for a ring sector (degrees clockwise, mm outward),
+    {"id", "dx", "dy"} (mm) for any other shape, or {"id", "side": "top"/"bottom"}.
+    Returns one line per move for Claude, e.g. "Leg A: turned 12° clockwise, now 313–335°"."""
+    data = load(path)
+    blocks = {block_id(b, i): b for i, b in enumerate(_blocks(data))}
+    lines = []
+    for m in moves if isinstance(moves, list) else []:
+        b = blocks.get(str((m or {}).get("id")))
+        if b is None:
+            continue
+        name = str(b.get("name") or b.get("id"))
+        if m.get("side") in SIDES:
+            b["side"] = m["side"]
+            lines.append(f"{name}: to the {m['side']} side")
+            continue
+        clamp = lambda v: max(-MAX_MOVE, min(MAX_MOVE, _num(v)))  # noqa: E731
+        if "sector" in b and isinstance(b["sector"], dict):
+            sec = b["sector"]
+            da, dr = clamp(m.get("da")), clamp(m.get("dr"))
+            a0, a1 = _pt(sec.get("angle"))
+            r0, r1 = _pt(sec.get("r"))
+            dr = max(dr, -r0)  # never through the centre
+            sec["angle"] = [round((a0 + da) % 360, 2), round((a1 + da) % 360, 2)]
+            sec["r"] = [round(r0 + dr, 2), round(r1 + dr, 2)]
+            parts = []
+            if abs(da) >= 0.05:
+                parts.append(f"turned {abs(da):.1f}° {'clockwise' if da > 0 else 'counter-clockwise'}")
+            if abs(dr) >= 0.05:
+                parts.append(f"{abs(dr):.1f} mm {'outward' if dr > 0 else 'inward'}")
+            if parts:
+                lines.append(f"{name}: {', '.join(parts)}; now {_f(sec['angle'][0])}–{_f(sec['angle'][1])}°, "
+                             f"r {_f(sec['r'][0])}–{_f(sec['r'][1])} mm")
+            continue
+        dx, dy = clamp(m.get("dx")), clamp(m.get("dy"))
+        if abs(dx) < 0.05 and abs(dy) < 0.05:
+            continue
+        moved = False
+        for key in ("rect", "circle", "ring"):
+            if isinstance(b.get(key), dict):
+                x, y = _pt(b[key].get("center"))
+                b[key]["center"] = [round(x + dx, 2), round(y + dy, 2)]
+                where = b[key]["center"]
+                moved = True
+        if isinstance(b.get("polygon"), list):
+            b["polygon"] = [[round(_pt(q)[0] + dx, 2), round(_pt(q)[1] + dy, 2)] for q in b["polygon"]]
+            shape = Shape({"polygon": b["polygon"]})
+            where = [round(shape.anchor[0], 2), round(shape.anchor[1], 2)]
+            moved = True
+        if moved:
+            lines.append(f"{name}: moved {dx:+.1f} mm in x, {dy:+.1f} mm in y; "
+                         f"centre now ({_f(where[0])}, {_f(where[1])})")
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, path)
+    return lines
