@@ -42,7 +42,8 @@ MAX_POINTS = 4000  # of one polygon: board outlines read from Edge.Cuts can be l
 
 
 def is_plan(path):
-    return os.path.basename(path or "").lower() == FILE_NAME
+    # Either separator: the panel's paths are Windows paths, the auto-fix runner is Linux.
+    return re.split(r"[\\/]", path or "")[-1].lower() == FILE_NAME
 
 
 def _num(v, default=0.0):
