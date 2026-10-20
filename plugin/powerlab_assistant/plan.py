@@ -32,6 +32,7 @@ KINDS = {  # block kind -> colour on the dark board
     "mcu": "#4f9bff", "supply": "#34d17a", "converter": "#34d17a", "comms": "#b18cff",
     "sensor": "#2fd6c3", "analog": "#2fd6c3", "connector": "#a3b1c6", "fixed": "#a3b1c6",
     "debug": "#7f8ea3", "other": "#c9d3e0",
+    "text": "#efe6c4", "logo": "#f2c86b",  # silkscreen: board text and logos, placed last (§3.6)
 }
 LINK_KINDS = {"gate": ("#ffd166", 0.7, ""), "power": ("#ff7a7a", 0.9, ""),
               "signal": ("#c9d3e0", 0.35, "1.4 1"), "analog": ("#5ee3d3", 0.4, "1.4 1")}
@@ -210,6 +211,14 @@ def _label(shape, name, detail, cls):
     return "".join(out)
 
 
+def _loc(refs, shape):
+    """What a click selects in KiCad: the block's parts, or for a block without parts
+    (board text, which has no reference) what lies at its centre."""
+    if refs:
+        return "refs=" + ",".join(refs)
+    return f"at={_f(shape.anchor[0])},{_f(shape.anchor[1])}" if shape else ""
+
+
 def _blocks(data):
     return [b for b in (data.get("blocks") or [])[:MAX_SHAPES] if isinstance(b, dict)]
 
@@ -322,7 +331,7 @@ def svg(data):
         fill = f"url(#h-{kind})" if side == "bottom" else colour
         dash = ' stroke-dasharray="1.6 1"' if side == "bottom" else ""
         refs = [r for r in (str(x) for x in b.get("refs") or []) if REF.match(r)]
-        loc = f' data-loc="refs={",".join(refs)}"' if refs else ""
+        loc = f' data-loc="{_loc(refs, s)}"'
         name, detail = str(b.get("name") or bid), str(b.get("detail") or "")
         # How a drag moves it: a ring sector turns round its centre and moves in or out
         # along its radius; any other shape moves in x and y.
@@ -336,7 +345,7 @@ def svg(data):
         pts = _densify(s.outline, 1.0) if s.outline else []
         pts = pts[::max(1, len(pts) // 160 + 1)]
         drag += f' data-pts="{" ".join(f"{_f(x)},{_f(y)}" for x, y in pts)}"'
-        o.append(f'<g class="blk {side}" data-id="{html.escape(bid, True)}" data-side="{side}"{loc}{drag} '
+        o.append(f'<g class="blk {side}" data-id="{html.escape(bid, True)}" data-side="{side}" data-kind="{kind}"{loc}{drag} '
                  f'data-ax="{_f(s.anchor[0])}" data-ay="{_f(s.anchor[1])}" '
                  f'style="--c:{colour}" tabindex="0">'
                  f"<title>{html.escape(name)}{(' — ' + html.escape(detail)) if detail else ''}"
@@ -501,13 +510,14 @@ def card(path):
         return {"path": path, "title": "Block plan", "error": f"The block plan can't be read: {e}",
                 "svg": "", "blocks": [], "notes": []}
     blocks = []
+    shapes = {block_id(b, i): _shape_of(b) for i, b in enumerate(_blocks(data))}
     for i, b in enumerate(_blocks(data)):
         kind = b.get("kind") if b.get("kind") in KINDS else "other"
         refs = [r for r in (str(x) for x in b.get("refs") or []) if REF.match(r)]
         blocks.append({"id": block_id(b, i), "name": str(b.get("name") or ""),
                        "detail": str(b.get("detail") or ""), "kind": kind, "colour": KINDS[kind],
                        "side": "bottom" if b.get("side") == "bottom" else "top",
-                       "loc": ("refs=" + ",".join(refs)) if refs else "", "count": len(refs)})
+                       "loc": _loc(refs, shapes.get(block_id(b, i))), "count": len(refs)})
     notes = [str(n) for n in (data.get("notes") or [])[:20]]
     return {"path": path, "title": str(data.get("title") or "Block plan"), "svg": svg(data),
             "blocks": blocks, "notes": notes,

@@ -56,7 +56,8 @@ When two blocks want the same place, the one with the higher-ranked links gets i
   }
   ```
 
-  - `kind` sets the colour: `power`, `gate`, `mcu`, `supply`, `comms`, `sensor`, `analog`, `connector`, `debug`, `other`.
+  - `kind` sets the colour: `power`, `gate`, `mcu`, `supply`, `comms`, `sensor`, `analog`, `connector`, `debug`, `other`, and `text` / `logo` for silkscreen (below).
+  - **Board texts and logos** go on the plan too, so the user can place them: the board-info line (§3.6), the "Designed with PowerLab KiCad Assistant and Claude" text, company or lab text the requirements ask for, and logos. One block each, `kind` `text` or `logo`, `name` the text itself (short) or the logo's name, sized to how big it will print, on its side. Board text has no reference: leave `refs` out, and a click shows KiCad what lies at the block's centre. A logo footprint gets its reference in `refs`. Reference designators aren't blocks; they stay with their parts. Like all silkscreen, put them in place after the parts (§3.6): move logos with `move_component`, and board text with `edit_board_text` once that tool exists (#70); until then, tell the user which texts to move by hand.
   - `side`: `top` (solid) or `bottom` (hatched).
   - `links`: the top-ranked connections between blocks for this board (gate drive, hot loops, sense lines, buses: whatever ranks highest here), with their expected length as the label, e.g. `gate A ~14 mm`. `kind`: `gate`, `power`, `signal` or `analog`. The panel measures the edge-to-edge gap between the two blocks itself (shown on hover and while the user drags); the label is your estimate of the track length.
   - Block shapes follow the board: on a rectangular board, `rect` blocks at 0/90/180/270° (§3.2); on a round board, `sector` blocks that follow the circle; along an odd edge, a `polygon` that follows it.

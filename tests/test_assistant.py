@@ -779,7 +779,7 @@ class BlockPlanTests(unittest.TestCase):
         legb = next(b for b in card["blocks"] if b["id"] == "legB")
         self.assertEqual((legb["loc"], legb["count"], legb["side"]), ("refs=Q2,R10", 2, "top"))
         odd = next(b for b in card["blocks"] if b["id"] == "x")
-        self.assertEqual((odd["kind"], odd["side"], odd["loc"]), ("other", "top", ""))
+        self.assertEqual((odd["kind"], odd["side"], odd["loc"]), ("other", "top", "at=65,63.333"))  # no parts: its place
         self.assertEqual(card["title"], "Board <b>plan</b>")  # the page escapes it
 
     def test_bottom_blocks_are_hatched_and_drawn_under_the_top(self):
@@ -891,6 +891,21 @@ class BlockPlanTests(unittest.TestCase):
         self.assertIn('class="cut"', card["svg"])  # the round cutout
         os.remove(os.path.join(project, "odd.kicad_pcb"))
         self.assertIn("can't be read", self.plan.card(self.path)["error"])
+
+    def test_board_text_and_logos_are_blocks_too(self):
+        import json
+        self.data["blocks"] += [
+            {"id": "info", "name": "Board rev A", "kind": "text", "rect": {"center": [70, 110], "size": [20, 3]}},
+            {"id": "logo", "name": "Logo", "kind": "logo", "refs": ["LOGO1"], "rect": {"center": [80, 120], "size": [8, 8]}}]
+        with open(self.path, "w", encoding="utf-8") as f:
+            json.dump(self.data, f)
+        card = self.plan.card(self.path)
+        blocks = {b["id"]: b for b in card["blocks"]}
+        self.assertEqual(blocks["info"]["loc"], "at=70,110")  # text has no reference: its place
+        self.assertEqual(blocks["logo"]["loc"], "refs=LOGO1")
+        self.assertIn('data-kind="text" data-loc="at=70,110"', card["svg"])
+        self.plan.move(self.path, [{"id": "info", "dx": 5, "dy": -2}])
+        self.assertIn('data-loc="at=75,108"', self.plan.card(self.path)["svg"])  # it follows the move
 
     def test_any_angle_turns_a_box(self):
         lines = self.plan.move(self.path, [{"id": "u3", "rot": -22.5}, {"id": "u3", "rot": 1000}])

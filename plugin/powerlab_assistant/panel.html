@@ -253,6 +253,8 @@ a.loc:hover { text-decoration-style: solid; }
 .plan .pill-g.empty { display: none; }
 .plan .pill-g.live .pill { fill: #101c33; stroke-width: .3; }
 .plan .blk .base { fill: #0e1a2e; }
+.plan .blk[data-kind="text"] .body, .plan .blk[data-kind="logo"] .body { stroke-width: .25; stroke-dasharray: .7 .5; fill-opacity: .08; }
+.plan .blk[data-kind="text"] .nm, .plan .blk[data-kind="logo"] .nm { fill: #efe6c4; font-weight: 500; letter-spacing: .04em; }
 .plan .blk.drag { cursor: grabbing; }
 .plan .blk.drag .body { stroke: #ffffff; stroke-width: .6; fill-opacity: .4; }
 .plan .row .s { cursor: pointer; background: transparent; font-family: inherit; }
@@ -577,7 +579,8 @@ function planCard(e, state) {
       ev.stopPropagation();
       sendMove({ id: b.id, side: b.side === 'bottom' ? 'top' : 'bottom', prev: b.side });
     };
-    const c = div('c'); c.textContent = b.count ? `${b.count} part${b.count > 1 ? 's' : ''}` : '';
+    const silk = b.kind === 'text' || b.kind === 'logo';  // board text and logos, not parts
+    const c = div('c'); c.textContent = b.count && !silk ? `${b.count} part${b.count > 1 ? 's' : ''}` : silk ? 'silkscreen' : '';
     r.append(dot, n, s, c);
     rows.append(r);
     (parts[b.id] = parts[b.id] || [null, null])[1] = r;
