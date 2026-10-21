@@ -10,6 +10,22 @@ It runs [Claude Code](https://docs.claude.com/claude-code) on your computer with
 
 <sub>Example sessions (illustrative). Left: start screen with suggestions and a library update. Middle: Claude routes the board, then renders and checks it. Right: a question about an attached datasheet, with another file ready to send. The board is the lab's open-source [Voltage Sensor Card](https://github.com/odtu/Powerlab/tree/master/Hardware/Voltage-Sensor-Board).</sub>
 
+## What it looks like
+
+**Placement starts with a block plan.** Claude draws the board's functional blocks on its outline and asks before it places anything. You can drag blocks, turn them or move them to the other side; then it places the parts block by block.
+
+![Placement of a round 4-layer motor-drive test board: parts piled beside the board, the block plan fades in, then each block's parts move into place](docs/images/placement.gif)
+
+<p align="center"><img src="docs/images/block-plan.png" width="70%" alt="The block plan card in the panel: the round board with its blocks, top side solid and bottom side hatched, the gate-drive links with their lengths, and the block list"></p>
+
+**Routing, by hand or with the PowerLab router.** The router applies the lab rules while it routes: power rails first, GND pours kept whole, few corners and vias, pads entered at their centres.
+
+![The PowerLab router's result on a 2-layer ESP32 test board, drawn net by net from the ratsnest, power first, then the GND pours](docs/images/powerlab-router.gif)
+
+![The same ESP32 board routed by Claude by hand and by the PowerLab router. By hand: 60 vias, 6 sharp corners, 15 off-centre pad entries, GND pours in 9 + 3 pieces. Router: 30 vias, 0 sharp corners, 3 off-centre pad entries, GND pours in 3 + 2 pieces](docs/images/hand-vs-router.png)
+
+<sub>The animations draw each board's finished parts and tracks in order; they show the result, not the time it took. The numbers come from `tools/route_quality.py` (signal nets).</sub>
+
 ---
 
 ## ⚠️ Read this first
@@ -145,6 +161,8 @@ A run takes about 10–15 minutes on a 2-layer board with ~50 connections; it ru
 ## The METU Power Lab library
 
 The panel keeps your library clone up to date. When new parts are merged on GitHub, a bar offers **Update**.
+
+![Some of the lab's parts: gate driver, MOSFET, GaN power stage, buck converter, current sense amplifier and magnetic encoder symbols, with footprints below them](docs/images/libraries.png)
 
 Claude creates library parts in your clone, following [`HowToCreateNewDesign/DesignRules.md`](https://github.com/odtu/PowerLabKiCadLibraries/blob/main/HowToCreateNewDesign/DesignRules.md). When you have new or changed parts, the bar offers **Share**. Share:
 
