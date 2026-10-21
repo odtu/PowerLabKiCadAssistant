@@ -145,11 +145,129 @@ index 0000000..ef01ec3
 +    except OSError:
 +        pass
 +    return {"success": True, "restored_from": source, "saved_before_run": taken}
+diff --git a/python/commands/board/__init__.py b/python/commands/board/__init__.py
+index a1562fb..83c8118 100644
+--- a/python/commands/board/__init__.py
++++ b/python/commands/board/__init__.py
+@@ -83,6 +83,11 @@ class BoardCommands:
+         self.outline_commands.board = self.board
+         return self.outline_commands.update_graphic(params)
+ 
++    def edit_board_text(self, params: Dict[str, Any]) -> Dict[str, Any]:
++        """Edit a board text or text box by UUID (PowerLab patch, #70)"""
++        self.outline_commands.board = self.board
++        return self.outline_commands.edit_board_text(params)
++
+     def add_mounting_hole(self, params: Dict[str, Any]) -> Dict[str, Any]:
+         """Add a mounting hole to the PCB"""
+         self.outline_commands.board = self.board
 diff --git a/python/commands/board/outline.py b/python/commands/board/outline.py
-index 3caa343..f488fdc 100644
+index 3caa343..1c33714 100644
 --- a/python/commands/board/outline.py
 +++ b/python/commands/board/outline.py
-@@ -423,7 +423,8 @@ class BoardOutlineCommands:
+@@ -259,11 +259,18 @@ class BoardOutlineCommands:
+                     "errorDetails": "Load or create a board first",
+                 }
+             layer = params.get("layer")
++            # PowerLab patch (#70): KiCad 10 names layers F.Silkscreen, the tools F.SilkS.
++            # Match the layer, not its name, so either one filters.
++            layer_id = self.board.GetLayerID(layer) if layer else -1
+             graphics = []
+             for item in self.board.GetDrawings():
+                 payload = self._graphic_payload(item)
+                 if layer and payload.get("layer") != layer:
+-                    continue
++                    try:
++                        if layer_id < 0 or item.GetLayer() != layer_id:
++                            continue
++                    except Exception:
++                        continue
+                 graphics.append(payload)
+             return {"success": True, "count": len(graphics), "graphics": graphics}
+         except Exception as e:
+@@ -344,6 +351,66 @@ class BoardOutlineCommands:
+             logger.error(f"Error updating graphic: {str(e)}")
+             return {"success": False, "message": "Failed to update graphic", "errorDetails": str(e)}
+ 
++    TEXT_TYPES = ("PCB_TEXT", "PCB_TEXTBOX")
++
++    def edit_board_text(self, params: Dict[str, Any]) -> Dict[str, Any]:
++        """PowerLab patch (#70): change a board text or text box by UUID: its text, position,
++        layer, size, thickness, angle or mirroring. No tool could edit board text before."""
++        try:
++            if not self.board:
++                return {
++                    "success": False,
++                    "message": "No board is loaded",
++                    "errorDetails": "Load or create a board first",
++                }
++            uuid = params.get("uuid")
++            if not uuid:
++                return {"success": False, "message": "uuid is required"}
++            item = next((d for d in self.board.GetDrawings() if self._item_uuid(d) == uuid), None)
++            if item is None or type(item).__name__ not in self.TEXT_TYPES:
++                return {
++                    "success": False,
++                    "message": "Board text not found",
++                    "errorDetails": f"No board text has uuid {uuid}; list_graphics gives the "
++                                    "UUIDs (type PCB_TEXT or PCB_TEXTBOX)",
++                }
++
++            unit = params.get("unit") or (params.get("position") or {}).get("unit") or "mm"
++            scale = 1_000_000 if unit == "mm" else (25_400 if unit == "mil" else 25_400_000)
++            layer_id = None
++            if params.get("layer"):
++                layer_id = self.board.GetLayerID(params["layer"])
++                if layer_id < 0:
++                    return {
++                        "success": False,
++                        "message": "Invalid layer",
++                        "errorDetails": f"Layer '{params['layer']}' does not exist",
++                    }
++
++            if params.get("text") is not None:
++                item.SetText(str(params["text"]))
++            if params.get("position"):
++                item.SetPosition(self._vec_from_xy(params["position"], scale))
++            if layer_id is not None:
++                item.SetLayer(layer_id)
++            if params.get("size") is not None:
++                size = int(float(params["size"]) * scale)
++                item.SetTextSize(pcbnew.VECTOR2I(size, size))
++            if params.get("thickness") is not None:
++                item.SetTextThickness(int(float(params["thickness"]) * scale))
++            if params.get("rotation") is not None:
++                item.SetTextAngleDegrees(float(params["rotation"]))
++            if params.get("mirrored") is not None:
++                item.SetMirrored(bool(params["mirrored"]))
++            return {
++                "success": True,
++                "message": f"Edited board text {uuid}",
++                "graphic": self._graphic_payload(item),
++            }
++        except Exception as e:
++            logger.error(f"Error editing board text: {str(e)}")
++            return {"success": False, "message": "Failed to edit board text", "errorDetails": str(e)}
++
+     @staticmethod
+     def _vec_from_xy(data: Dict[str, Any], scale: float):
+         return pcbnew.VECTOR2I(int(float(data["x"]) * scale), int(float(data["y"]) * scale))
+@@ -391,6 +458,14 @@ class BoardOutlineCommands:
+                 payload["text"] = item.GetText()
+             except Exception:
+                 pass
++        if type(item).__name__ in self.TEXT_TYPES:  # PowerLab patch (#70): what edit_board_text sets
++            try:
++                payload["size"] = item.GetTextSize().y / 1_000_000
++                payload["thickness"] = item.GetTextThickness() / 1_000_000
++                payload["angle"] = float(item.GetTextAngleDegrees())
++                payload["mirrored"] = bool(item.IsMirrored())
++            except Exception:
++                pass
+         if hasattr(item, "GetWidth"):
+             try:
+                 payload["width"] = item.GetWidth() / 1_000_000
+@@ -423,7 +498,8 @@ class BoardOutlineCommands:
              position = params.get("position")
              diameter = params.get("diameter")
              pad_diameter = params.get("padDiameter")
@@ -159,7 +277,7 @@ index 3caa343..f488fdc 100644
              footprint_lib_id = params.get("footprintLibId")
  
              if not position or not diameter:
-@@ -493,6 +494,13 @@ class BoardOutlineCommands:
+@@ -493,6 +569,13 @@ class BoardOutlineCommands:
                  mask_only.AddLayer(pcbnew.B_Mask)
                  pad.SetLayerSet(mask_only)
  
@@ -173,7 +291,7 @@ index 3caa343..f488fdc 100644
              module.Add(pad)
  
              # Position the mounting hole
-@@ -509,6 +517,8 @@ class BoardOutlineCommands:
+@@ -509,6 +592,8 @@ class BoardOutlineCommands:
                      "diameter": diameter,
                      "padDiameter": pad_diameter or diameter + 1,
                      "plated": plated,
@@ -182,6 +300,14 @@ index 3caa343..f488fdc 100644
                      "footprintLibId": f"{lib_name}:{fp_name}",
                  },
              }
+@@ -592,6 +677,7 @@ class BoardOutlineCommands:
+                 "success": True,
+                 "message": "Added text annotation",
+                 "text": {
++                    "uuid": self._item_uuid(pcb_text),  # PowerLab patch (#70): for edit_board_text
+                     "text": text,
+                     "position": position,
+                     "layer": layer,
 diff --git a/python/commands/board/view.py b/python/commands/board/view.py
 index 16a4915..922b826 100644
 --- a/python/commands/board/view.py
@@ -317,7 +443,7 @@ index 16a4915..922b826 100644
                          f.write(image_bytes)
                      return {
 diff --git a/python/commands/component.py b/python/commands/component.py
-index f635672..fd3e2eb 100644
+index f635672..7ea84f4 100644
 --- a/python/commands/component.py
 +++ b/python/commands/component.py
 @@ -149,6 +149,8 @@ class ComponentCommands(PlacementOptimizerCommands):
@@ -354,7 +480,35 @@ index f635672..fd3e2eb 100644
                      moved.append(
                          {
                              "reference": ref,
-@@ -563,6 +568,9 @@ class ComponentCommands(PlacementOptimizerCommands):
+@@ -495,6 +500,27 @@ class ComponentCommands(PlacementOptimizerCommands):
+                     "errorDetails": f"Could not find component: {reference}",
+                 }
+ 
++            # PowerLab patch: {pad number: net name}, "*" for every pad, "" for no net.
++            # Checked before anything changes; NPTH pads can't take a net.
++            pad_nets = params.get("padNets") or {}
++            if pad_nets and not footprint:
++                pads = list(module.Pads())
++                numbers = sorted({pad.GetNumber() for pad in pads})
++                unknown = [n for n in pad_nets if n != "*" and n not in numbers]
++                if unknown:
++                    return {
++                        "success": False,
++                        "message": "Pad not found",
++                        "errorDetails": f"{reference} has no pad {', '.join(unknown)} "
++                        f"(pads: {', '.join(numbers) or 'none'})",
++                    }
++                if all(pad.GetAttribute() == pcbnew.PAD_ATTRIB_NPTH for pad in pads):
++                    return {
++                        "success": False,
++                        "message": "No pad can take a net",
++                        "errorDetails": f"{reference} has only non-plated (NPTH) pads",
++                    }
++
+             # Update properties
+             if new_reference:
+                 module.SetReference(new_reference)
+@@ -563,12 +589,32 @@ class ComponentCommands(PlacementOptimizerCommands):
                  self.board.Add(new_module)
                  if was_flipped and not new_module.IsFlipped():
                      new_module.Flip(new_module.GetPosition(), False)
@@ -364,6 +518,29 @@ index f635672..fd3e2eb 100644
                  delete_board_item(self.board, module)
                  module = new_module
  
++            # PowerLab patch: pad nets, e.g. a mounting hole on GND. No other tool sets
++            # the net of a pad already on the board.
++            changed_pads = []
++            if pad_nets:
++                for pad in module.Pads():
++                    number = pad.GetNumber()
++                    net_name = pad_nets.get(number, pad_nets.get("*"))
++                    if net_name is None or pad.GetAttribute() == pcbnew.PAD_ATTRIB_NPTH:
++                        continue
++                    net = self.board.FindNet(net_name)
++                    if net is None:
++                        net = pcbnew.NETINFO_ITEM(self.board, net_name)
++                        self.board.Add(net)
++                    pad.SetNet(net)
++                    changed_pads.append({"pad": number, "net": net_name})
++
+             return {
+                 "success": True,
+                 "message": f"Updated component: {reference}",
++                "padNets": changed_pads,
+                 "component": {
+                     "reference": new_reference or reference,
+                     "value": value or module.GetValue(),
 diff --git a/python/commands/dynamic_symbol_loader.py b/python/commands/dynamic_symbol_loader.py
 index 4fd6044..b205dd7 100644
 --- a/python/commands/dynamic_symbol_loader.py
@@ -7974,7 +8151,7 @@ index 2ad29f6..10ddd45 100644
      def add_text(
          schematic_path: Path,
 diff --git a/python/kicad_api/ipc_backend.py b/python/kicad_api/ipc_backend.py
-index 6f9a813..1c8b1c5 100644
+index 6f9a813..a2d32a8 100644
 --- a/python/kicad_api/ipc_backend.py
 +++ b/python/kicad_api/ipc_backend.py
 @@ -471,6 +471,30 @@ class IPCBoardAPI(BoardAPI):
@@ -8076,7 +8253,61 @@ index 6f9a813..1c8b1c5 100644
  
              # Apply changes
              commit = board.begin_commit()
-@@ -1387,6 +1464,7 @@ class IPCBoardAPI(BoardAPI):
+@@ -1255,11 +1332,12 @@ class IPCBoardAPI(BoardAPI):
+         layer: str = "F.SilkS",
+         size: float = 1.0,
+         rotation: float = 0,
++        thickness: Optional[float] = None,
+     ) -> bool:
+         """Add text to the board."""
+         try:
+             from kipy.board_types import BoardText
+-            from kipy.geometry import Angle, Vector2
++            from kipy.geometry import Vector2
+             from kipy.proto.board.board_types_pb2 import BoardLayer
+             from kipy.util.units import from_mm
+ 
+@@ -1269,21 +1347,36 @@ class IPCBoardAPI(BoardAPI):
+             board_text = BoardText()
+             board_text.value = text
+             board_text.position = Vector2.from_xy(from_mm(x), from_mm(y))
+-            board_text.angle = Angle.from_degrees(rotation)
++            # PowerLab patch (#70): BoardText has no `angle`; size and rotation were dropped.
++            board_text.attributes.angle = float(rotation or 0)
++            board_text.attributes.size = Vector2.from_xy(from_mm(size), from_mm(size))
++            if thickness is not None:
++                board_text.attributes.stroke_width = from_mm(thickness)
+ 
+             # Set layer
+             layer_map = {
+                 "F.SilkS": BoardLayer.BL_F_SilkS,
+                 "B.SilkS": BoardLayer.BL_B_SilkS,
++                "F.Silkscreen": BoardLayer.BL_F_SilkS,
++                "B.Silkscreen": BoardLayer.BL_B_SilkS,
+                 "F.Cu": BoardLayer.BL_F_Cu,
+                 "B.Cu": BoardLayer.BL_B_Cu,
+             }
+-            board_text.layer = layer_map.get(layer, BoardLayer.BL_F_SilkS)
++            try:
++                bl = layer_map.get(layer) or BoardLayer.Value("BL_" + layer.replace(".", "_"))
++            except ValueError:
++                bl = BoardLayer.BL_F_SilkS
++            board_text.layer = bl
+ 
+             # Add text with transaction
+             commit = board.begin_commit()
+-            board.create_items(board_text)
++            created = board.create_items(board_text)
+             board.push_commit(commit, f"Added text: {text}")
++            # PowerLab patch (#70): the new text's uuid, for edit_board_text/delete_graphic
++            try:
++                self.last_text_uuid = created[0].id.value
++            except Exception:
++                self.last_text_uuid = None
+ 
+             self._notify("text_added", {"text": text, "position": {"x": x, "y": y}, "layer": layer})
+ 
+@@ -1387,6 +1480,7 @@ class IPCBoardAPI(BoardAPI):
          priority: int = 0,
          fill_mode: str = "solid",
          name: str = "",
@@ -8084,7 +8315,7 @@ index 6f9a813..1c8b1c5 100644
      ) -> bool:
          """
          Add a copper pour zone to the board.
-@@ -1453,6 +1531,12 @@ class IPCBoardAPI(BoardAPI):
+@@ -1453,6 +1547,12 @@ class IPCBoardAPI(BoardAPI):
              zone._proto.copper_settings.fill_mode = (
                  ZoneFillMode.ZFM_HATCHED if fill_mode == "hatched" else ZoneFillMode.ZFM_SOLID
              )
@@ -8098,7 +8329,7 @@ index 6f9a813..1c8b1c5 100644
              # Create outline polyline
              outline = PolyLine()
 diff --git a/python/kicad_interface.py b/python/kicad_interface.py
-index c6ac305..b7ea0b9 100644
+index c6ac305..b90e920 100644
 --- a/python/kicad_interface.py
 +++ b/python/kicad_interface.py
 @@ -36,6 +36,7 @@ if sys.platform == "win32":
@@ -8109,7 +8340,15 @@ index c6ac305..b7ea0b9 100644
  from commands.schematic_handlers import SchematicHandlersMixin
  from commands.wire_manager import WireManager
  from resources.resource_definitions import RESOURCE_DEFINITIONS, handle_resource_read
-@@ -525,6 +526,7 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -513,6 +514,7 @@ class KiCADInterface(SchematicHandlersMixin):
+             "list_graphics": self.board_commands.list_graphics,
+             "delete_graphic": self.board_commands.delete_graphic,
+             "update_graphic": self.board_commands.update_graphic,
++            "edit_board_text": self.board_commands.edit_board_text,  # PowerLab patch (#70)
+             "add_mounting_hole": self.board_commands.add_mounting_hole,
+             "hierarchical_place": self.hierarchical_place_commands.hierarchical_place,
+             "add_text": self.board_commands.add_text,
+@@ -525,6 +527,7 @@ class KiCADInterface(SchematicHandlersMixin):
              "rotate_component": self.component_commands.rotate_component,
              "delete_component": self.component_commands.delete_component,
              "edit_component": self.component_commands.edit_component,
@@ -8117,7 +8356,7 @@ index c6ac305..b7ea0b9 100644
              "get_component_properties": self.component_commands.get_component_properties,
              "get_component_list": self.component_commands.get_component_list,
              "get_component_geometry": self.component_commands.get_component_geometry,
-@@ -558,6 +560,7 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -558,6 +561,7 @@ class KiCADInterface(SchematicHandlersMixin):
              "create_netclass": self.routing_commands.create_netclass,
              "set_net_color": self.routing_commands.set_net_color,
              "add_copper_pour": self.routing_commands.add_copper_pour,
@@ -8125,7 +8364,7 @@ index c6ac305..b7ea0b9 100644
              "route_differential_pair": self.routing_commands.route_differential_pair,
              "refill_zones": self._handle_refill_zones,
              # Design rule commands
-@@ -693,6 +696,8 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -693,6 +697,8 @@ class KiCADInterface(SchematicHandlersMixin):
              "add_schematic_hierarchical_label": self._handle_add_schematic_hierarchical_label,
              "add_schematic_text": self._handle_add_schematic_text,
              "list_schematic_texts": self._handle_list_schematic_texts,
@@ -8134,7 +8373,7 @@ index c6ac305..b7ea0b9 100644
              "add_sheet_pin": self._handle_add_sheet_pin,
              "import_svg_logo": self._handle_import_svg_logo,
              # UI/Process management commands
-@@ -732,10 +737,15 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -732,10 +738,15 @@ class KiCADInterface(SchematicHandlersMixin):
              "remove_library_table_entry": remove_library_table_entry,
              "set_library_table_uri": set_library_table_uri,
              # Freerouting autoroute commands
@@ -8151,7 +8390,7 @@ index c6ac305..b7ea0b9 100644
              # Eagle import commands
              "import_eagle_project": self.eagle_commands.import_eagle_project,
              # Schematic migration
-@@ -756,12 +766,14 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -756,12 +767,14 @@ class KiCADInterface(SchematicHandlersMixin):
          "route_trace": "_ipc_route_trace",
          "route_arc_trace": "_ipc_route_arc_trace",
          "add_via": "_ipc_add_via",
@@ -8166,17 +8405,18 @@ index c6ac305..b7ea0b9 100644
          "refill_zones": "_ipc_refill_zones",
          # Board commands
          "add_text": "_ipc_add_text",
-@@ -771,6 +783,9 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -771,6 +784,10 @@ class KiCADInterface(SchematicHandlersMixin):
          "add_board_outline": "_ipc_add_board_outline",
          "add_mounting_hole": "_ipc_add_mounting_hole",
          "get_layer_list": "_ipc_get_layer_list",
 +        "list_graphics": "_ipc_list_graphics",  # PowerLab patch (#56)
 +        "delete_graphic": "_ipc_delete_graphic",  # PowerLab patch (#56)
++        "edit_board_text": "_ipc_edit_board_text",  # PowerLab patch (#70)
 +        "clear_board_outline": "_ipc_clear_board_outline",  # PowerLab patch (#56)
          # Component commands
          "place_component": "_ipc_place_component",
          "move_component": "_ipc_move_component",
-@@ -779,11 +794,32 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -779,11 +796,32 @@ class KiCADInterface(SchematicHandlersMixin):
          "get_component_list": "_ipc_get_component_list",
          "get_component_properties": "_ipc_get_component_properties",
          "set_footprint_type": "_ipc_set_footprint_type",
@@ -8209,7 +8449,7 @@ index c6ac305..b7ea0b9 100644
      # Commands that are implemented by the explicit IPC command handlers in
      # command_routes, rather than by the generic IPC_CAPABLE_COMMANDS fast path.
      IPC_DIRECT_COMMANDS = {
-@@ -1021,6 +1057,14 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -1021,6 +1059,14 @@ class KiCADInterface(SchematicHandlersMixin):
                  ):
                      self._downgrade_session_to_swig()
  
@@ -8224,7 +8464,7 @@ index c6ac305..b7ea0b9 100644
              # Check if we can use IPC for this command (real-time UI sync).
              # A session pinned to SWIG never routes board commands over IPC,
              # even when IPC is connected — the GUI may hold a stale copy of
-@@ -1075,6 +1119,22 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -1075,6 +1121,22 @@ class KiCADInterface(SchematicHandlersMixin):
              if handler:
                  # Execute the command
                  result = handler(params)
@@ -8247,7 +8487,13 @@ index c6ac305..b7ea0b9 100644
                  logger.debug(f"Command result: {result}")
  
                  # Add backend indicator
-@@ -1236,6 +1296,7 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -1231,11 +1293,13 @@ class KiCADInterface(SchematicHandlersMixin):
+         "replace_board_outline",
+         "delete_graphic",
+         "update_graphic",
++        "edit_board_text",
+         "add_mounting_hole",
+         "add_text",
          "add_board_text",
          "move_footprint_text",
          "add_copper_pour",
@@ -8255,7 +8501,7 @@ index c6ac305..b7ea0b9 100644
          "refill_zones",
          "import_svg_logo",
          "sync_schematic_to_board",
-@@ -1848,6 +1909,376 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -1848,6 +1912,376 @@ class KiCADInterface(SchematicHandlersMixin):
          state = self._dirty_state(board_path)
          return {"success": True, "boardPath": board_path, **state}
  
@@ -8632,7 +8878,7 @@ index c6ac305..b7ea0b9 100644
      def _handle_batch_move_components(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """Batch move wrapper that preserves the external-edit save guard."""
          if getattr(self, "session_backend", None) == "ipc" and not self._ipc_session_alive():
-@@ -5079,6 +5510,65 @@ print("ok")
+@@ -5079,6 +5513,65 @@ print("ok")
              logger.error(f"IPC route_arc_trace error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -8698,7 +8944,7 @@ index c6ac305..b7ea0b9 100644
      def _ipc_add_via(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for add_via - adds via with real-time UI update"""
          try:
-@@ -5131,21 +5621,37 @@ print("ok")
+@@ -5131,21 +5624,37 @@ print("ok")
              net = params.get("net")
              clearance = params.get("clearance", 0.5)
              min_width = params.get("minWidth", 0.25)
@@ -8743,7 +8989,7 @@ index c6ac305..b7ea0b9 100644
  
              success = self.ipc_board_api.add_zone(
                  points=formatted_points,
-@@ -5156,6 +5662,7 @@ print("ok")
+@@ -5156,6 +5665,7 @@ print("ok")
                  priority=priority,
                  fill_mode=fill_type,
                  name=name,
@@ -8751,7 +8997,39 @@ index c6ac305..b7ea0b9 100644
              )
  
              return {
-@@ -5349,6 +5856,19 @@ print("ok")
+@@ -5204,12 +5714,18 @@ print("ok")
+             layer = params.get("layer", "F.SilkS")
+             size = params.get("size", 1.0)
+             rotation = params.get("rotation", 0)
++            # PowerLab patch (#70): the position's unit and the thickness were ignored live
++            unit = position.get("unit", "mm") if isinstance(position, dict) else "mm"
++            to_mm = {"mm": 1.0, "mil": 0.0254, "inch": 25.4}.get(unit, 1.0)
++            thickness = params.get("thickness")
+ 
+             success = self.ipc_board_api.add_text(
+-                text=text, x=x, y=y, layer=layer, size=size, rotation=rotation
++                text=text, x=float(x) * to_mm, y=float(y) * to_mm, layer=layer,
++                size=float(size) * to_mm, rotation=rotation,
++                thickness=float(thickness) * to_mm if thickness is not None else None,
+             )
+ 
+-            return {
++            out = {
+                 "success": success,
+                 "message": (
+                     f"Added text '{text}' (visible in KiCAD UI)"
+@@ -5217,6 +5733,10 @@ print("ok")
+                     else "Failed to add text"
+                 ),
+             }
++            uuid = getattr(self.ipc_board_api, "last_text_uuid", None)
++            if success and isinstance(uuid, str):
++                out["uuid"] = uuid  # for edit_board_text and delete_graphic
++            return out
+         except Exception as e:
+             logger.error(f"IPC add_text error: {e}")
+             return {"success": False, "message": str(e)}
+@@ -5349,6 +5869,19 @@ print("ok")
                  x = x * 0.0254
                  y = y * 0.0254
  
@@ -8771,7 +9049,7 @@ index c6ac305..b7ea0b9 100644
              success = self.ipc_board_api.move_component(
                  reference=reference, x=x, y=y, rotation=rotation
              )
-@@ -5356,7 +5876,9 @@ print("ok")
+@@ -5356,7 +5889,9 @@ print("ok")
              return {
                  "success": success,
                  "message": (
@@ -8782,7 +9060,7 @@ index c6ac305..b7ea0b9 100644
                      if success
                      else "Failed to move component"
                  ),
-@@ -5456,11 +5978,182 @@ print("ok")
+@@ -5456,11 +5991,306 @@ print("ok")
              return {"success": False, "message": str(e)}
  
      def _ipc_delete_trace(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -8901,15 +9179,71 @@ index c6ac305..b7ea0b9 100644
 +                out[key] = mm(value)
 +        return out
 +
++    def _ipc_text_payload(self, text: Any) -> Dict[str, Any]:
++        """A board text or text box from KiCad's board (PowerLab patch, #70), with what
++        edit_board_text can change."""
++        from kipy.board_types import BoardTextBox
++        from kipy.proto.board.board_types_pb2 import BoardLayer
++
++        mm = lambda v: {"x": v.x / 1_000_000, "y": v.y / 1_000_000, "unit": "mm"}
++        attrs = text.attributes
++        out: Dict[str, Any] = {
++            "uuid": text.id.value,
++            "type": type(text).__name__,
++            "layer": self._normalize_ipc_layer_name(BoardLayer.Name(text.layer)),
++            "text": text.value,
++            "size": attrs.size.y / 1_000_000,
++            "thickness": attrs.stroke_width / 1_000_000,
++            "angle": float(attrs.angle),
++            "mirrored": bool(attrs.mirrored),
++        }
++        if isinstance(text, BoardTextBox):
++            out["position"] = mm(text.top_left)
++            out["topLeft"] = mm(text.top_left)
++            out["bottomRight"] = mm(text.bottom_right)
++        else:
++            out["position"] = mm(text.position)
++        return out
++
++    # KiCad 10's own names for the layers the API calls F.SilkS, F.CrtYd, ...
++    _KICAD_LAYER_NAMES = {
++        "F.Silkscreen": "F.SilkS",
++        "B.Silkscreen": "B.SilkS",
++        "F.Adhesive": "F.Adhes",
++        "B.Adhesive": "B.Adhes",
++        "F.Courtyard": "F.CrtYd",
++        "B.Courtyard": "B.CrtYd",
++        "User.Drawings": "Dwgs.User",
++        "User.Comments": "Cmts.User",
++        "User.Eco1": "Eco1.User",
++        "User.Eco2": "Eco2.User",
++    }
++
++    def _ipc_board_layer(self, name: str) -> Optional[int]:
++        """BoardLayer value for a layer name in either spelling (PowerLab patch, #70)."""
++        from kipy.proto.board.board_types_pb2 import BoardLayer
++
++        name = self._KICAD_LAYER_NAMES.get(str(name), str(name))
++        try:
++            return BoardLayer.Value("BL_" + name.replace(".", "_"))
++        except ValueError:
++            return None
++
 +    def _ipc_list_graphics(self, params: Dict[str, Any]) -> Dict[str, Any]:
 +        """IPC handler for list_graphics (PowerLab patch, #56): KiCad's board shapes, with
-+        the UUIDs delete_graphic needs in live mode."""
++        the UUIDs delete_graphic needs in live mode. Board text and text boxes too (#70)."""
 +        try:
 +            board = self.ipc_board_api._get_board()
 +            layer = params.get("layer")
 +            graphics = [self._ipc_shape_payload(s) for s in board.get_shapes()]
++            graphics += [self._ipc_text_payload(t) for t in board.get_text()]
 +            if layer:
-+                graphics = [g for g in graphics if g["layer"] == layer]
++                wanted = self._ipc_board_layer(layer)
++                graphics = [
++                    g for g in graphics
++                    if g["layer"] == layer
++                    or (wanted is not None and self._ipc_board_layer(g["layer"]) == wanted)
++                ]
 +            return {"success": True, "count": len(graphics), "graphics": graphics}
 +        except Exception as e:
 +            logger.error(f"IPC list_graphics error: {e}")
@@ -8924,6 +9258,8 @@ index c6ac305..b7ea0b9 100644
 +                return {"success": False, "message": "uuid is required"}
 +            board = self.ipc_board_api._get_board()
 +            found = [s for s in board.get_shapes() if s.id.value == uuid]
++            if not found:  # PowerLab patch (#70): board text and text boxes too
++                found = [t for t in board.get_text() if t.id.value == uuid]
 +            if not found:
 +                return {
 +                    "success": False,
@@ -8942,6 +9278,72 @@ index c6ac305..b7ea0b9 100644
 +        except Exception as e:
 +            logger.error(f"IPC delete_graphic error: {e}")
 +            return {"success": False, "message": "Failed to delete graphic", "errorDetails": str(e)}
++
++    def _ipc_edit_board_text(self, params: Dict[str, Any]) -> Dict[str, Any]:
++        """IPC handler for edit_board_text (PowerLab patch, #70): changes a board text or
++        text box in KiCad's board, in one commit."""
++        try:
++            from kipy.board_types import BoardTextBox
++            from kipy.geometry import Vector2
++
++            uuid = params.get("uuid")
++            if not uuid:
++                return {"success": False, "message": "uuid is required"}
++            board = self.ipc_board_api._get_board()
++            text = next((t for t in board.get_text() if t.id.value == uuid), None)
++            if text is None:
++                return {
++                    "success": False,
++                    "message": "Board text not found",
++                    "errorDetails": f"KiCad's board has no text with uuid {uuid}; list_graphics "
++                                    "gives the current UUIDs",
++                }
++
++            unit = params.get("unit") or (params.get("position") or {}).get("unit") or "mm"
++            scale = {"mm": 1_000_000, "inch": 25_400_000, "mil": 25_400}.get(unit, 1_000_000)
++            layer = None
++            if params.get("layer"):
++                layer = self._ipc_board_layer(params["layer"])
++                if layer is None:
++                    return {"success": False, "message": f"Unknown layer: {params['layer']}"}
++
++            if params.get("text") is not None:
++                text.value = str(params["text"])
++            if params.get("position"):
++                pos = params["position"]
++                new = Vector2.from_xy(int(float(pos["x"]) * scale), int(float(pos["y"]) * scale))
++                if isinstance(text, BoardTextBox):  # the position is its top-left corner
++                    delta = new - text.top_left
++                    text.top_left, text.bottom_right = new, text.bottom_right + delta
++                else:
++                    text.position = new
++            if layer is not None:
++                text.layer = layer
++            if params.get("size") is not None:
++                size = int(float(params["size"]) * scale)
++                text.attributes.size = Vector2.from_xy(size, size)
++            if params.get("thickness") is not None:
++                text.attributes.stroke_width = int(float(params["thickness"]) * scale)
++            if params.get("rotation") is not None:
++                text.attributes.angle = float(params["rotation"])
++            if params.get("mirrored") is not None:
++                text.attributes.mirrored = bool(params["mirrored"])
++
++            commit = board.begin_commit()
++            try:
++                board.update_items([text])
++                board.push_commit(commit, "Edit board text")
++            except Exception:
++                board.drop_commit(commit)
++                raise
++            return {
++                "success": True,
++                "message": f"Edited board text {uuid} in KiCad's board",
++                "graphic": self._ipc_text_payload(text),
++            }
++        except Exception as e:
++            logger.error(f"IPC edit_board_text error: {e}")
++            return {"success": False, "message": "Failed to edit board text", "errorDetails": str(e)}
 +
 +    def _ipc_clear_board_outline(self, params: Dict[str, Any]) -> Dict[str, Any]:
 +        """IPC handler for clear_board_outline (PowerLab patch, #56): every Edge.Cuts shape
@@ -8970,7 +9372,7 @@ index c6ac305..b7ea0b9 100644
  
      def _ipc_query_traces(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for query_traces - reads traces from the live KiCAD board."""
-@@ -5558,11 +6251,20 @@ print("ok")
+@@ -5558,11 +6388,20 @@ print("ok")
          and correctly generates PCB_SHAPE arcs for rounded corners.
          """
          shape = params.get("shape", "rectangle")
@@ -8991,7 +9393,7 @@ index c6ac305..b7ea0b9 100644
              return self.board_commands.add_board_outline(params)
  
          try:
-@@ -5614,6 +6316,50 @@ print("ok")
+@@ -5614,6 +6453,50 @@ print("ok")
              logger.error(f"IPC add_board_outline error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -9042,7 +9444,7 @@ index c6ac305..b7ea0b9 100644
      def _ipc_add_mounting_hole(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for add_mounting_hole - adds mounting hole with real-time UI update"""
          try:
-@@ -5833,6 +6579,100 @@ print("ok")
+@@ -5833,6 +6716,100 @@ print("ok")
              logger.error(f"IPC set_footprint_type error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -9144,10 +9546,42 @@ index c6ac305..b7ea0b9 100644
      # Legacy IPC command handlers (explicit ipc_* commands)
  
 diff --git a/python/schemas/tool_schemas.py b/python/schemas/tool_schemas.py
-index e739f90..7642a10 100644
+index e739f90..074e082 100644
 --- a/python/schemas/tool_schemas.py
 +++ b/python/schemas/tool_schemas.py
-@@ -585,6 +585,10 @@ BOARD_TOOLS = [
+@@ -405,6 +405,31 @@ BOARD_TOOLS = [
+             "required": ["uuid"],
+         },
+     },
++    {
++        "name": "edit_board_text",
++        "title": "Edit Board Text",
++        "description": "Changes a board text or text box by KiCad UUID (from list_graphics): "
++        "its text, position, layer, size, thickness, angle or mirroring. Only the given "
++        "properties change.",
++        "inputSchema": {
++            "type": "object",
++            "properties": {
++                "uuid": {"type": "string"},
++                "text": {"type": "string"},
++                "position": {
++                    "type": "object",
++                    "description": "{x, y, unit}; a text box's top-left corner",
++                },
++                "layer": {"type": "string"},
++                "size": {"type": "number", "description": "Text height and width"},
++                "thickness": {"type": "number"},
++                "rotation": {"type": "number", "description": "Angle in degrees"},
++                "mirrored": {"type": "boolean"},
++                "unit": {"type": "string", "enum": ["mm", "mil", "inch"], "default": "mm"},
++            },
++            "required": ["uuid"],
++        },
++    },
+     {
+         "name": "add_layer",
+         "title": "Enable Copper Layer",
+@@ -585,6 +610,10 @@ BOARD_TOOLS = [
                      "default": False,
                      "description": "True for plated through-hole (PTH) with copper pad; false (default) for NPTH (mask only).",
                  },
@@ -9158,6 +9592,19 @@ index e739f90..7642a10 100644
                  "footprintLibId": {
                      "type": "string",
                      "description": "Optional library:name FPID (e.g. 'MountingHole:MountingHole_3.2mm'). Defaults to MountingHole:MountingHole_<diameter>mm. A non-empty FPID is required for the footprint to be selectable in KiCad's GUI Move tool.",
+@@ -803,6 +832,12 @@ COMPONENT_TOOLS = [
+                     "type": "string",
+                     "description": "New footprint library:name",
+                 },
++                "padNets": {
++                    "type": "object",
++                    "additionalProperties": {"type": "string"},
++                    "description": "Pad nets: {pad number: net name}, '*' for every pad, "
++                    "'' for no net, e.g. {'*': 'GND'} for a plated mounting hole",
++                },
+             },
+             "required": ["reference"],
+         },
 diff --git a/src/command-timeout.ts b/src/command-timeout.ts
 index dfd876c..1f020d4 100644
 --- a/src/command-timeout.ts
@@ -9189,10 +9636,70 @@ index dfd876c..1f020d4 100644
      return LONG_COMMAND_TIMEOUT_MS;
    }
 diff --git a/src/tools/board.ts b/src/tools/board.ts
-index 2738ebc..cbb1d7d 100644
+index 2738ebc..5fbf340 100644
 --- a/src/tools/board.ts
 +++ b/src/tools/board.ts
-@@ -353,13 +353,24 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
+@@ -295,7 +295,9 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
+ 
+   server.tool(
+     "list_graphics",
+-    "List PCB graphic/drawing items such as gr_line, gr_arc, gr_rect, gr_text and dimensions.",
++    "List PCB graphic/drawing items such as gr_line, gr_arc, gr_rect, gr_text and dimensions. " +
++      "Board text and text boxes come with their uuid, text, position, size, thickness, angle " +
++      "and mirroring; edit_board_text changes them and delete_graphic removes them.",
+     {
+       layer: z.string().optional().describe("Optional layer filter, e.g. Edge.Cuts or F.SilkS"),
+     },
+@@ -307,7 +309,7 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
+ 
+   server.tool(
+     "delete_graphic",
+-    "Delete a PCB graphic/drawing item by UUID.",
++    "Delete a PCB graphic/drawing item, board text or text box by UUID (from list_graphics).",
+     {
+       uuid: z.string().describe("KiCad UUID of the graphic item"),
+     },
+@@ -337,6 +339,39 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
+     },
+   );
+ 
++  // PowerLab patch (#70): no tool could change board text placed with add_board_text.
++  server.tool(
++    "edit_board_text",
++    "Change a board text or text box by UUID (list_graphics gives it): its text, position, " +
++      "layer, size, thickness, angle or mirroring. Only the given properties change. With " +
++      "KiCad open on the board it edits KiCad's board in one undoable step.",
++    {
++      uuid: z.string().describe("KiCad UUID of the text, from list_graphics or add_board_text"),
++      text: z.string().optional().describe("New text content"),
++      position: z
++        .object({
++          x: z.number().describe("X coordinate"),
++          y: z.number().describe("Y coordinate"),
++          unit: z.enum(["mm", "mil", "inch"]).optional().describe("Unit (default mm)"),
++        })
++        .optional()
++        .describe("New position (a text box's top-left corner)"),
++      layer: z.string().optional().describe("New layer, e.g. F.SilkS or B.Silkscreen"),
++      size: z.number().optional().describe("Text height and width"),
++      thickness: z.number().optional().describe("Stroke thickness"),
++      rotation: z.number().optional().describe("Angle in degrees"),
++      mirrored: z.boolean().optional().describe("Mirror the text (true for bottom-side text)"),
++      unit: z
++        .enum(["mm", "mil", "inch"])
++        .optional()
++        .describe("Unit for size and thickness (default: the position's unit, else mm)"),
++    },
++    async (args) => {
++      const result = await callKicadScript("edit_board_text", args);
++      return { content: [{ type: "text", text: JSON.stringify(result) }] };
++    },
++  );
++
+   // ------------------------------------------------------
+   // Add Mounting Hole Tool
+   // ------------------------------------------------------
+@@ -353,13 +388,24 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
          .describe("Position of the mounting hole"),
        diameter: z.number().describe("Diameter of the hole"),
        padDiameter: z.number().optional().describe("Optional diameter of the pad around the hole"),
@@ -9218,7 +9725,7 @@ index 2738ebc..cbb1d7d 100644
        });
  
        return {
-@@ -522,8 +533,34 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
+@@ -522,8 +568,34 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
          .describe(
            '"inline" (default): image returned directly; "file": written to disk, filePath returned',
          ),
@@ -9254,7 +9761,7 @@ index 2738ebc..cbb1d7d 100644
        logger.debug("Getting 2D board view");
        const result = await callKicadScript("get_board_2d_view", {
          pcbPath,
-@@ -532,6 +569,9 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
+@@ -532,6 +604,9 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
          height,
          format,
          responseMode,
@@ -9265,10 +9772,40 @@ index 2738ebc..cbb1d7d 100644
  
        if (result.success) {
 diff --git a/src/tools/component.ts b/src/tools/component.ts
-index d3737bc..c14b26d 100644
+index d3737bc..b227256 100644
 --- a/src/tools/component.ts
 +++ b/src/tools/component.ts
-@@ -803,6 +803,58 @@ export function registerComponentTools(server: McpServer, callKicadScript: Comma
+@@ -212,20 +212,27 @@ export function registerComponentTools(server: McpServer, callKicadScript: Comma
+   // ------------------------------------------------------
+   server.tool(
+     "edit_component",
+-    "Edit properties of an existing PCB component (reference, value, footprint).",
++    "Edit properties of an existing PCB component (reference, value, footprint, pad nets).",
+     {
+       reference: z.string().describe("Reference designator of the component (e.g., 'R5')"),
+       newReference: z.string().optional().describe("Optional new reference designator"),
+       value: z.string().optional().describe("Optional new component value"),
+       footprint: z.string().optional().describe("Optional new footprint"),
++      padNets: z
++        .record(z.string(), z.string())
++        .optional()
++        .describe(
++          "Optional pad nets: {pad number: net name}, '*' for every pad, '' for no net, e.g. {'*': 'GND'} for a plated mounting hole. The net is created if the board has none of that name. Non-plated (NPTH) pads are skipped. Update PCB from Schematic (F8) may reset the nets of footprints that have a symbol.",
++        ),
+     },
+-    async ({ reference, newReference, value, footprint }) => {
++    async ({ reference, newReference, value, footprint, padNets }) => {
+       logger.debug(`Editing component: ${reference}`);
+       const result = await callKicadScript("edit_component", {
+         reference,
+         newReference,
+         value,
+         footprint,
++        padNets,
+       });
+ 
+       return {
+@@ -803,6 +810,58 @@ export function registerComponentTools(server: McpServer, callKicadScript: Comma
      },
    );
  
@@ -9509,10 +10046,18 @@ index d9942f7..2429611 100644
    server.tool(
      "export_dsn",
 diff --git a/src/tools/registry.ts b/src/tools/registry.ts
-index 902f7b1..495b53e 100644
+index 902f7b1..a95979d 100644
 --- a/src/tools/registry.ts
 +++ b/src/tools/registry.ts
-@@ -59,6 +59,7 @@ export const toolCategories: ToolCategory[] = [
+@@ -36,6 +36,7 @@ export const toolCategories: ToolCategory[] = [
+       "list_graphics",
+       "delete_graphic",
+       "update_graphic",
++      "edit_board_text",
+       "add_zone",
+       "get_board_extents",
+       "get_board_2d_view",
+@@ -59,6 +60,7 @@ export const toolCategories: ToolCategory[] = [
        "get_ratsnest",
        "estimate_airwire_lengths",
        "check_placement_clearance",
@@ -9520,7 +10065,7 @@ index 902f7b1..495b53e 100644
        "move_footprint_text",
        "add_component_annotation",
        "group_components",
-@@ -143,6 +144,8 @@ export const toolCategories: ToolCategory[] = [
+@@ -143,6 +145,8 @@ export const toolCategories: ToolCategory[] = [
        "export_schematic_pdf",
        "add_schematic_text",
        "list_schematic_texts",
@@ -9529,7 +10074,7 @@ index 902f7b1..495b53e 100644
      ],
    },
    {
-@@ -235,7 +238,8 @@ export const toolCategories: ToolCategory[] = [
+@@ -235,7 +239,8 @@ export const toolCategories: ToolCategory[] = [
    {
      name: "autoroute",
      description: "Freerouting autorouter: automatic PCB routing via Specctra DSN/SES",
@@ -10071,6 +10616,323 @@ index 0000000..009b312
 +
 +        with pytest.raises(ValueError):
 +            parse_schematic_color("reddish")
+diff --git a/tests/test_powerlab_board_text.py b/tests/test_powerlab_board_text.py
+new file mode 100644
+index 0000000..677d178
+--- /dev/null
++++ b/tests/test_powerlab_board_text.py
+@@ -0,0 +1,311 @@
++"""PowerLab patch: board text can be listed, edited and deleted (#70).
++
++Text placed with add_board_text could never be changed or removed: live, list_graphics and
++delete_graphic read only KiCad's shapes (#56), and no tool edited board text at all. These
++tests pin the live handlers with kipy objects and the offline ones with mocks, plus a real
++pcbnew round trip when KICAD_USE_REAL_PCBNEW=1.
++"""
++
++import os
++import sys
++from pathlib import Path
++from typing import Any
++from unittest.mock import MagicMock, patch
++
++import pytest
++
++sys.path.insert(0, str(Path(__file__).parent.parent / "python"))
++
++
++def _iface() -> Any:
++    with patch("kicad_interface.USE_IPC_BACKEND", True):
++        from kicad_interface import KiCADInterface
++
++        iface = KiCADInterface.__new__(KiCADInterface)
++    iface.use_ipc = True
++    iface.board = MagicMock()
++    iface.ipc_board_api = MagicMock()
++    iface.session_backend = "ipc"
++    iface.session_board_path = None
++    return iface
++
++
++def _live_text(value="Rev A", x=10.0, y=5.0, layer="BL_F_SilkS", size=1.0):
++    from kipy.board_types import BoardText
++    from kipy.geometry import Vector2
++    from kipy.proto.board.board_types_pb2 import BoardLayer
++
++    text = BoardText()
++    text._proto.id.value = "text-1"
++    text.value = value
++    text.position = Vector2.from_xy(int(x * 1e6), int(y * 1e6))
++    text.layer = BoardLayer.Value(layer)
++    text.attributes.size = Vector2.from_xy(int(size * 1e6), int(size * 1e6))
++    text.attributes.stroke_width = 150_000
++    return text
++
++
++def _live_board(shapes=(), texts=()):
++    board = MagicMock()
++    board.get_shapes.return_value = list(shapes)
++    board.get_text.return_value = list(texts)
++    return board
++
++
++def test_edit_board_text_is_a_live_command():
++    from kicad_interface import KiCADInterface
++
++    assert KiCADInterface.IPC_CAPABLE_COMMANDS["edit_board_text"] == "_ipc_edit_board_text"
++    assert "edit_board_text" in KiCADInterface._BOARD_MUTATING_COMMANDS
++
++
++def test_live_list_graphics_lists_text():
++    iface = _iface()
++    iface.ipc_board_api._get_board.return_value = _live_board(texts=[_live_text()])
++    result = iface._ipc_list_graphics({})
++    assert result["success"] and result["count"] == 1
++    entry = result["graphics"][0]
++    assert entry["uuid"] == "text-1"
++    assert entry["type"] == "BoardText"
++    assert entry["text"] == "Rev A"
++    assert entry["layer"] == "F.SilkS"
++    assert entry["position"] == {"x": 10.0, "y": 5.0, "unit": "mm"}
++    assert entry["size"] == 1.0
++    assert entry["thickness"] == 0.15
++
++
++def test_live_list_graphics_layer_filter_takes_kicad_names():
++    iface = _iface()
++    iface.ipc_board_api._get_board.return_value = _live_board(texts=[_live_text()])
++    assert iface._ipc_list_graphics({"layer": "F.Silkscreen"})["count"] == 1
++    assert iface._ipc_list_graphics({"layer": "F.SilkS"})["count"] == 1
++    assert iface._ipc_list_graphics({"layer": "B.SilkS"})["count"] == 0
++
++
++def test_live_delete_graphic_deletes_text():
++    iface = _iface()
++    text = _live_text()
++    board = _live_board(texts=[text])
++    iface.ipc_board_api._get_board.return_value = board
++    result = iface._ipc_delete_graphic({"uuid": "text-1"})
++    assert result["success"]
++    board.remove_items.assert_called_once_with([text])
++    board.push_commit.assert_called_once()
++
++
++def test_live_edit_board_text_changes_everything_in_one_commit():
++    from kipy.proto.board.board_types_pb2 import BoardLayer
++
++    iface = _iface()
++    text = _live_text()
++    board = _live_board(texts=[text])
++    iface.ipc_board_api._get_board.return_value = board
++    result = iface._ipc_edit_board_text(
++        {
++            "uuid": "text-1",
++            "text": "Rev B",
++            "position": {"x": 20, "y": 30, "unit": "mm"},
++            "layer": "B.Silkscreen",
++            "size": 1.5,
++            "thickness": 0.2,
++            "rotation": 90,
++            "mirrored": True,
++        }
++    )
++    assert result["success"], result
++    assert text.value == "Rev B"
++    assert (text.position.x, text.position.y) == (20_000_000, 30_000_000)
++    assert text.layer == BoardLayer.BL_B_SilkS
++    assert (text.attributes.size.x, text.attributes.size.y) == (1_500_000, 1_500_000)
++    assert text.attributes.stroke_width == 200_000
++    assert text.attributes.angle == 90
++    assert text.attributes.mirrored is True
++    board.update_items.assert_called_once_with([text])
++    board.begin_commit.assert_called_once()
++    board.push_commit.assert_called_once()
++    assert result["graphic"]["text"] == "Rev B"
++
++
++def test_live_edit_board_text_unknown_uuid_fails():
++    iface = _iface()
++    board = _live_board(texts=[_live_text()])
++    iface.ipc_board_api._get_board.return_value = board
++    result = iface._ipc_edit_board_text({"uuid": "nope", "text": "x"})
++    assert result["success"] is False
++    board.update_items.assert_not_called()
++
++
++def test_live_edit_board_text_bad_layer_changes_nothing():
++    iface = _iface()
++    board = _live_board(texts=[_live_text()])
++    iface.ipc_board_api._get_board.return_value = board
++    result = iface._ipc_edit_board_text({"uuid": "text-1", "layer": "Nowhere"})
++    assert result["success"] is False
++    board.update_items.assert_not_called()
++
++
++def test_live_add_text_keeps_size_and_rotation_and_gives_the_uuid():
++    """add_board_text live ignored `size` and `rotation` (BoardText has no `angle`)."""
++    from kicad_api.ipc_backend import IPCBoardAPI
++    from kipy.proto.board.board_types_pb2 import BoardLayer
++
++    api = IPCBoardAPI.__new__(IPCBoardAPI)
++    api._notify = MagicMock()
++    board = MagicMock()
++
++    def create(item):
++        item._proto.id.value = "new-1"
++        return [item]
++
++    board.create_items.side_effect = create
++    api._get_board = MagicMock(return_value=board)
++    assert api.add_text("Rev A", 10, 5, layer="F.Fab", size=1.5, rotation=90, thickness=0.2)
++    item = board.create_items.call_args[0][0]
++    assert item.attributes.angle == 90
++    assert item.attributes.size.x == 1_500_000
++    assert item.attributes.stroke_width == 200_000
++    assert item.layer == BoardLayer.BL_F_Fab  # it fell back to F.SilkS for any other layer
++    assert api.last_text_uuid == "new-1"
++
++
++def test_live_add_board_text_reports_the_uuid():
++    iface = _iface()
++    iface.ipc_board_api.add_text.return_value = True
++    iface.ipc_board_api.last_text_uuid = "new-1"
++    result = iface._ipc_add_text(
++        {"text": "Rev A", "position": {"x": 400, "y": 200, "unit": "mil"}, "size": 40}
++    )
++    assert result["success"] and result["uuid"] == "new-1"
++    kwargs = iface.ipc_board_api.add_text.call_args.kwargs
++    assert kwargs["x"] == pytest.approx(10.16) and kwargs["size"] == pytest.approx(1.016)
++
++
++# --- offline (SWIG) ----------------------------------------------------------
++
++
++class PCB_TEXT(MagicMock):
++    """Named like pcbnew's class: the handlers tell text from shapes by type name."""
++
++
++def _swig_text():
++    text = PCB_TEXT()
++    text.m_Uuid.AsString.return_value = "text-1"
++    text.GetLayer.return_value = 5
++    text.GetText.return_value = "Rev A"
++    text.GetPosition.return_value = MagicMock(x=10_000_000, y=5_000_000)
++    text.GetTextSize.return_value = MagicMock(x=1_000_000, y=1_000_000)
++    text.GetTextThickness.return_value = 150_000
++    text.GetTextAngleDegrees.return_value = 0.0
++    text.IsMirrored.return_value = False
++    return text
++
++
++def _swig_board(items):
++    board = MagicMock()
++    board.GetDrawings.return_value = items
++    board.GetLayerID.side_effect = lambda name: {
++        "F.SilkS": 5,
++        "F.Silkscreen": 5,
++        "B.SilkS": 7,
++        "B.Silkscreen": 7,
++    }.get(name, -1)
++    board.GetLayerName.side_effect = lambda layer: {5: "F.Silkscreen", 7: "B.Silkscreen"}[layer]
++    return board
++
++
++def test_offline_list_graphics_gives_text_details_and_filters_by_either_layer_name():
++    from commands.board.outline import BoardOutlineCommands
++
++    cmd = BoardOutlineCommands(board=_swig_board([_swig_text()]))
++    for layer in ("F.SilkS", "F.Silkscreen"):
++        result = cmd.list_graphics({"layer": layer})
++        assert result["count"] == 1, layer
++    entry = result["graphics"][0]
++    assert entry["text"] == "Rev A"
++    assert entry["size"] == 1.0
++    assert entry["thickness"] == 0.15
++    assert entry["angle"] == 0.0
++    assert entry["mirrored"] is False
++    assert cmd.list_graphics({"layer": "B.SilkS"})["count"] == 0
++
++
++def test_offline_edit_board_text():
++    from commands.board.outline import BoardOutlineCommands
++
++    text = _swig_text()
++    cmd = BoardOutlineCommands(board=_swig_board([text]))
++    with patch("commands.board.outline.pcbnew") as pcbnew:
++        pcbnew.VECTOR2I.side_effect = lambda x, y: (x, y)
++        result = cmd.edit_board_text(
++            {
++                "uuid": "text-1",
++                "text": "Rev B",
++                "position": {"x": 20, "y": 30, "unit": "mm"},
++                "layer": "B.SilkS",
++                "size": 1.5,
++                "thickness": 0.2,
++                "rotation": 90,
++                "mirrored": True,
++            }
++        )
++    assert result["success"], result
++    text.SetText.assert_called_once_with("Rev B")
++    text.SetPosition.assert_called_once_with((20_000_000, 30_000_000))
++    text.SetLayer.assert_called_once_with(7)
++    text.SetTextSize.assert_called_once_with((1_500_000, 1_500_000))
++    text.SetTextThickness.assert_called_once_with(200_000)
++    text.SetTextAngleDegrees.assert_called_once_with(90.0)
++    text.SetMirrored.assert_called_once_with(True)
++
++
++def test_offline_edit_board_text_refuses_shapes_and_unknown_layers():
++    from commands.board.outline import BoardOutlineCommands
++
++    shape = MagicMock()
++    shape.m_Uuid.AsString.return_value = "shape-1"
++    text = _swig_text()
++    cmd = BoardOutlineCommands(board=_swig_board([shape, text]))
++    assert cmd.edit_board_text({"uuid": "shape-1", "text": "x"})["success"] is False
++    assert cmd.edit_board_text({"uuid": "text-1", "layer": "Nowhere"})["success"] is False
++    text.SetLayer.assert_not_called()
++
++
++@pytest.mark.skipif(
++    os.environ.get("KICAD_USE_REAL_PCBNEW") != "1",
++    reason="real pcbnew round trip requires KICAD_USE_REAL_PCBNEW=1",
++)
++def test_offline_text_round_trip_with_real_pcbnew(tmp_path):
++    import pcbnew
++    from commands.board.outline import BoardOutlineCommands
++
++    path = str(tmp_path / "t.kicad_pcb")
++    pcbnew.SaveBoard(path, pcbnew.NewBoard(path))
++    board = pcbnew.LoadBoard(path)
++    cmd = BoardOutlineCommands(board=board)
++    added = cmd.add_text(
++        {"text": "Rev A", "position": {"x": 10, "y": 5, "unit": "mm"}, "layer": "F.SilkS"}
++    )
++    assert added["success"], added
++    uuid = added["text"]["uuid"]
++
++    listed = cmd.list_graphics({"layer": "F.SilkS"})
++    assert [g["uuid"] for g in listed["graphics"]] == [uuid]
++
++    edited = cmd.edit_board_text(
++        {"uuid": uuid, "text": "Rev B", "layer": "B.SilkS", "rotation": 90, "mirrored": True,
++         "size": 1.5, "position": {"x": 20, "y": 30}}
++    )
++    assert edited["success"], edited
++    pcbnew.SaveBoard(path, board)
++    board = pcbnew.LoadBoard(path)
++    cmd = BoardOutlineCommands(board=board)
++    (entry,) = cmd.list_graphics({})["graphics"]
++    assert entry["text"] == "Rev B"
++    assert entry["layer"] == "B.Silkscreen"
++    assert entry["angle"] == 90.0
++    assert entry["mirrored"] is True
++    assert entry["size"] == 1.5
++    assert entry["position"]["x"] == 20.0
++
++    assert cmd.delete_graphic({"uuid": uuid})["success"]
++    assert cmd.list_graphics({})["count"] == 0
 diff --git a/tests/test_powerlab_live_board_edits.py b/tests/test_powerlab_live_board_edits.py
 new file mode 100644
 index 0000000..3b62dee
@@ -10269,6 +11131,123 @@ index 0000000..3b62dee
 +    assert pad_nets == {("U1", "14"): "/MCU/IO12", ("R3", "2"): "/MCU/IO12", ("U1", "1"): "GND"}
 +    assert names == {"/MCU/IO12", "GND"}
 +    assert [Path(s).name for s in sheets] == ["top.kicad_sch", "mcu.kicad_sch"]
+diff --git a/tests/test_powerlab_pad_nets.py b/tests/test_powerlab_pad_nets.py
+new file mode 100644
+index 0000000..04dc2b6
+--- /dev/null
++++ b/tests/test_powerlab_pad_nets.py
+@@ -0,0 +1,111 @@
++"""PowerLab patch: edit_component sets pad nets (padNets), e.g. a mounting hole on GND.
++
++No tool could set the net of a pad already on the board, so plated mounting holes placed
++without a net stayed unconnected.
++"""
++
++import sys
++from pathlib import Path
++from unittest.mock import MagicMock
++
++import pytest
++
++sys.path.insert(0, str(Path(__file__).parent.parent / "python"))
++
++pytestmark = pytest.mark.unit
++
++import pcbnew as _pcbnew_stub  # noqa: E402
++
++PTH, NPTH = "PTH", "NPTH"
++
++
++def _pad(number, attribute=PTH):
++    pad = MagicMock(name=f"pad:{number}")
++    pad.GetNumber.return_value = number
++    pad.GetAttribute.return_value = attribute
++    return pad
++
++
++def _commands(pads, nets=("GND",)):
++    from commands.component import ComponentCommands
++
++    module = MagicMock(name="footprint:HOLE1")
++    module.Pads.return_value = pads
++    board = MagicMock(name="board")
++    board.FindFootprintByReference.return_value = module
++    known = {name: f"net:{name}" for name in ("",) + tuple(nets)}
++    board.FindNet.side_effect = known.get
++
++    cmd = ComponentCommands.__new__(ComponentCommands)
++    cmd.board = board
++    cmd.library_manager = MagicMock()
++    _pcbnew_stub.reset_mock()
++    _pcbnew_stub.PAD_ATTRIB_NPTH = NPTH
++    _pcbnew_stub.NETINFO_ITEM.side_effect = lambda _board, name: f"new:{name}"
++    return cmd, board
++
++
++def test_star_puts_every_plated_pad_on_the_net():
++    pads = [_pad("1"), _pad("1"), _pad("", NPTH)]
++    cmd, _board = _commands(pads)
++
++    result = cmd.edit_component({"reference": "HOLE1", "padNets": {"*": "GND"}})
++
++    assert result["success"] is True
++    pads[0].SetNet.assert_called_once_with("net:GND")
++    pads[1].SetNet.assert_called_once_with("net:GND")
++    pads[2].SetNet.assert_not_called()
++    assert result["padNets"] == [{"pad": "1", "net": "GND"}, {"pad": "1", "net": "GND"}]
++
++
++def test_named_pad_wins_over_star_and_empty_clears():
++    pads = [_pad("1"), _pad("2"), _pad("3")]
++    cmd, _board = _commands(pads)
++
++    result = cmd.edit_component({"reference": "J9", "padNets": {"*": "GND", "2": ""}})
++
++    assert result["success"] is True
++    pads[0].SetNet.assert_called_once_with("net:GND")
++    pads[1].SetNet.assert_called_once_with("net:")
++    pads[2].SetNet.assert_called_once_with("net:GND")
++
++
++def test_missing_net_is_created():
++    pads = [_pad("1")]
++    cmd, board = _commands(pads, nets=())
++
++    result = cmd.edit_component({"reference": "HOLE1", "padNets": {"1": "CHASSIS"}})
++
++    assert result["success"] is True
++    board.Add.assert_called_once_with("new:CHASSIS")
++    pads[0].SetNet.assert_called_once_with("new:CHASSIS")
++
++
++def test_unknown_pad_fails_before_anything_changes():
++    pads = [_pad("1")]
++    cmd, _board = _commands(pads)
++
++    result = cmd.edit_component(
++        {"reference": "HOLE1", "value": "M3", "padNets": {"2": "GND"}}
++    )
++
++    assert result["success"] is False
++    assert "no pad 2" in result["errorDetails"]
++    cmd.board.FindFootprintByReference.return_value.SetValue.assert_not_called()
++    pads[0].SetNet.assert_not_called()
++
++
++def test_npth_only_footprint_fails():
++    pads = [_pad("", NPTH)]
++    cmd, _board = _commands(pads)
++
++    result = cmd.edit_component({"reference": "HOLE1", "padNets": {"*": "GND"}})
++
++    assert result["success"] is False
++    pads[0].SetNet.assert_not_called()
++
++
++def test_edit_component_is_still_done_on_the_saved_file_live():
++    from kicad_interface import KiCADInterface
++
++    assert "edit_component" in KiCADInterface.LIVE_VIA_FILE_COMMANDS
 diff --git a/tests/test_schema_param_names.py b/tests/test_schema_param_names.py
 index 995406c..37ebbed 100644
 --- a/tests/test_schema_param_names.py

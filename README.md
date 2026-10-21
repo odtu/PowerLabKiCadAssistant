@@ -10,6 +10,22 @@ It runs [Claude Code](https://docs.claude.com/claude-code) on your computer with
 
 <sub>Example sessions (illustrative). Left: start screen with suggestions and a library update. Middle: Claude routes the board, then renders and checks it. Right: a question about an attached datasheet, with another file ready to send. The board is the lab's open-source [Voltage Sensor Card](https://github.com/odtu/Powerlab/tree/master/Hardware/Voltage-Sensor-Board).</sub>
 
+## What it looks like
+
+**Placement starts with a block plan.** Claude draws the board's functional blocks on its outline and asks before it places anything. You can drag blocks, turn them or move them to the other side; then it places the parts block by block.
+
+![Placement of a round 4-layer motor-drive test board: parts piled beside the board, the block plan fades in, then each block's parts move into place](docs/images/placement.gif)
+
+<p align="center"><img src="docs/images/block-plan.png" width="70%" alt="The block plan card in the panel: the round board with its blocks, top side solid and bottom side hatched, the gate-drive links with their lengths, and the block list"></p>
+
+**Routing, by hand or with the PowerLab router.** The router applies the lab rules while it routes: power rails first, GND pours kept whole, few corners and vias, pads entered at their centres.
+
+![The PowerLab router's result on a 2-layer ESP32 test board, drawn net by net from the ratsnest, power first, then the GND pours](docs/images/powerlab-router.gif)
+
+![The same ESP32 board routed by Claude by hand and by the PowerLab router. By hand: 60 vias, 6 sharp corners, 15 off-centre pad entries, GND pours in 9 + 3 pieces. Router: 30 vias, 0 sharp corners, 3 off-centre pad entries, GND pours in 3 + 2 pieces](docs/images/hand-vs-router.png)
+
+<sub>The animations draw each board's finished parts and tracks in order; they show the result, not the time it took. The numbers come from `tools/route_quality.py` (signal nets).</sub>
+
 ---
 
 ## ⚠️ Read this first
@@ -135,6 +151,7 @@ Skills teach Claude how the lab does specific jobs. The installer copies them to
 |---|---|---|
 | `powerlab-board-requirements` | Before a new board is started, Claude asks for its requirements in a few short rounds of answer buttons (every question also has **Other…**, a box for your own answer): what it does, size, layers and layout, working temperature, cost and quantity, mounting and mechanics, and, if you need them, special conditions like altitude, EMI/EMC targets, humidity, vibration or a safety standard. You can attach a hand sketch, an enclosure drawing or a block diagram, add notes in your own words, or answer "use the lab defaults". The answers go into `design-requirements.md` in your project, with what they mean for the design (clearances, layers, part ratings, outline), and Claude keeps to them in later steps. | *Start a new board from scratch* |
 | `powerlab-pcb-design-rules` | The lab's [PCB design rules](https://github.com/odtu/Powerlab/blob/master/KiCAD/PCB_DESIGN_RULES.md) (without the lab's drawing sheet, logo and QR code: boards get a small "Designed with PowerLab KiCad Assistant and Claude" silkscreen text instead). It covers the PCBWay standard-price spec, DRC constraints, net classes, schematic rules, and placement, routing, via and pour rules. It also carries a **review handbook** of 233 layout rules, collected from manufacturer application notes, fab capability pages and expert reviews of real boards, each with a severity, what it looks like on a board, the fix and its sources. Claude follows it for any schematic or PCB design work. | *Set up the design rules for this board* |
+| `powerlab-placement` | Before placing any part, Claude shows a block plan in the panel: the board, in its real shape from Edge.Cuts (round, rectangular or any other), with each functional block where it would go, top side solid and bottom side hatched, and how long the important connections will be. Board texts (board info, company text) and logos are on the plan too, so you can place them the same way. Hover a block to light it up; click it and KiCad selects its parts in the PCB editor and the schematic. Drag blocks to where you want them (the important connections, like the gate lines, follow and show the gap as you drag), turn a block (90° and 45° buttons, or type any angle), or move one to the other side with **Move to bottom side** / **Move to top side**, then press **Send moves to Claude**: Claude checks your plan and updates it. Gate drive and hot loops get the shortest distances: the gate driver sits in the middle of the MOSFETs it drives, and the MCU moves to the free space near it. It shows you the plan and asks whether to move anything; only then does it place the parts, block by block, and run the design review. | *Do the placement* |
 | `powerlab-visual-review` | Claude renders the board (2D layer views in colour, plus 3D) after every placement or routing step. It looks at each view against the design rules, fixes what it sees, and shows you the views in the panel. Renders go to `%TEMP%\PowerLabAssistant\views` and are cleaned after a week. | *Show me the routing* |
 | `powerlab-design-review` | When Claude finishes placing or routing a board, it reviews its own work: DRC (zones refilled, every track error, schematic parity), rendered views, the lab rules and the review handbook. It fixes what it can on its own, checks again, and repeats until nothing it can fix is left (at most 5 rounds). What needs your decision or information (a connector to move, a current it doesn't know, a track only you can delete in KiCad) goes on a *Needs you* list. The final review shows in the panel: the verdict, open findings by severity, what was fixed, and the board views. Click any place in it (marked ⌖) and KiCad selects those parts or that net in the PCB editor and zooms there; the schematic editor follows, on the right sheet. It is also saved as `design-review\design-review.pdf` in your project (**Open PDF**). | *Review the board* |
 | `powerlab-autoroute` | Routes the board. Claude first asks how: with the **PowerLab router** (recommended), or by hand. Either way it first sets the lab design rules and net classes (power tracks sized for their current) and keeps hand-routed, locked copper. The PowerLab router runs on your computer in KiCad's Python and applies the lab rules while it routes: power rails first, then a copper pour round each rail; GND pours kept whole, with thermal reliefs; no tracks under inductors; escape room at fine-pitch pins; buses as parallel runs; few corners and vias; pads entered at their centres; a net's later tracks join its earlier ones instead of running beside them; and GND stitching vias at the end. With the board open in KiCad, you watch the tracks appear while it routes. Claude then routes whatever the router left by hand, fixes the DRC errors, and runs the design review without asking. | *Route the board* |
@@ -144,6 +161,8 @@ A run takes about 10–15 minutes on a 2-layer board with ~50 connections; it ru
 ## The METU Power Lab library
 
 The panel keeps your library clone up to date. When new parts are merged on GitHub, a bar offers **Update**.
+
+![Some of the lab's parts: gate driver, MOSFET, GaN power stage, buck converter, current sense amplifier and magnetic encoder symbols, with footprints below them](docs/images/libraries.png)
 
 Claude creates library parts in your clone, following [`HowToCreateNewDesign/DesignRules.md`](https://github.com/odtu/PowerLabKiCadLibraries/blob/main/HowToCreateNewDesign/DesignRules.md). When you have new or changed parts, the bar offers **Share**. Share:
 

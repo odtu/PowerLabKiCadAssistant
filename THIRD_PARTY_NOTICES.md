@@ -41,5 +41,7 @@ The installer downloads these from their official sources into `%LOCALAPPDATA%\P
 |---|---|
 | [actions/checkout](https://github.com/actions/checkout), [actions/setup-python](https://github.com/actions/setup-python), [actions/upload-artifact](https://github.com/actions/upload-artifact), [actions/github-script](https://github.com/actions/github-script) | MIT |
 | [anthropics/claude-code-action](https://github.com/anthropics/claude-code-action) | MIT |
+| [NumPy](https://numpy.org/) and [Pillow](https://pypi.org/project/pillow/), installed on the runners for the tests (the versions KiCad 10 ships) | BSD-3-Clause; MIT-CMU |
+| [KiCAD-MCP-Server](https://github.com/mixelpixx/KiCAD-MCP-Server) at the pinned commit, checked out by the auto-fix workflow so Claude can fix it | MIT |
 
 When you add a dependency, add it here with its license.

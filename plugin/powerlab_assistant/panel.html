@@ -219,6 +219,88 @@ a.loc:hover { text-decoration-style: solid; }
 .review .body img { display: block; width: 100%; max-height: 320px; object-fit: contain; cursor: zoom-in; border-radius: 6px; background: var(--surface-2); }
 .review .body figcaption { font-size: 11px; color: var(--muted); padding-top: 3px; }
 .review .body .missing { color: var(--err); font-size: 12px; }
+/* the block plan (powerlab-placement): click a block to select its parts in KiCad */
+.plan {
+  margin: 0 0 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface);
+  animation: rise .18s ease-out; overflow: hidden; box-shadow: var(--shadow);
+}
+.plan .head { display: flex; align-items: center; gap: 8px; padding: 9px 10px 8px; }
+.plan .head .t { font-weight: 600; font-size: 13px; }
+.plan .head .v { font-size: 11.5px; color: var(--muted); }
+.plan .seg { margin-left: auto; display: flex; background: var(--surface-2); border-radius: 7px; padding: 2px; flex: none; }
+.plan .seg button { border: 0; background: transparent; font-size: 11px; padding: 2px 8px; border-radius: 5px; color: var(--muted); }
+.plan .seg button.on { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.15); }
+.plan .canvas {
+  position: relative; margin: 0 8px; border-radius: 9px; overflow: hidden;
+  background: radial-gradient(120% 90% at 50% 40%, #13213a 0%, #0a1222 70%, #070d19 100%);
+}
+.plan .plan-svg { display: block; width: 100%; height: auto; max-height: 460px; font-family: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif; }
+.plan .board { fill: #0e1a2e; }
+.plan .grid { stroke: #7f9cc4; stroke-opacity: .07; stroke-width: .12; }
+.plan .edge { fill: none; stroke: #c8d6ea; stroke-width: .35; stroke-opacity: .85; }
+.plan .cut { fill: #070d19; stroke: #c8d6ea; stroke-width: .3; stroke-opacity: .7; }
+.plan .hole { fill: #070d19; stroke: #e5c07b; stroke-width: .45; }
+.plan .keepout { fill: #8aa0bf; fill-opacity: .07; stroke: #8aa0bf; stroke-opacity: .35; stroke-width: .2; stroke-dasharray: .8 .6; pointer-events: none; }
+.plan .blk { cursor: pointer; outline: none; transition: opacity .15s; }
+.plan .blk .body { stroke-width: .35; stroke-linejoin: round; transition: stroke-width .12s, fill-opacity .12s; }
+.plan .blk.top .body { fill-opacity: .16; }
+.plan .blk .nm { fill: #f3f6fb; font-weight: 600; text-anchor: middle; letter-spacing: .02em; pointer-events: none; }
+.plan .blk .dt { fill: #b7c3d6; text-anchor: middle; pointer-events: none; }
+.plan .blk:hover .body, .plan .blk.hot .body { stroke-width: .6; filter: url(#glow); }
+.plan .blk.top:hover .body, .plan .blk.top.hot .body { fill-opacity: .32; }
+.plan .blk.sel .body { stroke: #ffffff; stroke-width: .7; filter: url(#glow); }
+.plan .link, .plan .pill-g { pointer-events: none; }
+.plan .pill-g.empty { display: none; }
+.plan .pill-g.live .pill { fill: #101c33; stroke-width: .3; }
+.plan .blk .base { fill: #0e1a2e; }
+.plan .blk[data-kind="text"] .body, .plan .blk[data-kind="logo"] .body { stroke-width: .25; stroke-dasharray: .7 .5; fill-opacity: .08; }
+.plan .blk[data-kind="text"] .nm, .plan .blk[data-kind="logo"] .nm { fill: #efe6c4; font-weight: 500; letter-spacing: .04em; }
+.plan .blk.drag { cursor: grabbing; }
+.plan .blk.drag .body { stroke: #ffffff; stroke-width: .6; fill-opacity: .4; }
+.plan .snap line { stroke: #ff6bd6; stroke-width: .3; stroke-dasharray: 1.2 .8; pointer-events: none; }
+.plan .row .s { cursor: pointer; background: transparent; font-family: inherit; }
+.plan .row .s:hover { color: var(--text); border-color: var(--muted); }
+.plan .moves { margin: 6px 10px 0; padding: 8px 10px; border-radius: 9px; background: color-mix(in srgb, var(--accent) 8%, var(--surface-2)); }
+.plan .moves .mt { font-size: 12px; font-weight: 600; }
+.plan .moves ul { margin: 4px 0 6px; padding-left: 16px; font-size: 11.5px; color: var(--muted); }
+.plan .moves .mb { display: flex; gap: 6px; justify-content: flex-end; }
+.plan .moves .btn { padding: 2px 10px; font-size: 12px; }
+.plan .selbar { display: none; align-items: center; gap: 8px; margin: 6px 8px 0; padding: 6px 8px; border-radius: 9px; background: var(--surface-2); }
+.plan .selbar.open { display: flex; }
+.plan .selbar .dot { flex: none; width: 10px; height: 10px; border-radius: 3px; }
+.plan .selbar .dot.b { background: transparent !important; border: 1.5px dashed; }
+.plan .selbar .n { font-size: 12.5px; font-weight: 600; }
+.plan .selbar .w { font-size: 11.5px; color: var(--muted); }
+.plan .selbar { flex-wrap: wrap; }
+.plan .selbar .w { margin-right: auto; }
+.plan .selbar .rot { flex-basis: 100%; display: flex; align-items: center; gap: 5px; padding-top: 4px; border-top: 1px solid var(--border); margin-top: 2px; }
+.plan .selbar .rot span { font-size: 11.5px; color: var(--muted); margin-right: 2px; }
+.plan .selbar .rot input { width: 64px; font: inherit; font-size: 12px; padding: 1px 6px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); color: var(--text); }
+.plan .selbar .btn { padding: 2px 10px; font-size: 12px; flex: none; }
+.plan .pill { fill: #0a1222; fill-opacity: .92; stroke-width: .18; }
+.plan .pt { text-anchor: middle; font-weight: 600; pointer-events: none; }
+.plan svg.only-top .blk.bottom, .plan svg.only-bottom .blk.top { opacity: .12; pointer-events: none; }
+.plan svg.only-top .keepout:not([data-sides~="top"]), .plan svg.only-bottom .keepout:not([data-sides~="bottom"]) { display: none; }
+.plan svg.dim .blk:not(.hot):not(.sel) { opacity: .35; }
+.plan svg.dim .link, .plan svg.dim .pill-g { opacity: .5; }
+.plan .legend { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 7px 12px 0; font-size: 11px; color: var(--muted); }
+.plan .legend i { display: inline-block; width: 14px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; border: 1.5px solid var(--muted); }
+.plan .legend i.b { border-style: dashed; background: repeating-linear-gradient(45deg, transparent 0 2px, color-mix(in srgb, var(--muted) 45%, transparent) 2px 3px); }
+.plan .legend i.g { border: 0; height: 3px; border-radius: 2px; background: #e0a800; width: 16px; vertical-align: 2px; }
+.plan .rows { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; padding: 8px 10px 4px; }
+.plan .row { display: flex; align-items: center; gap: 7px; padding: 4px 6px; border-radius: 7px; cursor: pointer; min-width: 0; }
+.plan .row:hover, .plan .row.hot { background: var(--surface-2); }
+.plan .row.sel { background: color-mix(in srgb, var(--accent) 12%, var(--surface-2)); }
+.plan .row .dot { flex: none; width: 9px; height: 9px; border-radius: 3px; }
+.plan .row .dot.b { background: transparent !important; border: 1.5px dashed; }
+.plan .row .n { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.plan .row .c { margin-left: auto; flex: none; font-size: 10.5px; color: var(--muted); }
+.plan .row .s { flex: none; font-size: 9.5px; letter-spacing: .04em; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
+.plan .notes { margin: 4px 10px 0; padding: 0 0 0 16px; font-size: 12px; color: var(--text); }
+.plan .notes li { margin: 2px 0; }
+.plan .hint { font-size: 11px; color: var(--muted); padding: 6px 12px 10px; }
+.plan .err { font-size: 11.5px; color: var(--warn); padding: 0 10px 8px; }
+@media (max-width: 380px) { .plan .rows { grid-template-columns: 1fr; } }
 .typing { padding: 4px 2px 12px; }
 .typing .row { display: flex; align-items: center; gap: 4px; }
 .typing span { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--muted); animation: blink 1.2s infinite; }
@@ -438,6 +520,324 @@ function add(el) {
   return el;
 }
 
+// The block plan (powerlab-placement). The panel builds the drawing and escapes all of its
+// text. A click on a block (or its row) selects that block's parts in KiCad; a drag moves
+// the block, and the panel writes the move into the plan file and redraws the card.
+// The user's moves reach Claude when they press "Send moves to Claude".
+function planCard(e, state) {
+  state = state || { view: 'both', moves: [], pending: null };
+  const card = div('plan');
+  card.dataset.path = e.path || '';
+  card._state = state;
+  const head = div('head');
+  const words = div('');
+  words.append(div('t', esc(e.title || 'Block plan')));
+  const sides = new Set((e.blocks || []).map(b => b.side));
+  words.append(div('v', `${(e.blocks || []).length} blocks · click to select in KiCad · drag to move`));
+  head.append(words);
+  card.append(head);
+  if (e.error) { card.append(div('err', esc(e.error))); return card; }
+  const canvas = div('canvas', e.svg || '');
+  const svg = canvas.querySelector('svg');
+  card.append(canvas);
+  const setView = k => {
+    state.view = k;
+    if (!svg) return;
+    svg.classList.toggle('only-top', k === 'top');
+    svg.classList.toggle('only-bottom', k === 'bottom');
+  };
+  if (sides.size > 1 && svg) {
+    const seg = div('seg');
+    [['both', 'Both'], ['top', 'Top'], ['bottom', 'Bottom']].forEach(([k, label]) => {
+      const b = document.createElement('button');
+      b.textContent = label; b.className = k === state.view ? 'on' : '';
+      b.onclick = () => { seg.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); setView(k); };
+      seg.append(b);
+    });
+    head.append(seg);
+  }
+  setView(state.view);
+  const sendMove = (move, undo) => {
+    if (!undo) state.pending = move;
+    post({ type: 'plan_move', path: e.path, moves: [move], undo: !!undo });
+  };
+  const legend = div('legend');
+  legend.innerHTML = '<span><i></i>top side</span><span><i class="b"></i>bottom side</span>' +
+    ((e.links || []).some(l => l.kind === 'gate') ? '<span><i class="g"></i>gate drive</span>' : '');
+  card.append(legend);
+  const rows = div('rows');
+  const parts = {};  // block id -> [svg group, list row]
+  (svg ? svg.querySelectorAll('g.blk') : []).forEach(g => { parts[g.dataset.id] = [g, null]; });
+  (e.blocks || []).forEach(b => {
+    const r = div('row');
+    const dot = div('dot' + (b.side === 'bottom' ? ' b' : ''));
+    dot.style.background = b.colour; dot.style.borderColor = b.colour;
+    const n = div('n'); n.textContent = b.name; n.title = b.detail || b.name;
+    const s = document.createElement('button');
+    s.className = 's'; s.textContent = b.side === 'bottom' ? 'BOT' : 'TOP';
+    s.title = `Move ${b.name} to the ${b.side === 'bottom' ? 'top' : 'bottom'} side`;
+    s.onclick = ev => {
+      ev.stopPropagation();
+      sendMove({ id: b.id, side: b.side === 'bottom' ? 'top' : 'bottom', prev: b.side });
+    };
+    const silk = b.kind === 'text' || b.kind === 'logo';  // board text and logos, not parts
+    const c = div('c'); c.textContent = b.count && !silk ? `${b.count} part${b.count > 1 ? 's' : ''}` : silk ? 'silkscreen' : '';
+    r.append(dot, n, s, c);
+    rows.append(r);
+    (parts[b.id] = parts[b.id] || [null, null])[1] = r;
+    r.dataset.loc = b.loc || '';
+  });
+  const hot = (id, on) => {
+    const [g, r] = parts[id] || [];
+    if (g) g.classList.toggle('hot', on);
+    if (r) r.classList.toggle('hot', on);
+    if (svg) svg.classList.toggle('dim', on && !!g);
+  };
+  // The selected block's bar: its name, side and the button that moves it to the other side.
+  const selbar = div('selbar');
+  canvas.after(selbar);
+  const showSel = id => {
+    Object.entries(parts).forEach(([k, [g, r]]) => {
+      if (g) g.classList.toggle('sel', k === id);
+      if (r) r.classList.toggle('sel', k === id);
+    });
+    selbar.textContent = '';
+    const b = (e.blocks || []).find(x => x.id === id);
+    selbar.classList.toggle('open', !!b);
+    if (!b) return;
+    const other = b.side === 'bottom' ? 'top' : 'bottom';
+    const dot = div('dot' + (b.side === 'bottom' ? ' b' : ''));
+    dot.style.background = b.colour; dot.style.borderColor = b.colour;
+    const n = div('n'); n.textContent = b.name;
+    const where = div('w'); where.textContent = `${b.side} side` + (b.count ? ` · ${b.count} parts` : '');
+    const flip = document.createElement('button');
+    flip.className = 'btn'; flip.textContent = other === 'bottom' ? 'Move to bottom side ↓' : 'Move to top side ↑';
+    flip.onclick = () => sendMove({ id: b.id, side: other, prev: b.side });
+    selbar.append(dot, n, where, flip);
+    const g = parts[id] && parts[id][0];
+    if (g && g.dataset.turn) {
+      // Boxes and polygons turn: 90° and 45° first (§3.2), then any angle typed in.
+      const rot = div('rot');
+      const lab = document.createElement('span'); lab.textContent = 'Rotate';
+      rot.append(lab);
+      [[90, '↻ 90°'], [45, '↻ 45°'], [-45, '↺ 45°']].forEach(([a, label]) => {
+        const bt = document.createElement('button');
+        bt.className = 'btn'; bt.textContent = label;
+        bt.title = `Turn ${b.name} ${Math.abs(a)}° ${a > 0 ? 'clockwise' : 'counter-clockwise'}`;
+        bt.onclick = () => sendMove({ id: b.id, rot: a });
+        rot.append(bt);
+      });
+      const inp = document.createElement('input');
+      inp.type = 'number'; inp.min = '-360'; inp.max = '360'; inp.step = '0.5'; inp.placeholder = 'any °';
+      inp.title = 'Any angle in degrees: positive turns clockwise, negative counter-clockwise';
+      const go = document.createElement('button');
+      go.className = 'btn'; go.textContent = 'Turn';
+      go.onclick = () => {
+        const a = parseFloat(inp.value);
+        if (isFinite(a) && a && Math.abs(a) <= 360) sendMove({ id: b.id, rot: a });
+        else inp.focus();
+      };
+      inp.addEventListener('keydown', k => { if (k.key === 'Enter') go.click(); });
+      rot.append(inp, go);
+      selbar.append(rot);
+    }
+  };
+  const pick = id => {
+    state.sel = id;
+    showSel(id);
+    const [g, r] = parts[id] || [];
+    const loc = (g && g.dataset.loc) || (r && r.dataset.loc);
+    if (loc) post({ type: 'locate', target: loc });
+  };
+  if (state.sel) showSel(state.sel);
+  const toSvg = ev => {
+    const p = svg.createSVGPoint(); p.x = ev.clientX; p.y = ev.clientY;
+    return p.matrixTransform(svg.getScreenCTM().inverse());
+  };
+  const half = v => Math.round(v * 2) / 2;  // drags snap to 0.5 mm / 0.5 degree
+  // Near the board's lines they snap to those instead: a block's side to the board's edge, its
+  // middle to the board's middle lines, so it lands at the middle of an edge, in a corner or at
+  // the centre. A sector's middle snaps to 45° steps round its centre. Alt drags freely.
+  const board = svg && svg.dataset.board ? svg.dataset.board.split(' ').map(Number) : null;
+  const guides = svg && svg.querySelector('g.snap');
+  const guide = (x1, y1, x2, y2) => {
+    const l = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    [['x1', x1], ['y1', y1], ['x2', x2], ['y2', y2]].forEach(([k, v]) => l.setAttribute(k, v));
+    guides.append(l);
+  };
+  const snapAxis = (d, lo, hi, b0, b1, tol) => {  // the shift that lines lo..hi up with b0..b1
+    let best = null;
+    [[b0 - lo, b0], [(b0 + b1 - lo - hi) / 2, (b0 + b1) / 2], [b1 - hi, b1]].forEach(([s, at]) => {
+      if (Math.abs(s - d) <= tol && (!best || Math.abs(s - d) < Math.abs(best[0] - d))) best = [Math.round(s * 100) / 100, at];
+    });
+    return best;
+  };
+  // The links of a dragged block follow it, with the gap to the other block measured live
+  // (edge to edge, like the panel measures it after the drop).
+  const ptsOf = g => g._pts || (g._pts = (g.dataset.pts || '').split(' ').filter(Boolean).map(s => s.split(',').map(Number)));
+  const inside = (p, poly) => {
+    let hit = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const [x0, y0] = poly[i], [x1, y1] = poly[j];
+      if ((y0 > p[1]) !== (y1 > p[1]) && p[0] < (x1 - x0) * (p[1] - y0) / (y1 - y0) + x0) hit = !hit;
+    }
+    return hit;
+  };
+  const gapOf = (a, b) => {
+    if (!a.length || !b.length) return null;
+    if (a.some(p => inside(p, b)) || b.some(p => inside(p, a))) return 0;
+    let m = Infinity;
+    for (const p of a) for (const q of b) { const d = (p[0] - q[0]) ** 2 + (p[1] - q[1]) ** 2; if (d < m) m = d; }
+    return Math.sqrt(m);
+  };
+  const baseLabel = t => t.replace(/\s*·\s*(overlap|stacked|[\d.]+ mm gap)$/, '').replace(/[\s·:]*[~≈]?\s*\d+(\.\d+)?\s*(mm)?(\s*gap)?\s*$/, '');
+  const follow = (id, tf) => {
+    if (!svg) return;
+    const g = parts[id] && parts[id][0];
+    const moved = ptsOf(g).map(tf);
+    const anchor = tf([+g.dataset.ax, +g.dataset.ay]);
+    svg.querySelectorAll('line.link').forEach(line => {
+      const from = line.dataset.from, to = line.dataset.to;
+      if (from !== id && to !== id) return;
+      const other = parts[from === id ? to : from];
+      if (!other || !other[0]) return;
+      const og = other[0];
+      if (from === id) { line.setAttribute('x1', anchor[0]); line.setAttribute('y1', anchor[1]); }
+      else { line.setAttribute('x2', anchor[0]); line.setAttribute('y2', anchor[1]); }
+      const pill = svg.querySelector(`g.pill-g[data-i="${line.dataset.i}"]`);
+      if (!pill) return;
+      const gap = gapOf(moved, ptsOf(og));
+      const base = baseLabel(pill.dataset.label || '');
+      const text = pill.querySelector('text'), rect = pill.querySelector('rect');
+      const stacked = g.dataset.side !== og.dataset.side;  // over each other on the two sides
+      text.textContent = (base ? base + ' · ' : '') +
+        (gap === 0 ? (stacked ? 'stacked' : 'overlap') : `${gap.toFixed(1)} mm gap`);
+      pill.classList.remove('empty'); pill.classList.add('live');
+      const x1 = +line.getAttribute('x1'), y1 = +line.getAttribute('y1');
+      const x2 = +line.getAttribute('x2'), y2 = +line.getAttribute('y2');
+      const mx = (x1 + x2) / 2, my = (y1 + y2) / 2, w = text.getComputedTextLength() + 1.4;
+      text.setAttribute('x', mx); text.setAttribute('y', my + 0.52);
+      rect.setAttribute('x', mx - w / 2); rect.setAttribute('y', my - 1.13); rect.setAttribute('width', w);
+    });
+  };
+  Object.entries(parts).forEach(([id, [g, r]]) => {
+    [g, r].forEach(el => {
+      if (!el) return;
+      el.addEventListener('mouseenter', () => hot(id, true));
+      el.addEventListener('mouseleave', () => hot(id, false));
+      el.addEventListener('click', () => {
+        if (el.dataset.dragged) { delete el.dataset.dragged; return; }
+        pick(id);
+      });
+      el.addEventListener('keydown', k => { if (k.key === 'Enter') pick(id); });
+    });
+    if (!g) return;
+    g.addEventListener('pointerdown', ev => {
+      if (ev.button !== 0) return;
+      const p0 = toSvg(ev);
+      const sector = g.dataset.drag === 'sector';
+      const cx = +g.dataset.cx, cy = +g.dataset.cy, ax = +g.dataset.ax, ay = +g.dataset.ay;
+      const pts = ptsOf(g), xs = pts.map(q => q[0]), ys = pts.map(q => q[1]);
+      const box = pts.length ? [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)] : null;
+      const tol = 8 / (svg.getScreenCTM().a || 1);  // 8 px, in mm
+      let move = null;
+      try { g.setPointerCapture(ev.pointerId); } catch (_) { /* still drags while over the block */ }
+      const onMove = ev2 => {
+        const p = toSvg(ev2);
+        const snap = !ev2.altKey && guides;
+        if (guides) guides.textContent = '';
+        let tf;  // where a point of the block is now
+        if (sector) {
+          const raw = (((Math.atan2(p.y - cy, p.x - cx) - Math.atan2(p0.y - cy, p0.x - cx)) * 180 / Math.PI + 540) % 360) - 180;
+          let da = half(raw);
+          const dr = half(Math.hypot(p.x - cx, p.y - cy) - Math.hypot(p0.x - cx, p0.y - cy));
+          const am = Math.atan2(ay - cy, ax - cx);
+          const mid = am * 180 / Math.PI + raw, to = Math.round(mid / 45) * 45;
+          const far = Math.max(...pts.map(q => Math.hypot(q[0] - cx, q[1] - cy)), 1) + Math.abs(dr);
+          if (snap && Math.abs(to - mid) * Math.PI / 180 * Math.hypot(ax - cx, ay - cy) <= tol) {
+            da = Math.round(((to - am * 180 / Math.PI + 540) % 360 - 180) * 100) / 100;
+            guide(cx, cy, cx + (far + 3) * Math.cos(to * Math.PI / 180), cy + (far + 3) * Math.sin(to * Math.PI / 180));
+          }
+          const tx = dr * Math.cos(am), ty = dr * Math.sin(am), t = da * Math.PI / 180;
+          g.setAttribute('transform', `rotate(${da} ${cx} ${cy}) translate(${tx} ${ty})`);
+          tf = ([x, y]) => {
+            const ux = x + tx - cx, uy = y + ty - cy;
+            return [cx + ux * Math.cos(t) - uy * Math.sin(t), cy + ux * Math.sin(t) + uy * Math.cos(t)];
+          };
+          move = (da || dr) ? { id, da, dr } : null;
+        } else {
+          let dx = half(p.x - p0.x), dy = half(p.y - p0.y);
+          if (snap && board && box) {
+            const sx = snapAxis(p.x - p0.x, box[0], box[2], board[0], board[2], tol);
+            const sy = snapAxis(p.y - p0.y, box[1], box[3], board[1], board[3], tol);
+            if (sx) { dx = sx[0]; guide(sx[1], board[1], sx[1], board[3]); }
+            if (sy) { dy = sy[0]; guide(board[0], sy[1], board[2], sy[1]); }
+          }
+          g.setAttribute('transform', `translate(${dx} ${dy})`);
+          tf = ([x, y]) => [x + dx, y + dy];
+          move = (dx || dy) ? { id, dx, dy } : null;
+        }
+        g.classList.toggle('drag', !!move);
+        follow(id, tf);
+      };
+      const onUp = () => {
+        g.removeEventListener('pointermove', onMove);
+        g.removeEventListener('pointerup', onUp);
+        g.removeEventListener('pointercancel', onUp);
+        if (guides) guides.textContent = '';
+        if (move) { g.dataset.dragged = '1'; sendMove(move); }
+        else g.removeAttribute('transform');
+      };
+      g.addEventListener('pointermove', onMove);
+      g.addEventListener('pointerup', onUp);
+      g.addEventListener('pointercancel', onUp);
+    });
+  });
+  card.append(rows);
+  if (state.moves.length) {
+    const bar = div('moves');
+    bar.append(div('mt', `Your moves (${state.moves.length})`));
+    const ul = document.createElement('ul');
+    state.moves.forEach(m => m.lines.forEach(t => { const li = document.createElement('li'); li.textContent = t; ul.append(li); }));
+    bar.append(ul);
+    const btns = div('mb');
+    const undo = document.createElement('button');
+    undo.className = 'btn'; undo.textContent = 'Undo';
+    undo.onclick = () => {
+      const last = state.moves.pop();
+      if (!last) return;
+      const m = last.move;
+      const back = m.side ? { id: m.id, side: m.prev } : m.rot ? { id: m.id, rot: -m.rot }
+        : 'da' in m ? { id: m.id, da: -m.da, dr: -m.dr } : { id: m.id, dx: -m.dx, dy: -m.dy };
+      sendMove(back, true);
+    };
+    const go = document.createElement('button');
+    go.className = 'btn primary'; go.textContent = 'Send moves to Claude';
+    go.disabled = busy; go.title = busy ? 'Claude is still working' : '';
+    go.onclick = () => {
+      if (busy) return;
+      const lines = state.moves.flatMap(m => m.lines);
+      post({ type: 'send', text: 'I moved blocks on the block plan card, and placement\\block-plan.json ' +
+        'now has them:\n' + lines.map(t => '- ' + t).join('\n') + '\nRead the plan again with these moves: ' +
+        'measure the links again, check them against the rules, update the plan and tell me what you think.' });
+      state.moves = [];
+      bar.remove();
+    };
+    btns.append(undo, go);
+    bar.append(btns);
+    card.append(bar);
+  }
+  if ((e.notes || []).length) {
+    const ul = document.createElement('ul'); ul.className = 'notes';
+    e.notes.forEach(t => { const li = document.createElement('li'); li.innerHTML = inline(t); ul.append(li); });
+    card.append(ul);
+  }
+  card.append(div('hint', 'Hover a block to see it, click to select its parts in KiCad, drag to move it ' +
+    '(it snaps to the board\'s edges, their middles and the centre; hold Alt to drag freely), ' +
+    'or click TOP/BOT to switch its side.'));
+  return card;
+}
+
 function div(cls, html) { const d = document.createElement('div'); d.className = cls; if (html != null) d.innerHTML = html; return d; }
 
 function setBusy(v) {
@@ -600,6 +1000,19 @@ const app = {
         d.append(s, body); card.append(d);
         add(card); toolGroup = null;
         log.scrollTop = card.offsetTop - log.offsetTop - 8;  // a long review is read from its top
+        break;
+      }
+      case 'plan': add(planCard(e)); toolGroup = null; break;
+      case 'plan_update': {
+        // A drag was written into the plan file: redraw the newest card of that plan.
+        const old = [...document.querySelectorAll('.plan')].filter(c => c.dataset.path === e.path).pop();
+        if (!old) break;
+        const st = old._state;
+        if (!e.undo) {  // an undo's answer leaves a move still on its way alone
+          if (st.pending && (e.lines || []).length) st.moves.push({ move: st.pending, lines: e.lines });
+          st.pending = null;
+        }
+        old.replaceWith(planCard(e, st));
         break;
       }
       case 'busy':

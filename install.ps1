@@ -102,6 +102,18 @@ function Update-McpPatch {
     Run git @("-C", $McpDir, "apply", "--whitespace=nowarn", $patch)
     return $true
 }
+function Get-PatchHash {
+    (Get-FileHash (Join-Path $Root "patches\kicad-mcp.patch") -Algorithm SHA256).Hash
+}
+function Get-McpBuildStamp {
+    # The patch the MCP server's dist was last built from (dist\.powerlab-patch).
+    $stamp = Join-Path $McpDir "dist\.powerlab-patch"
+    if (Test-Path $stamp) { return (Get-Content $stamp -TotalCount 1).Trim() }
+    return ""
+}
+function Save-McpBuildStamp {
+    Set-Content -Path (Join-Path $McpDir "dist\.powerlab-patch") -Value (Get-PatchHash) -Encoding ascii
+}
 function Run($exe, [string[]]$arguments, $where = $null) {
     # Runs a native command; stops the install if it fails.
     if ($where) { Push-Location $where }
@@ -175,7 +187,14 @@ if ($mcpCurrent) {
     Ok "Already at the pinned version ($McpCommit)"
     if (Update-McpPatch) {
         Run npm @("run", "build", "--silent") $McpDir
+        Save-McpBuildStamp
         Ok "PowerLab fixes applied and rebuilt"
+    } elseif ((Get-McpBuildStamp) -ne (Get-PatchHash)) {
+        # The patch was applied, but the build is from an older one: a maintainer changed
+        # the checkout and regenerated the patch (CLAUDE.md), and nothing rebuilt it.
+        Run npm @("run", "build", "--silent") $McpDir
+        Save-McpBuildStamp
+        Ok "PowerLab fixes already applied; rebuilt for the current patch"
     } else { Ok "PowerLab fixes already applied" }
     $McpReady = $true
 } elseif (-not $SkipMcp) {
@@ -188,6 +207,7 @@ if ($mcpCurrent) {
     Ok "PowerLab fixes applied"
     Run npm @("ci", "--no-audit", "--no-fund", "--loglevel=error") $McpDir
     Run npm @("run", "build", "--silent") $McpDir
+    Save-McpBuildStamp
     Ok "MCP server built"
     # KiCad's Python puts --user packages in its own 3rdparty folder; no admin rights needed.
     Run $KiCadPython @("-m", "pip", "install", "--user", "--quiet", "--disable-pip-version-check", "-r", (Join-Path $McpDir "requirements.txt"))

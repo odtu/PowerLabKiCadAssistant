@@ -160,6 +160,7 @@ class SkillToolsEnvTests(unittest.TestCase):
         skills = os.path.join(ROOT, "skills")
         names = sorted(os.listdir(skills))
         self.assertIn("powerlab-autoroute", names)
+        self.assertIn("powerlab-placement", names)
         for name in names:
             with open(os.path.join(skills, name, "SKILL.md"), encoding="utf-8") as f:
                 head = f.read().split("---")
@@ -273,7 +274,7 @@ class ChatHistoryTests(unittest.TestCase):
         except ImportError as exc:
             self.skipTest(f"panel needs wx.html2: {exc}")
         names = ("say", "save_chat", "open_chat", "handle", "finished", "show_image", "set_activity",
-                 "show_review")
+                 "show_review", "show_plan")
 
         class Fake:
             pass
@@ -285,7 +286,7 @@ class ChatHistoryTests(unittest.TestCase):
         panel.session_id, panel.chat_cwd, panel.events = None, None, []
         panel.retry, panel.stale_session, panel.proc = None, False, None
         panel.got_result, panel.watched, panel.image_reads = False, {}, {}
-        panel.review_writes, panel.review_md = {}, None
+        panel.review_writes, panel.review_md, panel.plan_writes = {}, None, {}
         panel.last_text, panel.limits, panel.started, panel.effort = "", [], 0.0, "high"
         panel.activity, panel.activity_sent = ("waiting", ""), time.time()
         panel.thinking_tokens = 0
@@ -454,6 +455,23 @@ class ChatHistoryTests(unittest.TestCase):
         self.assertEqual(shown(), [("retry", "")])
         # Activity isn't part of the saved chat.
         self.assertFalse(any(e["kind"] == "activity" for e in panel.events))
+
+    def test_written_block_plan_shows_as_a_card(self):
+        import json
+        panel = self.fake_panel()
+        path = os.path.join(self.tmp.name, "placement", "block-plan.json")
+        os.makedirs(os.path.dirname(path))
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"title": "Plan", "blocks": [{"id": "a", "name": "A", "refs": ["U1"],
+                                                    "rect": {"center": [0, 0], "size": [5, 5]}}]}, f)
+        panel.handle({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "w", "name": "Write", "input": {"file_path": path, "content": "{}"}}]}})
+        panel.handle({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "w"}]}})
+        plans = [e for e in panel.emitted if e["kind"] == "plan"]
+        self.assertEqual(len(plans), 1)
+        self.assertEqual(plans[0]["blocks"][0]["loc"], "refs=U1")
+        self.assertNotIn("svg", panel.events[-1])  # the chat keeps the path, not the drawing
+        self.assertEqual(panel.events[-1]["path"], path)
 
     def test_expired_session_is_sent_again_as_a_new_chat(self):
         panel = self.fake_panel()
@@ -712,6 +730,239 @@ class DesignReviewTests(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(self.folder, "design-review.html")))
 
 
+class BlockPlanTests(unittest.TestCase):
+    """The block plan card (powerlab-placement): drawn from block-plan.json, a click on a
+    block selects its parts in KiCad."""
+
+    def setUp(self):
+        import json
+        from powerlab_assistant import history, plan
+        self.plan, self.history = plan, history
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = os.path.join(self.tmp.name, "placement", "block-plan.json")
+        os.makedirs(os.path.dirname(self.path))
+        self.data = {
+            "title": "Board <b>plan</b>",
+            "outline": {"circle": {"center": [100, 100], "diameter": 90}},
+            "cutouts": [{"circle": {"center": [100, 100], "diameter": 20}}],
+            "holes": [{"circle": {"center": [140, 100], "diameter": 4}}],
+            "keepouts": [{"name": "Ring", "ring": {"center": [100, 100], "inner": 84, "outer": 90}}],
+            "blocks": [
+                {"id": "legB", "name": "Leg <B>", "detail": "Q2 & shunt", "side": "top", "kind": "power",
+                 "refs": ["Q2", "R10", 'X" onclick="alert(1)'],
+                 "sector": {"center": [100, 100], "r": [29, 42], "angle": [333, 355]}},
+                {"id": "u3", "name": "U3", "side": "bottom", "kind": "gate", "refs": ["U3"],
+                 "rect": {"center": [125, 95], "size": [7, 7], "angle": 30}},
+                {"id": "x", "name": "Odd", "kind": "nope", "polygon": [[60, 60], [70, 60], [65, 70]]},
+            ],
+            "links": [{"from": "u3", "to": "legB", "label": "gate <6>", "kind": "gate"}],
+            "notes": ["**U3** under [leg B](kicad:refs=Q2)"],
+        }
+        with open(self.path, "w", encoding="utf-8") as f:
+            json.dump(self.data, f)
+
+    def test_is_plan(self):
+        self.assertTrue(self.plan.is_plan(self.path))
+        self.assertTrue(self.plan.is_plan(r"C:\p\placement\Block-Plan.json"))
+        self.assertFalse(self.plan.is_plan(r"C:\p\placement\notes.json"))
+
+    def test_card_escapes_text_and_keeps_only_clean_refs(self):
+        card = self.plan.card(self.path)
+        self.assertNotIn("error", card)
+        svg = card["svg"]
+        self.assertTrue(svg.startswith("<svg"))
+        for raw in ("<b>", "Leg <B>", "gate <6>", "onclick", "alert("):
+            self.assertNotIn(raw, svg)
+        self.assertIn("Leg &lt;B&gt;", svg)
+        self.assertIn('data-loc="refs=Q2,R10"', svg)
+        legb = next(b for b in card["blocks"] if b["id"] == "legB")
+        self.assertEqual((legb["loc"], legb["count"], legb["side"]), ("refs=Q2,R10", 2, "top"))
+        odd = next(b for b in card["blocks"] if b["id"] == "x")
+        self.assertEqual((odd["kind"], odd["side"], odd["loc"]), ("other", "top", "at=65,63.333"))  # no parts: its place
+        self.assertEqual(card["title"], "Board <b>plan</b>")  # the page escapes it
+
+    def test_bottom_blocks_are_hatched_and_drawn_under_the_top(self):
+        svg = self.plan.card(self.path)["svg"]
+        self.assertIn('class="blk bottom"', svg)
+        self.assertIn('fill="url(#h-gate)"', svg)
+        self.assertLess(svg.index('data-id="u3"'), svg.index('data-id="legB"'))
+        # the gate link and its pill: the line under the blocks, the pill over them
+        self.assertLess(svg.index('class="link"'), svg.index('data-id="u3"'))
+        self.assertGreater(svg.index('class="pill-g"'), svg.index('data-id="legB"'))
+
+    def test_sector_spans_its_angles(self):
+        s = self.plan.Shape({"sector": {"center": [0, 0], "r": [10, 20], "angle": [350, 10]}})
+        self.assertAlmostEqual(math.hypot(*s.anchor), 15, places=6)
+        self.assertAlmostEqual(math.degrees(math.atan2(s.anchor[1], s.anchor[0])), 0, places=6)
+        self.assertIn(" A20 20 0 0 1 ", s.d)
+
+    def test_a_broken_plan_shows_an_error(self):
+        with open(self.path, "w", encoding="utf-8") as f:
+            f.write("{not json")
+        card = self.plan.card(self.path)
+        self.assertIn("can't be read", card["error"])
+        self.assertEqual(card["svg"], "")
+
+    def test_chat_keeps_the_plan_by_path(self):
+        card = dict(self.plan.card(self.path), kind="plan")
+        kept = self.history.stored("plan", card)
+        self.assertEqual(kept["path"], self.path)
+        for key in ("svg", "blocks", "notes", "links"):
+            self.assertNotIn(key, kept)
+        self.assertIn("plan", self.history.KINDS)
+
+    def test_drags_are_written_into_the_plan(self):
+        import json
+        lines = self.plan.move(self.path, [
+            {"id": "legB", "da": -12, "dr": 1.5},          # a sector turns and moves outward
+            {"id": "u3", "dx": 2, "dy": -1},               # a rect moves in x and y
+            {"id": "x", "dx": 1, "dy": 1},                 # a polygon moves every point
+            {"id": "u3", "side": "top"},                   # and a block changes side
+            {"id": "nope", "dx": 5},                       # unknown blocks are ignored
+            {"id": "legB", "da": 1e9},                     # huge numbers are clamped, not kept
+        ])
+        with open(self.path, encoding="utf-8") as f:
+            data = json.load(f)
+        blocks = {b["id"]: b for b in data["blocks"]}
+        self.assertEqual(blocks["legB"]["sector"]["r"], [30.5, 43.5])
+        self.assertEqual(blocks["legB"]["sector"]["angle"][0], (333 - 12 + 500) % 360)
+        self.assertEqual(blocks["u3"]["rect"]["center"], [127, 94])
+        self.assertEqual(blocks["u3"]["side"], "top")
+        self.assertEqual(blocks["x"]["polygon"][0], [61, 61])
+        self.assertIn("Leg <B>: turned 12.0° counter-clockwise, 1.5 mm outward", lines[0])
+        self.assertIn("U3: moved +2.0 mm in x, -1.0 mm in y; centre now (127, 94)", lines[1])
+        self.assertIn("U3: to the top side", lines)
+        self.assertEqual(len(lines), 5)
+        svg = self.plan.card(self.path)["svg"]
+        self.assertIn('data-drag="sector" data-cx="100" data-cy="100"', svg)
+        self.assertIn('data-drag="move"', svg)
+
+    def test_boxes_turn_and_moved_links_show_the_measured_gap(self):
+        import json
+        g = self.plan.gap(self.plan.Shape({"rect": {"center": [0, 0], "size": [10, 10]}}),
+                          self.plan.Shape({"rect": {"center": [20, 0], "size": [6, 6]}}))
+        self.assertAlmostEqual(g, 12.0, places=6)  # edges at x = 5 and x = 17
+        self.assertEqual(self.plan.gap(self.plan.Shape({"rect": {"center": [0, 0], "size": [10, 10]}}),
+                                       self.plan.Shape({"circle": {"center": [4, 0], "diameter": 6}})), 0.0)
+        lines = self.plan.move(self.path, [{"id": "u3", "rot": 90}, {"id": "u3", "dx": -10, "dy": 0}])
+        self.assertEqual(lines[0], "U3: turned 90° clockwise")
+        with open(self.path, encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertEqual(data["blocks"][1]["rect"]["angle"], 120)
+        label = data["links"][0]["label"]
+        self.assertRegex(label, r"^gate <6> · (stacked|\d+\.\d mm gap)$")  # U3 is on the other side
+        self.assertEqual(self.plan.NUMBER_AT_END.sub("", "gate A ~16 mm"), "gate A")  # old lengths go
+        self.plan.move(self.path, [{"id": "u3", "dx": 1}])
+        with open(self.path, encoding="utf-8") as f:
+            again = json.load(f)["links"][0]["label"]
+        self.assertEqual(again.count("·"), 1)  # measured again, not appended twice
+        svg = self.plan.card(self.path)["svg"]
+        self.assertIn('data-turn="1"', svg)  # boxes and polygons can turn
+        self.assertRegex(svg, r'data-pts="[\d.]+,[\d.]+ ')
+        self.assertIn('data-from="u3" data-to="legB"', svg)
+
+    def test_drags_snap_to_the_board_edges_and_centre(self):
+        svg = self.plan.card(self.path)["svg"]
+        self.assertRegex(svg, r'<svg [^>]*data-board="-?[\d.]+ -?[\d.]+ [\d.]+ [\d.]+"')  # the board's box
+        self.assertIn('<g class="snap"></g>', svg)  # where the guides go
+        with open(os.path.join(ROOT, "plugin", "powerlab_assistant", "panel.html"), encoding="utf-8") as f:
+            page = f.read()
+        self.assertIn("const snapAxis = (d, lo, hi, b0, b1, tol)", page)
+        self.assertIn("const snap = !ev2.altKey && guides;", page)  # Alt drags freely
+        self.assertIn("Math.round(mid / 45) * 45", page)  # sectors snap to 45° steps
+
+    def test_any_board_shape_comes_from_edge_cuts(self):
+        import json
+        project = os.path.dirname(os.path.dirname(self.path))
+        edge = '(layer "Edge.Cuts")'
+        with open(os.path.join(project, "odd.kicad_pcb"), "w", encoding="utf-8") as f:
+            f.write("(kicad_pcb\n"
+                    # a 40 x 20 board with a rounded top-left corner, drawn out of order
+                    f'\t(gr_line (start 10 0) (end 40 0) (stroke (width 0.1)) {edge})\n'
+                    f'\t(gr_line (start 40 20) (end 40 0) (stroke (width 0.1)) {edge})\n'
+                    f'\t(gr_line (start 40 20) (end 0 20) (stroke (width 0.1)) {edge})\n'
+                    f'\t(gr_arc (start 10 0) (mid 2.928932 2.928932) (end 0 10) (stroke (width 0.1)) {edge})\n'
+                    f'\t(gr_line (start 0 10) (end 0 20) (stroke (width 0.1)) {edge})\n'
+                    f'\t(gr_circle (center 30 10) (end 32 10) (stroke (width 0.1)) {edge})\n'
+                    '\t(gr_line (start 0 0) (end 99 99) (stroke (width 0.1)) (layer "F.SilkS"))\n'
+                    '\t(gr_text "a (layer \\"Edge.Cuts\\") in text" (at 5 5) (layer "F.SilkS"))\n)\n')
+        loops = self.plan.edge_cuts(os.path.join(project, "odd.kicad_pcb"))
+        self.assertEqual(len(loops), 2)
+        self.assertAlmostEqual(self.plan._area(loops[0]), 800 - 100 + math.pi * 25, delta=0.5)
+        self.assertAlmostEqual(self.plan._area(loops[1]), math.pi * 4, delta=0.05)
+        self.data["outline"] = "board"
+        self.data.pop("cutouts")
+        with open(self.path, "w", encoding="utf-8") as f:
+            json.dump(self.data, f)
+        card = self.plan.card(self.path)
+        self.assertNotIn("error", card)
+        self.assertIn('class="board"', card["svg"])
+        self.assertIn('class="cut"', card["svg"])  # the round cutout
+        os.remove(os.path.join(project, "odd.kicad_pcb"))
+        self.assertIn("can't be read", self.plan.card(self.path)["error"])
+
+    def test_board_text_and_logos_are_blocks_too(self):
+        import json
+        self.data["blocks"] += [
+            {"id": "info", "name": "Board rev A", "kind": "text", "rect": {"center": [70, 110], "size": [20, 3]}},
+            {"id": "logo", "name": "Logo", "kind": "logo", "refs": ["LOGO1"], "rect": {"center": [80, 120], "size": [8, 8]}}]
+        with open(self.path, "w", encoding="utf-8") as f:
+            json.dump(self.data, f)
+        card = self.plan.card(self.path)
+        blocks = {b["id"]: b for b in card["blocks"]}
+        self.assertEqual(blocks["info"]["loc"], "at=70,110")  # text has no reference: its place
+        self.assertEqual(blocks["logo"]["loc"], "refs=LOGO1")
+        self.assertIn('data-kind="text" data-loc="at=70,110"', card["svg"])
+        self.plan.move(self.path, [{"id": "info", "dx": 5, "dy": -2}])
+        self.assertIn('data-loc="at=75,108"', self.plan.card(self.path)["svg"])  # it follows the move
+
+    def test_any_angle_turns_a_box(self):
+        lines = self.plan.move(self.path, [{"id": "u3", "rot": -22.5}, {"id": "u3", "rot": 1000}])
+        self.assertEqual(lines, ["U3: turned 22.5° counter-clockwise"])  # 1000° isn't a real turn
+
+    def test_panel_moves_only_plans_of_its_project(self):
+        try:
+            from powerlab_assistant.panel import ClaudePanel
+        except ImportError as exc:
+            self.skipTest(f"panel needs wx.html2: {exc}")
+        panel = types.SimpleNamespace(chat_cwd=self.tmp.name, emitted=[])
+        panel.emit = lambda kind, **data: panel.emitted.append(dict(data, kind=kind))
+        ClaudePanel.msg_plan_move(panel, {"path": self.path, "moves": [{"id": "u3", "side": "top"}]})
+        self.assertEqual([e["kind"] for e in panel.emitted], ["plan_update"])
+        self.assertEqual(panel.emitted[0]["lines"], ["U3: to the top side"])
+        self.assertIn('class="blk top" data-id="u3"', panel.emitted[0]["svg"])
+        other = tempfile.TemporaryDirectory()
+        self.addCleanup(other.cleanup)
+        panel.chat_cwd, panel.emitted = other.name, []
+        ClaudePanel.msg_plan_move(panel, {"path": self.path, "moves": [{"id": "u3", "side": "bottom"}]})
+        self.assertEqual(panel.emitted, [])  # not this chat's project
+        panel.chat_cwd = self.tmp.name
+        ClaudePanel.msg_plan_move(panel, {"path": self.path.replace("block-plan", "other"), "moves": []})
+        self.assertEqual(panel.emitted, [])  # not a block plan
+
+    def test_panel_shows_written_plans(self):
+        with open(os.path.join(ROOT, "plugin", "powerlab_assistant", "panel.py"), encoding="utf-8") as f:
+            panel = f.read()
+        self.assertIn("plan.is_plan(args.get(\"file_path\"))", panel)
+        self.assertIn("self.show_plan(plan_path)", panel)
+        with open(os.path.join(ROOT, "plugin", "powerlab_assistant", "panel.html"), encoding="utf-8") as f:
+            page = f.read()
+        self.assertIn("case 'plan': add(planCard(e))", page)
+        self.assertIn("post({ type: 'locate', target: loc })", page)
+        self.assertIn("post({ type: 'plan_move', path: e.path, moves: [move], undo: !!undo })", page)
+        self.assertIn("'Move to bottom side ↓' : 'Move to top side ↑'", page)
+        self.assertIn("case 'plan_update':", page)
+        self.assertIn("Send moves to Claude", page)
+        self.assertIn("[[90, '↻ 90°'], [45, '↻ 45°'], [-45, '↺ 45°']]", page)  # common angles first
+        self.assertIn("inp.placeholder = 'any °'", page)  # then any angle
+        self.assertIn("follow(id, tf);", page)  # links follow a drag, with the gap measured live
+        with open(os.path.join(ROOT, "skills", "powerlab-placement", "SKILL.md"), encoding="utf-8") as f:
+            skill = f.read()
+        self.assertIn("placement\\block-plan.json", skill)
+        self.assertIn("Stop and wait for the answer", skill)
+
+
 class OnePanelTests(unittest.TestCase):
     """One panel serves both editors: Claude sees the board and the schematic from either."""
 
@@ -883,6 +1134,31 @@ class McpPatchTests(unittest.TestCase):
         text = self.patch().split(f"+++ b/{name}\n", 1)[1]
         body = text.split("\ndiff --git", 1)[0].split("\n")[1:]  # skip the @@ header
         return "\n".join(line[1:] for line in body if line.startswith("+"))
+
+    def test_patch_tool(self):
+        """tools/mcp_patch.py (the auto-fix workflow's checkout) uses install.ps1's pin, and a
+        regenerated patch that differs only in git's abbreviated index lines isn't a change."""
+        import mcp_patch
+        with open(os.path.join(ROOT, "install.ps1"), encoding="utf-8") as f:
+            text = f.read()
+        repo, commit = mcp_patch.pin()
+        self.assertIn(f'$McpRepo = "{repo}"', text)
+        self.assertIn(f'[string]$McpCommit = "{commit}"', text)
+        old = self.patch().encode("utf-8")
+        other_clone = re.sub(rb"(?m)^index \w+\.\.\w+", b"index 1234567890..abcdef1234", old)
+        self.assertNotEqual(other_clone, old)
+        self.assertEqual(mcp_patch._body(old), mcp_patch._body(other_clone))
+        self.assertNotEqual(mcp_patch._body(old), mcp_patch._body(old + b"+# one more line\n"))
+
+    def test_update_rebuilds_for_a_changed_patch(self):
+        """A maintainer's checkout already has the new patch applied (CLAUDE.md: edit, then
+        regen), so -Update saw nothing to do and kept the old build: padNets and
+        edit_board_text were missing. Every build now records the patch it was made from."""
+        with open(os.path.join(ROOT, "install.ps1"), encoding="utf-8") as f:
+            text = f.read()
+        self.assertIn('"dist\\.powerlab-patch"', text)
+        self.assertIn("elseif ((Get-McpBuildStamp) -ne (Get-PatchHash))", text)
+        self.assertEqual(text.count("Save-McpBuildStamp"), 4)  # defined, and after each of the 3 builds
 
     def test_rotation_keeps_3d_models(self):
         patch = self.patch()
@@ -1608,6 +1884,11 @@ class McpPatchTests(unittest.TestCase):
     def test_powerlab_router_patches(self):
         """A net's copper is kept as a patch round it, not a full-board array per net and
         layer (5.8 GB on a 4-layer board with 100 nets)."""
+        try:
+            import numpy  # noqa: F401
+            import PIL  # noqa: F401
+        except ImportError:
+            self.skipTest("needs numpy and Pillow (KiCad's Python has both)")
         module = types.ModuleType("grid")
         exec(self.new_file("python/commands/powerlab_router/grid.py"), module.__dict__)
         g = module.Grid(0, 0, 30, 20, 0.1)
@@ -1689,9 +1970,8 @@ class McpPatchTests(unittest.TestCase):
     def test_part_spacing(self):
         """check_part_spacing: parts closer than the lab's 1 mm pad to pad, and parts in a
         keep-out area on either side, measured on the board (the lab parts have no courtyard)."""
-        try:
-            import pcbnew
-        except ImportError:
+        import pcbnew  # KiCad's, or the stand-in above (which has no BOARD)
+        if not hasattr(pcbnew, "BOARD"):
             self.skipTest("needs KiCad's Python")
         module = types.ModuleType("part_spacing")
         exec(self.new_file("python/commands/part_spacing.py"), module.__dict__)
@@ -2111,6 +2391,7 @@ class PanelDefaultsTests(unittest.TestCase):
         self.assertIn("the chat is kept", c["PANEL_NOTE"])
         self.assertIn("powerlab-visual-review", c["PANEL_NOTE"])  # look at the board while working
         self.assertIn("powerlab-board-requirements", c["PANEL_NOTE"])  # ask before a new board
+        self.assertIn("powerlab-placement", c["PANEL_NOTE"])  # block plan agreed before placing
         self.assertIn("design-requirements.md", c["PANEL_NOTE"])
         self.assertIn("<choices>", c["PANEL_NOTE"])  # questions come back as answer buttons
         self.assertIn("never add an 'Other'", c["PANEL_NOTE"])  # the card has its own Other…

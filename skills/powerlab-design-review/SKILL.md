@@ -33,7 +33,7 @@ Say in one line that you're starting the review, e.g. "Layout done. Reviewing it
    - Read the rule's **Exceptions** before you call something a finding.
    - Check the lab's final list (design rules §3.7) and `design-requirements.md` too.
 5. **Sort every finding** into one of two groups:
-   - **Fix it:** the fix is clear, local, within the lab rules and the requirements, and the kicad tools can do it. For example: move or rotate a part that isn't locked (a decoupling cap closer to its pin), add or widen a track, add vias on a power layer change, add stitching vias, refill zones, move silkscreen text off a pad, add the board info text, fix a net class.
+   - **Fix it:** the fix is clear, local, within the lab rules and the requirements, and the kicad tools can do it. For example: move or rotate a part that isn't locked (a decoupling cap closer to its pin), add or widen a track, add vias on a power layer change, add stitching vias, refill zones, move silkscreen text off a pad, add the board info text, fix a net class, put a plated mounting hole on the net the requirements give (`edit_component` with `padNets: {"*": "GND"}`).
    - **Needs the user:**
      - it needs information you don't have (current, voltage, enclosure, fab or cost choice);
      - it needs a decision: moving a connector, mounting hole, locked part or anything the user placed on purpose; changing the outline, layer count or stackup; changing the schematic, a part or a footprint; anything with a surcharge;
