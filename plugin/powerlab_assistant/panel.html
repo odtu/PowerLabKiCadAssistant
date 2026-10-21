@@ -138,11 +138,25 @@ a.loc:hover { text-decoration-style: solid; }
 .assistant th, .assistant td { border: 1px solid var(--border); padding: 3px 7px; text-align: left; }
 .assistant th { background: var(--surface-2); }
 
-/* tool activity */
-.tools {
-  border: 1px solid var(--border); border-radius: 10px; background: var(--surface);
-  padding: 4px 0; margin: 0 0 12px; animation: rise .18s ease-out;
+/* tool activity: one collapsed row per run of steps; opened, a small scrolling box with
+   each step and the views Claude looked at */
+details.steps { margin: 0 0 10px; font-size: 12px; color: var(--muted); animation: rise .18s ease-out; }
+details.steps summary {
+  cursor: pointer; list-style: none; user-select: none; display: flex; align-items: center; gap: 7px; min-width: 0;
 }
+details.steps summary::-webkit-details-marker { display: none; }
+details.steps summary .sum { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+details.steps summary .n { flex: none; }
+details.steps summary .n .bad { color: var(--err); }
+details.steps summary::after { content: '▸'; flex: none; font-size: 10px; }
+details.steps[open] summary::after { content: '▾'; }
+details.steps summary:hover { color: var(--text); }
+details.steps .list {
+  margin: 6px 0 0; padding: 4px 0; max-height: 260px; overflow-y: auto;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--surface); color: var(--text);
+}
+details.steps .list .shot { margin: 4px 10px 6px; }
+details.steps .list .shot img { max-height: 170px; }
 .tool { display: flex; align-items: center; gap: 8px; padding: 3px 10px; font-size: 12px; min-width: 0; }
 .tool .name { font-weight: 500; white-space: nowrap; }
 .tool .detail { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
@@ -196,6 +210,23 @@ a.loc:hover { text-decoration-style: solid; }
 }
 .shot img { display: block; width: 100%; max-height: 320px; object-fit: contain; cursor: zoom-in; background: var(--surface-2); }
 .shot .cap { font-size: 11px; color: var(--muted); padding: 4px 9px; }
+/* a block plan or design review in the chat: one row; it opens in a window of its own */
+.doc {
+  display: flex; align-items: center; gap: 10px; margin: 0 0 12px; padding: 8px 10px;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--surface); animation: rise .18s ease-out;
+}
+.doc.review-doc { border-color: var(--accent); }
+.doc .ic { flex: none; width: 28px; height: 28px; border-radius: 7px; display: grid; place-items: center; background: var(--surface-2); color: var(--accent); }
+.doc .ic svg { width: 16px; height: 16px; }
+.doc .words { min-width: 0; flex: 1; }
+.doc .t { font-weight: 600; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.doc .v { font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.doc .btn { flex: none; padding: 2px 10px; font-size: 12px; }
+/* the panel page in a card window: just the card */
+body.window header, body.window footer, body.window .libbar, body.window #empty, body.window #overlay { display: none !important; }
+body.window #log { padding: 12px; scroll-behavior: auto; }
+body.window .plan, body.window .review { animation: none; }
+body.window .plan .plan-svg { max-height: 72vh; }
 /* the final design review (powerlab-design-review), with its PDF */
 .review {
   margin: 0 0 12px; border: 1px solid var(--accent); border-radius: 10px; background: var(--surface);
@@ -206,9 +237,7 @@ a.loc:hover { text-decoration-style: solid; }
 .review .head .v { font-size: 12px; color: var(--muted); margin-top: 2px; }
 .review .head .btn { margin-left: auto; flex: none; padding: 2px 10px; font-size: 12px; }
 .review .err { font-size: 11.5px; color: var(--warn); padding: 6px 10px 0; }
-.review details { padding: 4px 10px 8px; }
-.review summary { cursor: pointer; font-size: 12px; color: var(--muted); user-select: none; padding: 2px 0; }
-.review .body { margin-top: 6px; }
+.review > .body { padding: 4px 10px 10px; }
 .review .body h1 { display: none; }  /* the title is in the head */
 .review .body h3.sev { display: inline-block; padding: 1px 8px; border-radius: 8px; color: #fff; font-size: 12px; }
 .review .body .sev-critical { background: #b42318; } .review .body .sev-high { background: #c4570c; }
@@ -459,8 +488,13 @@ const ICON_STOP = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6
 const ICON_OK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5 9-10"/></svg>';
 const ICON_BAD = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>';
 
+const ICON_PLAN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><rect x="6.5" y="6.5" width="5" height="5" rx="1"/><rect x="13.5" y="12.5" width="4" height="5" rx="1"/></svg>';
+const ICON_REVIEW = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4H7a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-2"/><rect x="9" y="2.5" width="6" height="3.5" rx="1"/><path d="m9 13.5 2 2 4-4.5"/></svg>';
+
 const $ = id => document.getElementById(id);
 const log = $('log'), input = $('input'), send = $('send');
+// The same page shows one block plan or review in a window of its own (CardWindow in panel.py).
+const WINDOW = document.body.classList.contains('window');
 let busy = false, toolGroup = null, typing = null;
 
 function post(msg) { window.wx && window.wx.postMessage(JSON.stringify(msg)); }
@@ -840,6 +874,84 @@ function planCard(e, state) {
 
 function div(cls, html) { const d = document.createElement('div'); d.className = cls; if (html != null) d.innerHTML = html; return d; }
 
+// The final design review. The panel builds the body from the review file and escapes all of its text.
+function reviewCard(e) {
+  const card = div('review');
+  const head = div('head');
+  const words = div('');
+  words.append(div('t', esc(e.title || 'Design review')));
+  if (e.verdict) words.append(div('v', esc(e.verdict)));
+  head.append(words);
+  const file = e.pdf || e.html;
+  if (file) {
+    const b = button(e.pdf ? 'Open PDF' : 'Open in browser', 'primary', () => post({ type: 'open', path: file }));
+    b.title = file;
+    head.append(b);
+  }
+  card.append(head);
+  if (e.error) card.append(div('err', esc(e.error)));
+  const body = div('body assistant', e.body || '');
+  body.querySelectorAll('img[data-path]').forEach(img => {
+    img.onclick = () => post({ type: 'open', path: img.dataset.path });
+  });
+  card.append(body);
+  return card;
+}
+
+// A block plan or review in the chat is one row; Open shows it in a window of its own,
+// so the chat keeps to the conversation.
+function docCard(e, kind) {
+  const card = div(`doc ${kind}-doc`);
+  card.dataset.path = e.path || '';
+  card.append(div('ic', kind === 'plan' ? ICON_PLAN : ICON_REVIEW));
+  const words = div('words');
+  words.append(div('t', esc(e.title || (kind === 'plan' ? 'Block plan' : 'Design review'))));
+  const sub = kind === 'plan'
+    ? e.error || `${(e.blocks || []).length} blocks · open it to see them and drag them`
+    : e.verdict || 'The full review, with its views';
+  const v = words.appendChild(div('v', esc(sub)));
+  v.title = sub;
+  card.append(words);
+  const file = kind === 'review' && (e.pdf || e.html);
+  if (file) card.append(button(e.pdf ? 'PDF' : 'HTML', '', () => post({ type: 'open', path: file })));
+  card.append(button('Open', 'primary', () => post({ type: 'open_card', card: kind, path: e.path })));
+  return card;
+}
+
+// Tool steps in a row (and the views Claude looked at) share one collapsed line:
+// "✓ 6 steps · 2 views — Move component, Run drc". Opened, it lists them in a small box.
+function stepsList() {
+  if (!toolGroup) {
+    toolGroup = document.createElement('details');
+    toolGroup.className = 'steps';
+    toolGroup.innerHTML = '<summary><span class="ti"></span><span class="n"></span><span class="sum"></span></summary><div class="list"></div>';
+    add(toolGroup);
+  }
+  return toolGroup.querySelector('.list');
+}
+function refreshSteps(box) {
+  if (!box) return;
+  const rows = [...box.querySelectorAll('.tool')], views = box.querySelectorAll('.shot').length;
+  const state = r => r.querySelector('.ti').className.replace(/^ti\s*/, '');
+  const running = rows.filter(r => state(r) === 'run'), failed = rows.filter(r => state(r) === 'bad');
+  // The icon is the latest step's: Claude often gets past a failed step on its own.
+  const ti = box.querySelector('summary .ti');
+  const icon = running.length ? 'run' : rows.length ? state(rows[rows.length - 1]) : 'ok';
+  ti.className = 'ti ' + icon;
+  ti.innerHTML = icon === 'ok' ? ICON_OK : icon === 'bad' ? ICON_BAD : icon ? '' : '·';
+  const counts = [];
+  if (rows.length) counts.push(`${rows.length} step${rows.length > 1 ? 's' : ''}`);
+  if (views) counts.push(`${views} view${views > 1 ? 's' : ''}`);
+  const n = box.querySelector('summary .n');
+  n.innerHTML = esc(counts.join(' · ')) + (failed.length ? ` · <span class="bad">${failed.length} failed</span>` : '');
+  const name = r => r.querySelector('.name').textContent;
+  const last = running[running.length - 1];
+  const sum = last ? `${name(last)} ${last.querySelector('.detail').textContent}`.trim() + '…'
+    : [...new Set(rows.map(name))].join(', ');
+  box.querySelector('summary .sum').textContent = sum ? '— ' + sum : '';
+  box.querySelector('summary').title = sum;
+}
+
 function setBusy(v) {
   busy = v;
   document.body.classList.toggle('busy', v);
@@ -848,7 +960,7 @@ function setBusy(v) {
   send.innerHTML = v ? ICON_STOP : ICON_SEND;
   send.title = v ? 'Stop' : 'Send (Enter)';
   updateSend();
-  if (v && !typing) {
+  if (v && !typing && !WINDOW) {
     typing = div('typing', '<div class="row"><span></span><span></span><span></span><div class="status"></div></div>'
       + '<div class="thought-live"></div>');
     log.appendChild(typing); log.scrollTop = log.scrollHeight;
@@ -939,10 +1051,9 @@ const app = {
         if ((e.choices || []).length) add(choicesCard(e.choices));
         break;
       case 'tool': {
-        if (!toolGroup) toolGroup = add(div('tools'));
         const row = div('tool', `<span class="ti run"></span><span class="name">${esc(e.name)}</span><span class="detail">${esc(e.detail || '')}</span>`);
         row.id = 'tool-' + e.id; row.title = e.detail || '';
-        toolGroup.appendChild(row); log.scrollTop = log.scrollHeight; break;
+        stepsList().appendChild(row); refreshSteps(toolGroup); break;
       }
       case 'tool_done': {
         const row = document.getElementById('tool-' + e.id);
@@ -951,6 +1062,7 @@ const app = {
         ti.className = 'ti ' + (e.error ? 'bad' : 'ok');
         ti.innerHTML = e.error ? ICON_BAD : ICON_OK;
         if (e.error && e.text) row.after(div('err-text', esc(e.text)));
+        refreshSteps(row.closest('details.steps'));
         break;
       }
       case 'note': {
@@ -967,44 +1079,33 @@ const app = {
         const fig = div('shot');
         const img = document.createElement('img');
         img.src = e.src; img.alt = e.name; img.title = 'Open ' + e.name;
-        img.onload = () => { log.scrollTop = log.scrollHeight; };
         img.onclick = () => post({ type: 'open', path: e.path });
         const cap = div('cap'); cap.textContent = e.name;
         fig.append(img, cap);
-        add(fig); toolGroup = null; break;
+        stepsList().appendChild(fig); refreshSteps(toolGroup); break;
       }
+      // In the chat a review or plan is a row with Open; its window shows the card itself,
+      // and Claude writing the file again redraws it there.
       case 'review': {
-        // The panel builds the body from the review file and escapes all of its text.
-        const card = div('review');
-        const head = div('head');
-        const words = div('');
-        words.append(div('t', esc(e.title || 'Design review')));
-        if (e.verdict) words.append(div('v', esc(e.verdict)));
-        head.append(words);
-        const file = e.pdf || e.html;
-        if (file) {
-          const b = document.createElement('button');
-          b.className = 'btn primary'; b.textContent = e.pdf ? 'Open PDF' : 'Open in browser';
-          b.title = file; b.onclick = () => post({ type: 'open', path: file });
-          head.append(b);
-        }
-        card.append(head);
-        if (e.error) card.append(div('err', esc(e.error)));
-        const d = document.createElement('details');
-        d.open = true;
-        const s = document.createElement('summary'); s.textContent = 'Full review';
-        const body = div('body assistant', e.body || '');
-        body.querySelectorAll('img[data-path]').forEach(img => {
-          img.onclick = () => post({ type: 'open', path: img.dataset.path });
-        });
-        d.append(s, body); card.append(d);
-        add(card); toolGroup = null;
-        log.scrollTop = card.offsetTop - log.offsetTop - 8;  // a long review is read from its top
+        if (!WINDOW) { add(docCard(e, 'review')); toolGroup = null; break; }
+        const old = log.querySelector('.review');
+        if (old) old.replaceWith(reviewCard(e)); else add(reviewCard(e));
+        log.scrollTop = 0;  // a long review is read from its top
         break;
       }
-      case 'plan': add(planCard(e)); toolGroup = null; break;
+      case 'plan': {
+        if (!WINDOW) { add(docCard(e, 'plan')); toolGroup = null; break; }
+        const old = log.querySelector('.plan');
+        if (old) old.replaceWith(planCard(e)); else { add(planCard(e)); log.scrollTop = 0; }
+        break;
+      }
       case 'plan_update': {
-        // A drag was written into the plan file: redraw the newest card of that plan.
+        if (!WINDOW) {  // the row's block count
+          const row = [...document.querySelectorAll('.plan-doc')].filter(c => c.dataset.path === e.path).pop();
+          if (row) row.replaceWith(docCard(e, 'plan'));
+          break;
+        }
+        // A drag was written into the plan file: redraw the card.
         const old = [...document.querySelectorAll('.plan')].filter(c => c.dataset.path === e.path).pop();
         if (!old) break;
         const st = old._state;
@@ -1019,7 +1120,8 @@ const app = {
         setBusy(e.value);
         if (!e.value) {
           toolGroup = null;
-          document.querySelectorAll('.ti.run').forEach(t => { t.className = 'ti'; t.textContent = '·'; });
+          document.querySelectorAll('.tool .ti.run').forEach(t => { t.className = 'ti'; t.textContent = '·'; });
+          document.querySelectorAll('details.steps').forEach(refreshSteps);
         }
         break;
       case 'activity': if (typing) setActivity(e.phase, e.name || '', e.tokens, e.thought); break;

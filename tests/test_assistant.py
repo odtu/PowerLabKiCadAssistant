@@ -473,6 +473,86 @@ class ChatHistoryTests(unittest.TestCase):
         self.assertNotIn("svg", panel.events[-1])  # the chat keeps the path, not the drawing
         self.assertEqual(panel.events[-1]["path"], path)
 
+    def test_plans_and_reviews_open_in_their_own_window(self):
+        # The chat looked crowded with a block plan and a whole review in it: they are rows
+        # with Open, which shows the card in a window of its own (one per file).
+        panel = self.fake_panel()  # skips without wx.html2
+        from powerlab_assistant import panel as panel_module
+        panel.chat_cwd = self.project
+        panel.card_windows = {}
+        opened = []
+
+        class Window:
+            def __init__(self, owner, kind, path):
+                opened.append((kind, path))
+                self.shown = 0
+
+            def Show(self):
+                self.shown += 1
+
+            def Raise(self):
+                pass
+
+        saved = panel_module.CardWindow
+        panel_module.CardWindow = Window
+        self.addCleanup(setattr, panel_module, "CardWindow", saved)
+        files = {}
+        for kind, rel in (("plan", "placement\\block-plan.json"), ("review", "design-review\\design-review.md")):
+            files[kind] = os.path.join(self.project, *rel.split("\\"))
+            os.makedirs(os.path.dirname(files[kind]), exist_ok=True)
+            open(files[kind], "w").close()
+        open_card = panel_module.ClaudePanel.msg_open_card
+        open_card(panel, {"card": "plan", "path": files["plan"]})
+        open_card(panel, {"card": "plan", "path": files["plan"]})  # the same window again
+        open_card(panel, {"card": "review", "path": files["review"]})
+        self.assertEqual(opened, [("plan", files["plan"]), ("review", files["review"])])
+        self.assertEqual(panel.card_windows[("plan", os.path.normcase(files["plan"]))].shown, 2)
+        open_card(panel, {"card": "plan", "path": files["review"]})  # not a plan
+        open_card(panel, {"card": "script", "path": files["plan"]})
+        self.assertEqual([e["level"] for e in panel.emitted], ["warn", "warn"])
+        other = os.path.join(self.tmp.name, "other", "placement", "block-plan.json")
+        os.makedirs(os.path.dirname(other))
+        open(other, "w").close()
+        open_card(panel, {"card": "plan", "path": other})  # another project's
+        self.assertEqual(len(opened), 2)
+
+        # A window keeps up with the busy state and with its own file, nothing else.
+        window = types.SimpleNamespace(kind="review", path=files["review"], sent=[],
+                                       FOLLOW=saved.FOLLOW)
+        window.send = window.sent.append
+        window.card = lambda: {"kind": "review", "path": files["review"], "body": "<p>x</p>"}
+        follow = saved.follow
+        for data in ({"kind": "busy", "value": True}, {"kind": "text", "text": "hi"},
+                     {"kind": "plan_update", "path": files["plan"]},
+                     {"kind": "review", "path": files["review"], "title": "t"}):
+            follow(window, data)
+        self.assertEqual([d["kind"] for d in window.sent], ["busy", "review"])
+        self.assertEqual(window.sent[1]["body"], "<p>x</p>")  # a review without its body is built again
+        # The panel passes its events on to its windows.
+        window.follow = lambda data: follow(window, data)
+        real = types.SimpleNamespace(card_windows={"w": window}, ready=False, pending=[])
+        window.sent.clear()
+        panel_module.ClaudePanel.emit(real, "busy", value=False)
+        self.assertEqual(window.sent, [{"kind": "busy", "value": False}])
+        with open(os.path.join(ROOT, "plugin", "powerlab_assistant", "panel.html"), encoding="utf-8") as f:
+            page = f.read()
+        self.assertEqual(page.count("<body>"), 1)  # CardWindow marks it as a window
+        self.assertIn("const WINDOW = document.body.classList.contains('window');", page)
+        self.assertIn("post({ type: 'open_card', card: kind, path: e.path })", page)
+        self.assertIn("if (!WINDOW) { add(docCard(e, 'review'));", page)
+
+    def test_tool_steps_and_views_fold_into_one_line(self):
+        # Every tool call and render was its own row in the chat. A run of them is one
+        # collapsed line ("5 steps · 1 view — Move component, ...") that opens into a small box.
+        with open(os.path.join(ROOT, "plugin", "powerlab_assistant", "panel.html"), encoding="utf-8") as f:
+            page = f.read()
+        self.assertIn("toolGroup.className = 'steps';", page)
+        self.assertIn("stepsList().appendChild(row); refreshSteps(toolGroup);", page)
+        self.assertIn("stepsList().appendChild(fig); refreshSteps(toolGroup);", page)  # renders too
+        self.assertIn("details.steps .list {", page)
+        self.assertIn("max-height: 260px; overflow-y: auto;", page)
+        self.assertNotIn("toolGroup = add(div('tools'))", page)
+
     def test_expired_session_is_sent_again_as_a_new_chat(self):
         panel = self.fake_panel()
         panel.chat_cwd, panel.session_id = self.project, "gone"
@@ -948,7 +1028,8 @@ class BlockPlanTests(unittest.TestCase):
         self.assertIn("self.show_plan(plan_path)", panel)
         with open(os.path.join(ROOT, "plugin", "powerlab_assistant", "panel.html"), encoding="utf-8") as f:
             page = f.read()
-        self.assertIn("case 'plan': add(planCard(e))", page)
+        self.assertIn("if (!WINDOW) { add(docCard(e, 'plan'));", page)  # a row in the chat
+        self.assertIn("else { add(planCard(e));", page)  # the drawing in its window
         self.assertIn("post({ type: 'locate', target: loc })", page)
         self.assertIn("post({ type: 'plan_move', path: e.path, moves: [move], undo: !!undo })", page)
         self.assertIn("'Move to bottom side ↓' : 'Move to top side ↑'", page)

@@ -243,6 +243,86 @@ def install_excepthook():
     sys.excepthook = hook
 
 
+class CardWindow(wx.Frame):
+    """A block plan or design review in a window of its own, so the chat keeps to the
+    conversation. It runs the panel's own page with only the card, and passes the card's
+    clicks (locate in KiCad, drag a block, open a file, send moves) to the panel."""
+
+    FORWARD = ("open", "locate", "plan_move", "send")  # what the card may ask the panel for
+    FOLLOW = ("busy", "plan", "plan_update", "review")  # panel events the card keeps up with
+
+    def __init__(self, panel, kind, path):
+        title = {"plan": "Block plan", "review": "Design review"}[kind]
+        super().__init__(panel, title=f"{title} — PowerLab Assistant",
+                         style=wx.DEFAULT_FRAME_STYLE | wx.FRAME_FLOAT_ON_PARENT)
+        self.panel, self.kind, self.path = panel, kind, path
+        self.ready, self.pending = False, []
+        self.web = wx.html2.WebView.New(self, backend=wx.html2.WebViewBackendEdge)
+        self.web.AddScriptMessageHandler("wx")
+        self.web.EnableAccessToDevTools(False)
+        self.web.Bind(wx.html2.EVT_WEBVIEW_SCRIPT_MESSAGE_RECEIVED, self.on_message)
+        self.web.Bind(wx.html2.EVT_WEBVIEW_NAVIGATING, panel.on_navigating)
+        self.web.Bind(wx.html2.EVT_WEBVIEW_NEWWINDOW, panel.on_new_window)
+        self.Bind(wx.EVT_CLOSE, self.on_close)
+        with open(HTML_PATH, encoding="utf-8") as f:
+            self.web.SetPage(f.read().replace("<body>", '<body class="window">', 1), "")
+        # Beside the panel, as big as the display allows.
+        index = wx.Display.GetFromWindow(panel)
+        area = wx.Display(max(index, 0)).GetClientArea()
+        width = min(area.width - 80, 760 if kind == "plan" else 820)
+        height = min(area.height - 80, 760 if kind == "plan" else 900)
+        x = max(area.left + 20, panel.GetPosition().x - width - 12)
+        self.SetSize(width, height)
+        self.SetPosition((x, area.top + max(20, (area.height - height) // 2)))
+
+    def card(self):
+        if self.kind == "plan":
+            return dict(plan.card(self.path), kind="plan")
+        stem = os.path.splitext(self.path)[0]
+        files = {k: stem + "." + k for k in ("pdf", "html") if os.path.isfile(stem + "." + k)}
+        return dict(review.card(self.path), kind="review", **files)
+
+    def send(self, data):
+        if self.ready:
+            self.web.RunScriptAsync(f"app.event({json.dumps(data)})")
+        else:
+            self.pending.append(data)
+
+    def follow(self, data):
+        """A panel event: the busy state, or this card's file written again or moved."""
+        if data["kind"] not in self.FOLLOW:
+            return
+        if data["kind"] != "busy" and os.path.normcase(str(data.get("path", ""))) != os.path.normcase(self.path):
+            return
+        if data["kind"] == "review" and "body" not in data:
+            data = self.card()
+        self.send(data)
+
+    def on_message(self, evt):
+        try:
+            msg = json.loads(evt.GetString())
+        except ValueError:
+            return
+        kind = msg.get("type")
+        if kind == "ready":
+            self.ready = True
+            try:
+                card = self.card()
+            except Exception as e:  # a bad file never breaks the window
+                card = {"kind": self.kind, "path": self.path, "error": f"It can't be shown: {e}"}
+            for data in [{"kind": "busy", "value": bool(self.panel.proc)}, card] + self.pending:
+                self.web.RunScriptAsync(f"app.event({json.dumps(data)})")
+            self.pending = []
+        elif kind in self.FORWARD:
+            getattr(self.panel, "msg_" + kind)(msg)
+            if kind == "send":
+                self.panel.present()  # Claude's answer is in the chat
+
+    def on_close(self, evt):
+        self.panel.card_windows.pop((self.kind, os.path.normcase(self.path)), None)
+        self.Destroy()
+
+
 class ClaudePanel(wx.Frame):
     def present(self):
         self.Show()
@@ -279,6 +359,7 @@ class ClaudePanel(wx.Frame):
         self.review_writes = {}  # tool id -> design-review.md being written in this run
         self.review_md = None  # the review written in this run, shown when the run ends
         self.plan_writes = {}  # tool id -> block-plan.json being written (shown once written)
+        self.card_windows = {}  # (kind, normcased path) -> CardWindow showing that plan or review
         self.activity, self.activity_sent = ("waiting", ""), 0.0
         self.thinking_tokens = 0
         self.thought, self.thought_started = "", 0.0
@@ -328,6 +409,8 @@ class ClaudePanel(wx.Frame):
 
     def emit(self, kind, **data):
         data["kind"] = kind
+        for window in list(self.card_windows.values()):
+            window.follow(data)
         if not self.ready:
             self.pending.append(data)
             return
@@ -353,6 +436,8 @@ class ClaudePanel(wx.Frame):
         self.save_chat()
         if self.events:
             self.load_page()
+        for window in list(getattr(self, "card_windows", {}).values()):
+            window.Close()  # another project's plan or review
         self.chat_cwd = cwd
         # With two KiCads open, each has a panel: the title says whose this is.
         project = os.path.basename(cwd.rstrip(os.sep)) if cwd != os.path.expanduser("~") else ""
@@ -500,6 +585,23 @@ class ClaudePanel(wx.Frame):
             self.emit("note", level="warn", text=f"The block plan couldn't be changed: {e}")
             return
         self.emit("plan_update", **dict(data, lines=lines, undo=bool(msg.get("undo"))))
+
+    def msg_open_card(self, msg):
+        """Open on a block plan or review row: show it in its window (one per file)."""
+        kind, path = msg.get("card"), str(msg.get("path", ""))
+        check = {"plan": plan.is_plan, "review": review.is_review}.get(kind)
+        if not check or not check(path) or not os.path.isfile(path):
+            self.emit("note", level="warn", text="That file is no longer there.")
+            return
+        if self.chat_cwd and not os.path.normcase(os.path.abspath(path)).startswith(
+                os.path.normcase(os.path.abspath(self.chat_cwd)) + os.sep):
+            return  # only this chat's project
+        key = (kind, os.path.normcase(path))
+        window = self.card_windows.get(key)
+        if not window:
+            window = self.card_windows[key] = CardWindow(self, kind, path)
+        window.Show()
+        window.Raise()
 
     def msg_reload(self, msg):
         self.reload_editor()
