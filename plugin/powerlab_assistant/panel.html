@@ -160,7 +160,16 @@ details.steps .list .shot img { max-height: 170px; }
 .tool { display: flex; align-items: center; gap: 8px; padding: 3px 10px; font-size: 12px; min-width: 0; }
 .tool .name { font-weight: 500; white-space: nowrap; }
 .tool .detail { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.err-text { color: var(--err); font-size: 11.5px; padding: 0 10px 4px 32px; }
+.step-errs { margin: -6px 0 10px; }
+.step-errs:empty { display: none; }
+.err-line {
+  display: flex; align-items: flex-start; gap: 7px; padding: 3px 0 0; font-size: 11.5px; line-height: 1.4;
+  color: var(--err); cursor: pointer;
+}
+.err-line > span:last-child { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
+.err-line b { font-weight: 600; }
+.err-line .ti { margin-top: 1px; }
+.err-line:hover > span:last-child { text-decoration: underline; }
 .ti { width: 14px; height: 14px; flex: none; display: grid; place-items: center; }
 .ti.run { border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
 .ti.ok { color: var(--ok); } .ti.bad { color: var(--err); }
@@ -926,6 +935,7 @@ function stepsList() {
     toolGroup.className = 'steps';
     toolGroup.innerHTML = '<summary><span class="ti"></span><span class="n"></span><span class="sum"></span></summary><div class="list"></div>';
     add(toolGroup);
+    toolGroup._errs = add(div('step-errs'));  // failed steps stay in sight while it's closed
   }
   return toolGroup.querySelector('.list');
 }
@@ -950,6 +960,16 @@ function refreshSteps(box) {
     : [...new Set(rows.map(name))].join(', ');
   box.querySelector('summary .sum').textContent = sum ? '— ' + sum : '';
   box.querySelector('summary').title = sum;
+  // Each failed step's error under the line; a click opens the box at that step.
+  if (!box._errs) return;
+  box._errs.innerHTML = '';
+  failed.forEach(r => {
+    const what = `${name(r)} ${r.querySelector('.detail').textContent}`.trim();
+    const line = div('err-line', `<span class="ti bad">${ICON_BAD}</span><span><b>${esc(what)}:</b> ${esc(r.dataset.error)}</span>`);
+    line.title = r.dataset.error;
+    line.onclick = () => { box.open = true; r.scrollIntoView({ block: 'nearest' }); };
+    box._errs.append(line);
+  });
 }
 
 function setBusy(v) {
@@ -1061,7 +1081,7 @@ const app = {
         const ti = row.querySelector('.ti');
         ti.className = 'ti ' + (e.error ? 'bad' : 'ok');
         ti.innerHTML = e.error ? ICON_BAD : ICON_OK;
-        if (e.error && e.text) row.after(div('err-text', esc(e.text)));
+        if (e.error) row.dataset.error = e.text || 'failed';
         refreshSteps(row.closest('details.steps'));
         break;
       }

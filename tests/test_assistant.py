@@ -552,6 +552,10 @@ class ChatHistoryTests(unittest.TestCase):
         self.assertIn("details.steps .list {", page)
         self.assertIn("max-height: 260px; overflow-y: auto;", page)
         self.assertNotIn("toolGroup = add(div('tools'))", page)
+        # A failed step's error stays in the chat, under the closed line.
+        self.assertIn("toolGroup._errs = add(div('step-errs'));", page)
+        self.assertIn("if (e.error) row.dataset.error = e.text || 'failed';", page)
+        self.assertIn("${esc(r.dataset.error)}", page)
 
     def test_expired_session_is_sent_again_as_a_new_chat(self):
         panel = self.fake_panel()
