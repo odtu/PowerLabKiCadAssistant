@@ -257,6 +257,7 @@ a.loc:hover { text-decoration-style: solid; }
 .plan .blk[data-kind="text"] .nm, .plan .blk[data-kind="logo"] .nm { fill: #efe6c4; font-weight: 500; letter-spacing: .04em; }
 .plan .blk.drag { cursor: grabbing; }
 .plan .blk.drag .body { stroke: #ffffff; stroke-width: .6; fill-opacity: .4; }
+.plan .snap line { stroke: #ff6bd6; stroke-width: .3; stroke-dasharray: 1.2 .8; pointer-events: none; }
 .plan .row .s { cursor: pointer; background: transparent; font-family: inherit; }
 .plan .row .s:hover { color: var(--text); border-color: var(--muted); }
 .plan .moves { margin: 6px 10px 0; padding: 8px 10px; border-radius: 9px; background: color-mix(in srgb, var(--accent) 8%, var(--surface-2)); }
@@ -654,6 +655,23 @@ function planCard(e, state) {
     return p.matrixTransform(svg.getScreenCTM().inverse());
   };
   const half = v => Math.round(v * 2) / 2;  // drags snap to 0.5 mm / 0.5 degree
+  // Near the board's lines they snap to those instead: a block's side to the board's edge, its
+  // middle to the board's middle lines, so it lands at the middle of an edge, in a corner or at
+  // the centre. A sector's middle snaps to 45° steps round its centre. Alt drags freely.
+  const board = svg && svg.dataset.board ? svg.dataset.board.split(' ').map(Number) : null;
+  const guides = svg && svg.querySelector('g.snap');
+  const guide = (x1, y1, x2, y2) => {
+    const l = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    [['x1', x1], ['y1', y1], ['x2', x2], ['y2', y2]].forEach(([k, v]) => l.setAttribute(k, v));
+    guides.append(l);
+  };
+  const snapAxis = (d, lo, hi, b0, b1, tol) => {  // the shift that lines lo..hi up with b0..b1
+    let best = null;
+    [[b0 - lo, b0], [(b0 + b1 - lo - hi) / 2, (b0 + b1) / 2], [b1 - hi, b1]].forEach(([s, at]) => {
+      if (Math.abs(s - d) <= tol && (!best || Math.abs(s - d) < Math.abs(best[0] - d))) best = [Math.round(s * 100) / 100, at];
+    });
+    return best;
+  };
   // The links of a dragged block follow it, with the gap to the other block measured live
   // (edge to edge, like the panel measures it after the drop).
   const ptsOf = g => g._pts || (g._pts = (g.dataset.pts || '').split(' ').filter(Boolean).map(s => s.split(',').map(Number)));
@@ -719,16 +737,27 @@ function planCard(e, state) {
       const p0 = toSvg(ev);
       const sector = g.dataset.drag === 'sector';
       const cx = +g.dataset.cx, cy = +g.dataset.cy, ax = +g.dataset.ax, ay = +g.dataset.ay;
+      const pts = ptsOf(g), xs = pts.map(q => q[0]), ys = pts.map(q => q[1]);
+      const box = pts.length ? [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)] : null;
+      const tol = 8 / (svg.getScreenCTM().a || 1);  // 8 px, in mm
       let move = null;
       try { g.setPointerCapture(ev.pointerId); } catch (_) { /* still drags while over the block */ }
       const onMove = ev2 => {
         const p = toSvg(ev2);
+        const snap = !ev2.altKey && guides;
+        if (guides) guides.textContent = '';
         let tf;  // where a point of the block is now
         if (sector) {
-          let da = (Math.atan2(p.y - cy, p.x - cx) - Math.atan2(p0.y - cy, p0.x - cx)) * 180 / Math.PI;
-          da = half(((da + 540) % 360) - 180);
+          const raw = (((Math.atan2(p.y - cy, p.x - cx) - Math.atan2(p0.y - cy, p0.x - cx)) * 180 / Math.PI + 540) % 360) - 180;
+          let da = half(raw);
           const dr = half(Math.hypot(p.x - cx, p.y - cy) - Math.hypot(p0.x - cx, p0.y - cy));
           const am = Math.atan2(ay - cy, ax - cx);
+          const mid = am * 180 / Math.PI + raw, to = Math.round(mid / 45) * 45;
+          const far = Math.max(...pts.map(q => Math.hypot(q[0] - cx, q[1] - cy)), 1) + Math.abs(dr);
+          if (snap && Math.abs(to - mid) * Math.PI / 180 * Math.hypot(ax - cx, ay - cy) <= tol) {
+            da = Math.round(((to - am * 180 / Math.PI + 540) % 360 - 180) * 100) / 100;
+            guide(cx, cy, cx + (far + 3) * Math.cos(to * Math.PI / 180), cy + (far + 3) * Math.sin(to * Math.PI / 180));
+          }
           const tx = dr * Math.cos(am), ty = dr * Math.sin(am), t = da * Math.PI / 180;
           g.setAttribute('transform', `rotate(${da} ${cx} ${cy}) translate(${tx} ${ty})`);
           tf = ([x, y]) => {
@@ -737,7 +766,13 @@ function planCard(e, state) {
           };
           move = (da || dr) ? { id, da, dr } : null;
         } else {
-          const dx = half(p.x - p0.x), dy = half(p.y - p0.y);
+          let dx = half(p.x - p0.x), dy = half(p.y - p0.y);
+          if (snap && board && box) {
+            const sx = snapAxis(p.x - p0.x, box[0], box[2], board[0], board[2], tol);
+            const sy = snapAxis(p.y - p0.y, box[1], box[3], board[1], board[3], tol);
+            if (sx) { dx = sx[0]; guide(sx[1], board[1], sx[1], board[3]); }
+            if (sy) { dy = sy[0]; guide(board[0], sy[1], board[2], sy[1]); }
+          }
           g.setAttribute('transform', `translate(${dx} ${dy})`);
           tf = ([x, y]) => [x + dx, y + dy];
           move = (dx || dy) ? { id, dx, dy } : null;
@@ -749,6 +784,7 @@ function planCard(e, state) {
         g.removeEventListener('pointermove', onMove);
         g.removeEventListener('pointerup', onUp);
         g.removeEventListener('pointercancel', onUp);
+        if (guides) guides.textContent = '';
         if (move) { g.dataset.dragged = '1'; sendMove(move); }
         else g.removeAttribute('transform');
       };
@@ -796,7 +832,8 @@ function planCard(e, state) {
     e.notes.forEach(t => { const li = document.createElement('li'); li.innerHTML = inline(t); ul.append(li); });
     card.append(ul);
   }
-  card.append(div('hint', 'Hover a block to see it, click to select its parts in KiCad, drag to move it, ' +
+  card.append(div('hint', 'Hover a block to see it, click to select its parts in KiCad, drag to move it ' +
+    '(it snaps to the board\'s edges, their middles and the centre; hold Alt to drag freely), ' +
     'or click TOP/BOT to switch its side.'));
   return card;
 }

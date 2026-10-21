@@ -253,7 +253,12 @@ def svg(data):
     x0, y0 = min(xs) - pad, min(ys) - pad
     w, h = max(xs) - min(xs) + 2 * pad, max(ys) - min(ys) + 2 * pad
     grid = 5.0 if max(w, h) < 200 else 10.0
-    o = [f'<svg class="plan-svg" viewBox="{_f(x0)} {_f(y0)} {_f(w)} {_f(h)}" '
+    # The board's box: drags snap to its edges, the middles of its edges and its centre.
+    board = ""
+    if outline and outline.points:
+        bx, by = [p[0] for p in outline.points], [p[1] for p in outline.points]
+        board = f' data-board="{_f(min(bx))} {_f(min(by))} {_f(max(bx))} {_f(max(by))}"'
+    o = [f'<svg class="plan-svg" viewBox="{_f(x0)} {_f(y0)} {_f(w)} {_f(h)}"{board} '
          f'xmlns="http://www.w3.org/2000/svg" role="img">',
          "<defs>",
          f'<pattern id="pg" width="{_f(grid)}" height="{_f(grid)}" patternUnits="userSpaceOnUse">'
@@ -338,7 +343,7 @@ def svg(data):
         name, detail = str(b.get("name") or bid), str(b.get("detail") or "")
         # How a drag moves it: a ring sector turns round its centre and moves in or out
         # along its radius; any other shape moves in x and y.
-        if "sector" in b:
+        if "sector" in b:  # turning snaps its middle to 45° steps round the centre
             c = _pt((b["sector"] or {}).get("center"))
             drag = f' data-drag="sector" data-cx="{_f(c[0])}" data-cy="{_f(c[1])}"'
         else:
@@ -357,6 +362,7 @@ def svg(data):
                  f'<path d="{s.d}" fill="{fill}" stroke="{colour}"{dash} class="body"/>'
                  + _label(s, name, detail, "lbl", kind in ("text", "logo")) + "</g>")
     o += pills
+    o.append('<g class="snap"></g>')  # the guides a snapped drag shows
     o.append("</svg>")
     return "".join(o)
 

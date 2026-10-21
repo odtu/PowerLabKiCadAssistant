@@ -862,6 +862,16 @@ class BlockPlanTests(unittest.TestCase):
         self.assertRegex(svg, r'data-pts="[\d.]+,[\d.]+ ')
         self.assertIn('data-from="u3" data-to="legB"', svg)
 
+    def test_drags_snap_to_the_board_edges_and_centre(self):
+        svg = self.plan.card(self.path)["svg"]
+        self.assertRegex(svg, r'<svg [^>]*data-board="-?[\d.]+ -?[\d.]+ [\d.]+ [\d.]+"')  # the board's box
+        self.assertIn('<g class="snap"></g>', svg)  # where the guides go
+        with open(os.path.join(ROOT, "plugin", "powerlab_assistant", "panel.html"), encoding="utf-8") as f:
+            page = f.read()
+        self.assertIn("const snapAxis = (d, lo, hi, b0, b1, tol)", page)
+        self.assertIn("const snap = !ev2.altKey && guides;", page)  # Alt drags freely
+        self.assertIn("Math.round(mid / 45) * 45", page)  # sectors snap to 45° steps
+
     def test_any_board_shape_comes_from_edge_cuts(self):
         import json
         project = os.path.dirname(os.path.dirname(self.path))
