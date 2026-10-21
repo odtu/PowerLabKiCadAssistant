@@ -473,6 +473,85 @@ class ChatHistoryTests(unittest.TestCase):
         self.assertNotIn("svg", panel.events[-1])  # the chat keeps the path, not the drawing
         self.assertEqual(panel.events[-1]["path"], path)
 
+    def test_plans_and_reviews_open_in_their_own_window(self):
+        # The chat looked crowded with a block plan and a whole review in it: they are rows
+        # with Open, which shows the card in a window of its own (one per file).
+        panel = self.fake_panel()  # skips without wx.html2
+        from powerlab_assistant import panel as panel_module
+        panel.chat_cwd = self.project
+        panel.card_windows = {}
+        opened = []
+
+        class Window:
+            def __init__(self, owner, kind, path):
+                opened.append((kind, path))
+                self.shown = 0
+
+            def Show(self):
+                self.shown += 1
+
+            def Raise(self):
+                pass
+
+        saved = panel_module.CardWindow
+        panel_module.CardWindow = Window
+        self.addCleanup(setattr, panel_module, "CardWindow", saved)
+        files = {}
+        for kind, rel in (("plan", "placement\\block-plan.json"), ("review", "design-review\\design-review.md")):
+            files[kind] = os.path.join(self.project, *rel.split("\\"))
+            os.makedirs(os.path.dirname(files[kind]), exist_ok=True)
+            open(files[kind], "w").close()
+        open_card = panel_module.ClaudePanel.msg_open_card
+        open_card(panel, {"card": "plan", "path": files["plan"]})
+        open_card(panel, {"card": "plan", "path": files["plan"]})  # the same window again
+        open_card(panel, {"card": "review", "path": files["review"]})
+        self.assertEqual(opened, [("plan", files["plan"]), ("review", files["review"])])
+        self.assertEqual(panel.card_windows[("plan", os.path.normcase(files["plan"]))].shown, 2)
+        open_card(panel, {"card": "plan", "path": files["review"]})  # not a plan
+        open_card(panel, {"card": "script", "path": files["plan"]})
+        self.assertEqual([e["level"] for e in panel.emitted], ["warn", "warn"])
+        other = os.path.join(self.tmp.name, "other", "placement", "block-plan.json")
+        os.makedirs(os.path.dirname(other))
+        open(other, "w").close()
+        open_card(panel, {"card": "plan", "path": other})  # another project's
+        self.assertEqual(len(opened), 2)
+
+        # A window keeps up with the busy state and with its own file, nothing else.
+        window = types.SimpleNamespace(kind="review", path=files["review"], sent=[],
+                                       FOLLOW=panel_module.CardWindow.FOLLOW)
+        window.send = window.sent.append
+        window.card = lambda: {"kind": "review", "path": files["review"], "body": "<p>x</p>"}
+        follow = panel_module.CardWindow.follow
+        for data in ({"kind": "busy", "value": True}, {"kind": "text", "text": "hi"},
+                     {"kind": "plan_update", "path": files["plan"]},
+                     {"kind": "review", "path": files["review"], "title": "t"}):
+            follow(window, data)
+        self.assertEqual([d["kind"] for d in window.sent], ["busy", "review"])
+        self.assertEqual(window.sent[1]["body"], "<p>x</p>")  # a review without its body is built again
+        # The panel passes its events on to its windows.
+        real = types.SimpleNamespace(card_windows={"w": window}, ready=False, pending=[])
+        window.sent.clear()
+        panel_module.ClaudePanel.emit(real, "busy", value=False)
+        self.assertEqual(window.sent, [{"kind": "busy", "value": False}])
+        with open(os.path.join(ROOT, "plugin", "powerlab_assistant", "panel.html"), encoding="utf-8") as f:
+            page = f.read()
+        self.assertEqual(page.count("<body>"), 1)  # CardWindow marks it as a window
+        self.assertIn("const WINDOW = document.body.classList.contains('window');", page)
+        self.assertIn("post({ type: 'open_card', card: kind, path: e.path })", page)
+        self.assertIn("if (!WINDOW) { add(docCard(e, 'review'));", page)
+
+    def test_tool_steps_and_views_fold_into_one_line(self):
+        # Every tool call and render was its own row in the chat. A run of them is one
+        # collapsed line ("5 steps · 1 view — Move component, ...") that opens into a small box.
+        with open(os.path.join(ROOT, "plugin", "powerlab_assistant", "panel.html"), encoding="utf-8") as f:
+            page = f.read()
+        self.assertIn("toolGroup.className = 'steps';", page)
+        self.assertIn("stepsList().appendChild(row); refreshSteps(toolGroup);", page)
+        self.assertIn("stepsList().appendChild(fig); refreshSteps(toolGroup);", page)  # renders too
+        self.assertIn("details.steps .list {", page)
+        self.assertIn("max-height: 260px; overflow-y: auto;", page)
+        self.assertNotIn("toolGroup = add(div('tools'))", page)
+
     def test_expired_session_is_sent_again_as_a_new_chat(self):
         panel = self.fake_panel()
         panel.chat_cwd, panel.session_id = self.project, "gone"
@@ -948,7 +1027,8 @@ class BlockPlanTests(unittest.TestCase):
         self.assertIn("self.show_plan(plan_path)", panel)
         with open(os.path.join(ROOT, "plugin", "powerlab_assistant", "panel.html"), encoding="utf-8") as f:
             page = f.read()
-        self.assertIn("case 'plan': add(planCard(e))", page)
+        self.assertIn("if (!WINDOW) { add(docCard(e, 'plan'));", page)  # a row in the chat
+        self.assertIn("else { add(planCard(e));", page)  # the drawing in its window
         self.assertIn("post({ type: 'locate', target: loc })", page)
         self.assertIn("post({ type: 'plan_move', path: e.path, moves: [move], undo: !!undo })", page)
         self.assertIn("'Move to bottom side ↓' : 'Move to top side ↑'", page)
@@ -1597,6 +1677,80 @@ class McpPatchTests(unittest.TestCase):
                 x = pcbnew.ToMM(a.x + (e.x - a.x) * k / 50)
                 y = pcbnew.ToMM(a.y + (e.y - a.y) * k / 50)
                 self.assertFalse(12 < x < 18 and y < 14, "a track in the footprint's keepout")
+
+    def test_powerlab_router_bus_keeps_out_of_rule_areas(self):
+        """A bus between a module row and a header row is drawn as a river (bus.py), placed
+        with its own clearance check, not the search's grid. Its tracks and escape vias
+        stayed out of other copper but ran straight through a rule area that keeps tracks
+        and vias out."""
+        try:
+            import pcbnew
+        except ImportError:
+            self.skipTest("needs KiCad's Python")
+        sys.path.insert(0, self.router_package())
+        try:
+            for m in [m for m in sys.modules if m == "commands" or m.startswith("commands.")]:
+                del sys.modules[m]
+            from commands.powerlab_router.router import Router
+        finally:
+            sys.path.pop(0)
+        mm, P = pcbnew.FromMM, lambda x, y: pcbnew.VECTOR2I(pcbnew.FromMM(x), pcbnew.FromMM(y))
+        board = pcbnew.BOARD()
+        for a, b in (((0, 0), (30, 0)), ((30, 0), (30, 30)), ((30, 30), (0, 30)), ((0, 30), (0, 0))):
+            edge = pcbnew.PCB_SHAPE(board, pcbnew.SHAPE_T_SEGMENT)
+            edge.SetStart(P(*a)); edge.SetEnd(P(*b)); edge.SetLayer(pcbnew.Edge_Cuts); edge.SetWidth(mm(0.1))
+            board.Add(edge)
+        nets = []
+        for i in range(4):
+            net = pcbnew.NETINFO_ITEM(board, f"S{i}")
+            board.Add(net)
+            nets.append(net)
+        # a module row (SMD, top only) and a header row (through-hole), facing each other
+        for ref, x, pitch, smd in (("U1", 8, 1.27, True), ("J1", 22, 2.54, False)):
+            fp = pcbnew.FOOTPRINT(board)
+            fp.SetReference(ref)
+            fp.SetPosition(P(x, 15))
+            for i, net in enumerate(nets):
+                pad = pcbnew.PAD(fp)
+                pad.SetAttribute(pcbnew.PAD_ATTRIB_SMD if smd else pcbnew.PAD_ATTRIB_PTH)
+                pad.SetLayerSet(pcbnew.PAD.SMDMask() if smd else pcbnew.PAD.PTHMask())
+                pad.SetShape(pcbnew.PAD_SHAPE_RECTANGLE if smd else pcbnew.PAD_SHAPE_CIRCLE)
+                pad.SetSize(pcbnew.F_Cu, P(1.5, 0.6) if smd else P(1.6, 1.6))
+                if not smd:
+                    pad.SetDrillSize(P(1.0, 1.0))
+                y = 15 + (i - 1.5) * pitch
+                pad.SetPosition(P(x, y))
+                pad.SetNumber(str(i + 1))
+                pad.SetNet(net)
+                fp.Add(pad)
+            board.Add(fp)
+        # a rule area across the middle of the channel; the way round is above or below it
+        keepout = pcbnew.ZONE(board)
+        keepout.SetIsRuleArea(True)
+        keepout.SetDoNotAllowTracks(True)
+        keepout.SetDoNotAllowVias(True)
+        layers = pcbnew.LSET()
+        layers.AddLayer(pcbnew.F_Cu)
+        layers.AddLayer(pcbnew.B_Cu)
+        keepout.SetLayerSet(layers)
+        for x, y in ((13, 11), (17, 11), (17, 19), (13, 19)):
+            keepout.AppendCorner(P(x, y), -1)
+        board.Add(keepout)
+        router = Router(board)
+        conns = router.connections([n.GetNetname() for n in nets])
+        router._buses(conns)
+        self.assertTrue(all(c.bus for c in conns), "the test board should make a bus")
+        router.run([n.GetNetname() for n in nets])
+        tracks = list(board.GetTracks())
+        self.assertTrue(tracks)
+        for t in tracks:
+            a, e = t.GetStart(), t.GetEnd()
+            for k in range(101):
+                x = pcbnew.ToMM(a.x + (e.x - a.x) * k / 100)
+                y = pcbnew.ToMM(a.y + (e.y - a.y) * k / 100)
+                self.assertFalse(13 < x < 17 and 11 < y < 19,
+                                 f"{t.GetNetname()} {'via' if t.Type() == pcbnew.PCB_VIA_T else 'track'} "
+                                 f"in the rule area at ({x:.2f}, {y:.2f})")
 
     def test_powerlab_router_routes_a_board(self):
         """Milestone 2, end to end: two pads with another net's pad between them. The track

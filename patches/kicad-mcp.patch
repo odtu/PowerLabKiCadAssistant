@@ -5018,10 +5018,10 @@ index 0000000..9133690
 +    return {"added": len(added), "pitch_mm": pitch, "via": [vd, rb.widths(net)[2]]}
 diff --git a/python/commands/powerlab_router/router.py b/python/commands/powerlab_router/router.py
 new file mode 100644
-index 0000000..6c4daf9
+index 0000000..dbb248f
 --- /dev/null
 +++ b/python/commands/powerlab_router/router.py
-@@ -0,0 +1,1308 @@
+@@ -0,0 +1,1323 @@
 +"""The PowerLab router's main loop (plan §4.2-4.6).
 +
 +Connections are the edges of a minimum spanning tree over each net's pads. Groups are
@@ -5316,15 +5316,24 @@ index 0000000..6c4daf9
 +        return max(self._half_across(p, axis) for p in pads) + w / 2 + 0.05
 +
 +    def _clear_on(self, members, L, w):
-+        """clear(index, points) for bus.plan: the shape keeps its clearance on layer L."""
++        """clear(index, points) for bus.plan: the shape keeps its clearance on layer L and
++        stays out of the rule areas (the exact clearance check doesn't see them)."""
 +        rb = self.rb
++        li = rb.layers.index(L)
 +
-+        def clear(i, pts):
-+            return all(rb.clear(members[i].net, L, p, q, w) for p, q in zip(pts, pts[1:]))
++        def clear(i, pts):  # the grid's keepouts first: much cheaper than the exact check
++            return (self._outside_keepouts(pts, li, w, rb.key(members[i].net)[2])
++                    and all(rb.clear(members[i].net, L, p, q, w) for p, q in zip(pts, pts[1:])))
 +        return clear
 +
 +    def _via_fits(self, net, v):
 +        rb = self.rb
++        vd = rb.key(net)[2]
++        if ("via", vd) not in self._keep:  # rule areas that keep vias out, per layer
++            self._keep[("via", vd)] = rb.keepouts(vd, vd)[1]
++        i, j = rb.grid.cell(*v)
++        if not (0 <= i < rb.grid.nx and 0 <= j < rb.grid.ny) or any(m[j, i] for m in self._keep[("via", vd)]):
++            return False
 +        items = rb.add(net, [], [v])
 +        bad = rb.violations(net, items)
 +        rb.remove(items)
@@ -6225,17 +6234,23 @@ index 0000000..6c4daf9
 +        return (lane.centre[0] + ux * (half + w / 2), lane.centre[1] + uy * (half + w / 2))
 +
 +    def _outside_keepouts(self, pts, L, w, vd):
-+        """Whether a run's track centres stay out of the rule areas (grid, like the search)."""
++        """Whether a run's track centres stay out of the rule areas (grid, like the search).
++        Bus planning asks this tens of thousands of times, so the points are checked at once."""
 +        g = self.rb.grid
 +        if (w, vd) not in self._keep:
-+            self._keep[(w, vd)] = self.rb.keepouts(w, vd)[0]
++            masks = self._keep[(w, vd)] = self.rb.keepouts(w, vd)[0]
++            self._keep[("any", w, vd)] = [bool(m.any()) for m in masks]
 +        mask = self._keep[(w, vd)][L]
++        any_keepout = self._keep[("any", w, vd)][L]
 +        for p, q in zip(pts, pts[1:]):
 +            n = max(1, int(math.dist(p, q) / (g.pitch / 2)))
-+            for k in range(n + 1):
-+                i, j = g.cell(p[0] + (q[0] - p[0]) * k / n, p[1] + (q[1] - p[1]) * k / n)
-+                if not (0 <= i < g.nx and 0 <= j < g.ny) or mask[j, i]:
-+                    return False
++            t = np.linspace(0.0, 1.0, n + 1)
++            i = np.rint((p[0] + (q[0] - p[0]) * t - g.x0) / g.pitch).astype(int)
++            j = np.rint((p[1] + (q[1] - p[1]) * t - g.y0) / g.pitch).astype(int)
++            if i.min() < 0 or j.min() < 0 or i.max() >= g.nx or j.max() >= g.ny:
++                return False
++            if any_keepout and mask[j, i].any():
++                return False
 +        return True
 +
 +    def _grid_free(self, pts, L, blocked):
