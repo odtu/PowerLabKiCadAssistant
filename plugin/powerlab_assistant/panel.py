@@ -42,6 +42,9 @@ IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 VIEWS_DIR = os.path.join(os.path.dirname(attachments.FOLDER), "views")  # board renders for review
 LIBRARY_CHECK_EVERY = 10 * 60  # seconds between GitHub checks for library updates
+# Claude Code refuses an Edit/Write of a file not read (or changed) since its last Read;
+# Claude then reads it and edits again. Shown in red, users took it for a fault (#74).
+READ_FIRST = re.compile(r"Read it (first|again) before (attempting to )?writ")
 # What Claude is doing, shown with a timer while it works: a long think shows no messages,
 # and looked like a hang. Content blocks of the streamed reply -> the activity they show.
 STREAM_ACTIVITY = {"thinking": "thinking", "redacted_thinking": "thinking", "text": "writing",
@@ -1078,7 +1081,9 @@ class ClaudePanel(wx.Frame):
                     if isinstance(detail, list):
                         detail = " ".join(b.get("text", "") for b in detail if isinstance(b, dict))
                     detail = str(detail)[:200]
-                self.say("tool_done", id=block.get("tool_use_id"), error=failed, text=detail)
+                refused = failed and bool(READ_FIRST.search(detail))  # not written, but not a fault
+                self.say("tool_done", id=block.get("tool_use_id"), error=failed and not refused,
+                         text="" if refused else detail)
                 name, image = self.image_reads.pop(block.get("tool_use_id"), ("tool", ""))
                 written = self.review_writes.pop(block.get("tool_use_id"), None)
                 if written and not failed:
@@ -1086,7 +1091,7 @@ class ClaudePanel(wx.Frame):
                 plan_path = self.plan_writes.pop(block.get("tool_use_id"), None)
                 if plan_path and not failed:
                     self.show_plan(plan_path)
-                report.note_event("tool", f"{name} {'error' if failed else 'ok'}")
+                report.note_event("tool", f"{name} {'read first' if refused else 'error' if failed else 'ok'}")
                 if image and not failed and os.path.splitext(image)[1].lower() in IMAGE_TYPES:
                     self.show_image(image)
                 if not self.image_reads:  # every tool of this step is done

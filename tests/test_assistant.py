@@ -618,6 +618,32 @@ class ChatHistoryTests(unittest.TestCase):
         panel.finished(0)
         self.assertFalse(any(e["kind"] == "review" for e in panel.emitted))
 
+    def test_edit_before_read_is_not_shown_as_a_failure(self):
+        # #74: Claude Code refuses an Edit of a file Claude hasn't read; Claude reads it and
+        # edits again. The refusal was shown in red as a failed step, and reported as a bug.
+        from powerlab_assistant import report
+        panel = self.fake_panel()
+        path = os.path.join(self.project, "placement", "block-plan.json")
+        panel.show_plan = lambda p: self.fail("a refused write isn't a written plan")
+        refusals = ["<tool_use_error>File has not been read yet. Read it first before writing to it.</tool_use_error>",
+                    "File has been modified since read, either by the user or by a linter. "
+                    "Read it again before attempting to write it."]
+        for i, text in enumerate(refusals):
+            panel.handle({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": f"e{i}", "name": "Edit", "input": {"file_path": path}}]}})
+            panel.handle({"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": f"e{i}", "is_error": True, "content": text}]}})
+            done = [e for e in panel.emitted if e["kind"] == "tool_done"][-1]
+            self.assertEqual((done["error"], done["text"]), (False, ""))
+            self.assertEqual(report.recent[-1], "tool Edit read first")
+        # Other failures stay red, with their error.
+        panel.handle({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "e9", "name": "Edit", "input": {"file_path": path}}]}})
+        panel.handle({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "e9", "is_error": True, "content": "String to replace not found"}]}})
+        done = [e for e in panel.emitted if e["kind"] == "tool_done"][-1]
+        self.assertEqual((done["error"], done["text"]), (True, "String to replace not found"))
+
     def test_clicked_location_is_shown_in_kicad(self):
         from powerlab_assistant.panel import ClaudePanel
         panel = self.fake_panel()
