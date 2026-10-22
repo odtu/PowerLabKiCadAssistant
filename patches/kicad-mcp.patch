@@ -10100,10 +10100,41 @@ index 902f7b1..a95979d 100644
    {
      name: "validation",
 diff --git a/src/tools/routing.ts b/src/tools/routing.ts
-index 27f6b90..f242ce1 100644
+index 27f6b90..b1f39dc 100644
 --- a/src/tools/routing.ts
 +++ b/src/tools/routing.ts
-@@ -148,6 +148,11 @@ export function registerRoutingTools(server: McpServer, callKicadScript: Functio
+@@ -120,8 +120,30 @@ export function registerRoutingTools(server: McpServer, callKicadScript: Functio
+         .describe("Via position"),
+       net: z.string().describe("Net name"),
+       viaType: z.string().optional().describe("Via type (through, blind, buried)"),
++      size: z
++        .number()
++        .optional()
++        .describe("Via pad diameter in mm (default 0.8 with KiCad open, else the board's current via size)"),
++      drill: z
++        .number()
++        .optional()
++        .describe("Via drill diameter in mm (default 0.4 with KiCad open, else the board's current via drill). Must be smaller than size."),
+     },
+     async (args: any) => {
++      if (args.size !== undefined && args.drill !== undefined && args.drill >= args.size) {
++        return {
++          content: [
++            {
++              type: "text",
++              text: JSON.stringify(
++                { success: false, message: "drill must be smaller than size" },
++                null,
++                2,
++              ),
++            },
++          ],
++        };
++      }
+       const result = await callKicadScript("add_via", args);
+       return {
+         content: [
+@@ -148,6 +170,11 @@ export function registerRoutingTools(server: McpServer, callKicadScript: Functio
          .describe(
            "Array of {x, y} points defining the pour boundary. If omitted, the board outline is used.",
          ),
@@ -10115,7 +10146,7 @@ index 27f6b90..f242ce1 100644
      },
      async (args: any) => {
        const result = await callKicadScript("add_copper_pour", args);
-@@ -395,9 +400,26 @@ export function registerRoutingTools(server: McpServer, callKicadScript: Functio
+@@ -395,9 +422,26 @@ export function registerRoutingTools(server: McpServer, callKicadScript: Functio
    // Create netclass tool
    server.tool(
      "create_netclass",

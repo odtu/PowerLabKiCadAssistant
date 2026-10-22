@@ -1322,6 +1322,13 @@ class McpPatchTests(unittest.TestCase):
         self.assertIn("return self._ipc_add_outline_circle(params)", patch)
         self.assertIn("circle.radius_point = Vector2.from_xy(", patch)
 
+    def test_via_size_on_add_via(self):
+        """add_via's schema had no size, so live vias were always 0.8/0.4 mm."""
+        patch = self.patch()
+        self.assertIn('+      size: z\n+        .number()\n+        .optional()', patch)
+        self.assertIn('+      drill: z\n+        .number()\n+        .optional()', patch)
+        self.assertIn('message: "drill must be smaller than size"', patch)
+
     def test_pour_nets_are_left_out_of_routing(self):
         module = types.ModuleType("pour_nets")
         exec(self.new_file("python/commands/pour_nets.py"), module.__dict__)
