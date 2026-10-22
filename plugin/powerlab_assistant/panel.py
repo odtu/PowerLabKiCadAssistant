@@ -42,6 +42,10 @@ IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 VIEWS_DIR = os.path.join(os.path.dirname(attachments.FOLDER), "views")  # board renders for review
 LIBRARY_CHECK_EVERY = 10 * 60  # seconds between GitHub checks for library updates
+# Claude Code's own file and search tools: a failed call there is Claude's slip (an Edit
+# before its Read, a regex ripgrep can't parse), which it fixes in its next step. Shown in
+# red, users reported them as faults (#74, #78); they show as retried, the error on hover.
+OWN_TOOLS = {"Read", "Glob", "Grep", "Edit", "Write", "ToolSearch", "Skill"}
 # What Claude is doing, shown with a timer while it works: a long think shows no messages,
 # and looked like a hang. Content blocks of the streamed reply -> the activity they show.
 STREAM_ACTIVITY = {"thinking": "thinking", "redacted_thinking": "thinking", "text": "writing",
@@ -1078,15 +1082,17 @@ class ClaudePanel(wx.Frame):
                     if isinstance(detail, list):
                         detail = " ".join(b.get("text", "") for b in detail if isinstance(b, dict))
                     detail = str(detail)[:200]
-                self.say("tool_done", id=block.get("tool_use_id"), error=failed, text=detail)
                 name, image = self.image_reads.pop(block.get("tool_use_id"), ("tool", ""))
+                slip = failed and name in OWN_TOOLS
+                self.say("tool_done", id=block.get("tool_use_id"), error=failed and not slip,
+                         **({"slip": True} if slip else {}), text=detail)
                 written = self.review_writes.pop(block.get("tool_use_id"), None)
                 if written and not failed:
                     self.review_md = written
                 plan_path = self.plan_writes.pop(block.get("tool_use_id"), None)
                 if plan_path and not failed:
                     self.show_plan(plan_path)
-                report.note_event("tool", f"{name} {'error' if failed else 'ok'}")
+                report.note_event("tool", f"{name} {'slip' if slip else 'error' if failed else 'ok'}")
                 if image and not failed and os.path.splitext(image)[1].lower() in IMAGE_TYPES:
                     self.show_image(image)
                 if not self.image_reads:  # every tool of this step is done

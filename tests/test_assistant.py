@@ -618,6 +618,31 @@ class ChatHistoryTests(unittest.TestCase):
         panel.finished(0)
         self.assertFalse(any(e["kind"] == "review" for e in panel.emitted))
 
+    def test_own_tool_slips_are_not_shown_as_failures(self):
+        # #74, #78: an Edit before its Read and a Grep regex ripgrep can't parse were shown in
+        # red, and reported as faults; Claude fixes both in its next step. kicad tools stay red.
+        from powerlab_assistant import report
+        panel = self.fake_panel()
+        path = os.path.join(self.project, "placement", "placementlock-plan.json")
+        panel.show_plan = lambda p: self.fail("a refused write isn't a written plan")
+        steps = [("Edit", {"file_path": path}, "<tool_use_error>File has not been read yet. "
+                  "Read it first before writing to it.</tool_use_error>", "slip"),
+                 ("Grep", {"pattern": "(?!x)"}, "rg: regex parse error: look-around is not supported", "slip"),
+                 ("mcp__kicad__add_via", {}, "No board is loaded", "error")]
+        for i, (tool, args, text, word) in enumerate(steps):
+            panel.handle({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": f"s{i}", "name": tool, "input": args}]}})
+            panel.handle({"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": f"s{i}", "is_error": True, "content": text}]}})
+            done = [e for e in panel.emitted if e["kind"] == "tool_done"][-1]
+            self.assertEqual((done["error"], done.get("slip", False), done["text"]),
+                             (word == "error", word == "slip", text))
+            self.assertTrue(report.recent[-1].endswith(" " + word))
+        with open(os.path.join(ROOT, "plugin", "powerlab_assistant", "panel.html"), encoding="utf-8") as f:
+            page = f.read()
+        self.assertIn("ti.className = 'ti ' + (e.error ? 'bad' : e.slip ? 'slip' : 'ok');", page)
+        self.assertIn(".ti.slip { color: var(--muted); }", page)
+
     def test_clicked_location_is_shown_in_kicad(self):
         from powerlab_assistant.panel import ClaudePanel
         panel = self.fake_panel()

@@ -172,7 +172,7 @@ details.steps .list .shot img { max-height: 170px; }
 .err-line:hover > span:last-child { text-decoration: underline; }
 .ti { width: 14px; height: 14px; flex: none; display: grid; place-items: center; }
 .ti.run { border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
-.ti.ok { color: var(--ok); } .ti.bad { color: var(--err); }
+.ti.ok { color: var(--ok); } .ti.bad { color: var(--err); } .ti.slip { color: var(--muted); }
 .ti svg { width: 14px; height: 14px; }
 
 /* answer buttons for Claude's questions */
@@ -948,7 +948,7 @@ function refreshSteps(box) {
   const ti = box.querySelector('summary .ti');
   const icon = running.length ? 'run' : rows.length ? state(rows[rows.length - 1]) : 'ok';
   ti.className = 'ti ' + icon;
-  ti.innerHTML = icon === 'ok' ? ICON_OK : icon === 'bad' ? ICON_BAD : icon ? '' : '·';
+  ti.innerHTML = icon === 'ok' ? ICON_OK : icon === 'bad' || icon === 'slip' ? ICON_BAD : icon ? '' : '·';
   const counts = [];
   if (rows.length) counts.push(`${rows.length} step${rows.length > 1 ? 's' : ''}`);
   if (views) counts.push(`${views} view${views > 1 ? 's' : ''}`);
@@ -1079,9 +1079,12 @@ const app = {
         const row = document.getElementById('tool-' + e.id);
         if (!row) break;
         const ti = row.querySelector('.ti');
-        ti.className = 'ti ' + (e.error ? 'bad' : 'ok');
-        ti.innerHTML = e.error ? ICON_BAD : ICON_OK;
+        // A slip (Claude's own file or search tool refused, e.g. Edit before Read) is
+        // retried in the next step: grey, not a failure, its error on hover.
+        ti.className = 'ti ' + (e.error ? 'bad' : e.slip ? 'slip' : 'ok');
+        ti.innerHTML = e.error || e.slip ? ICON_BAD : ICON_OK;
         if (e.error) row.dataset.error = e.text || 'failed';
+        if (e.slip) row.title = 'Retried: ' + (e.text || 'refused');
         refreshSteps(row.closest('details.steps'));
         break;
       }
