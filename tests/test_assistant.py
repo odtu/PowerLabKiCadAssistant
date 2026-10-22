@@ -142,6 +142,27 @@ class SkillToolsEnvTests(unittest.TestCase):
         self.assertIn("PowerLab router", panel.PANEL_NOTE)
         self.assertIn("never offer it", panel.PANEL_NOTE)
 
+    def test_mcp_server_is_not_edited(self):
+        # Issue #73: a kicad tool misbehaved, so Claude edited the installed MCP server and
+        # ran `npm run build`, which the panel blocked. The server is off-limits to edits.
+        from powerlab_assistant import panel
+        self.assertIn("never edit, rebuild or reinstall", panel.PANEL_NOTE)
+        self.assertIn("Report a problem", panel.PANEL_NOTE)
+        self.assertFalse(any(t.startswith(("PowerShell(npm", "Bash(npm")) for t in panel.ALLOWED_TOOLS))
+        saved = config.config
+        try:
+            config.config = lambda: {"mcp_path": "C:\\Users\\x y\\AppData\\Local\\PowerLabKiCadAssistant\\KiCAD-MCP-Server\\"}
+            self.assertEqual(panel.install_denies(),
+                             ["Edit(//c/Users/x y/AppData/Local/PowerLabKiCadAssistant/KiCAD-MCP-Server/**)"])
+            config.config = lambda: {"mcp_path": "/opt/kicad-mcp"}
+            self.assertEqual(panel.install_denies(), ["Edit(//opt/kicad-mcp/**)"])
+            config.config = lambda: {}
+            self.assertEqual(panel.install_denies(), [])
+        finally:
+            config.config = saved
+        with open(os.path.join(ROOT, "plugin", "powerlab_assistant", "panel.py"), encoding="utf-8") as f:
+            self.assertIn('",".join(DISALLOWED_TOOLS + install_denies())', f.read())
+
     def test_windows_tar_before_git_tar(self):
         # Issue #24: Git's GNU tar can't write zips; Windows' own tar in System32 can.
         from powerlab_assistant import common

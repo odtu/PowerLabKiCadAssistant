@@ -37,6 +37,19 @@ DISALLOWED_TOOLS = [
     "mcp__kicad__export_dsn", "mcp__kicad__import_ses",
 ]
 
+
+def install_denies():
+    """Edit rules that keep Claude out of the installed kicad MCP server (issue #73): when a
+    tool misbehaved, it patched the server's files and tried to rebuild it. Claude Code
+    matches Windows paths in POSIX form (C:\\Users -> /c/Users); // makes the rule absolute."""
+    folder = config.mcp_path().replace("\\", "/").rstrip("/")
+    if not folder:
+        return []
+    drive = re.match(r"([A-Za-z]):/(.*)", folder)
+    if drive:
+        folder = "/" + drive.group(1).lower() + "/" + drive.group(2)
+    return ["Edit(/" + folder + "/**)"]
+
 IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
                ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml"}
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
@@ -120,6 +133,10 @@ PANEL_NOTE = (
     "Change designs only through the kicad MCP tools (board tools edit KiCad live when its "
     "API server is on); never hand-edit .kicad_pcb or .kicad_sch files. Never delete files or "
     "folders unless the user names them explicitly; if a request is ambiguous, ask.\n"
+    "The kicad MCP server, this panel and the powerlab skills are installed parts of the "
+    "assistant: never edit, rebuild or reinstall them (no npm, node, pip or git; the panel "
+    "blocks them). If a kicad tool fails or gives a wrong result, get the job done with other "
+    "tools if you can, and tell the user to send it with the panel's Report a problem button.\n"
     "For any schematic or PCB design, placement, routing, design-rule or review work, load "
     "the powerlab-pcb-design-rules skill first and follow it.\n"
     "When the user starts a new board, schematic or project from scratch, load the "
@@ -966,7 +983,7 @@ class ClaudePanel(wx.Frame):
             args += ["--model", self.model]
         args += ["--effort", self.effort]
         args += ["--allowedTools", ",".join(ALLOWED_TOOLS)]
-        args += ["--disallowedTools", ",".join(DISALLOWED_TOOLS)]
+        args += ["--disallowedTools", ",".join(DISALLOWED_TOOLS + install_denies())]
 
         if not resend:
             self.say("user", text=text, files=[os.path.basename(p) for p in files])
