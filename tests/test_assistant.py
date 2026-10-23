@@ -2789,7 +2789,7 @@ class PanelDefaultsTests(unittest.TestCase):
         with open(os.path.join(ROOT, "skills", "powerlab-pcb-design-rules", "SKILL.md"), encoding="utf-8") as f:
             rules = f.read()
         self.assertIn("| Minimum track width | 0.15 mm |", rules)
-        self.assertIn("| Default | 0.2 mm | 0.2 mm |", rules)  # lab default stays in the net class
+        self.assertIn("| Default | 0.15 mm | 0.2 mm |", rules)  # signals at 0.15 mm, spaced 0.2 mm
 
     def test_page_scripts_never_run_synchronously(self):
         # A burst of tool events nested synchronous RunScript calls, each waiting in its

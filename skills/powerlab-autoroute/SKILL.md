@@ -39,10 +39,10 @@ Freerouting isn't part of the assistant any more. Never offer it.
 Ask for whatever you can't read from the board, and don't guess currents or voltages.
 - **Copper weight and layer count:** confirm them, because they change every limit (§2.0–2.2). The default is 2 layers and 1 oz.
 - **Board constraints (§2.6):** check them with `get_design_rules`. For 1 oz copper they should be the values below.
-  - If they differ and the board is open in KiCad, `set_design_rules` can't change them: KiCad's API has no design-rule calls, and KiCad overwrites the file when it saves. Ask the user to set them in **Board Setup → Design Rules → Constraints**, save, and tell you to continue.
-  - Use `set_design_rules` only when KiCad doesn't have the board open.
+  - If they differ (KiCad's defaults are minimum clearance 0, track 0.2, annular ring 0.1, via 0.5), call `set_design_rules` with `preset: "powerlab"` (`copper: "2oz"` for 2 oz). It writes the constraints, the Default class and the Power/GND classes into the project, and the minimums into the `.kicad_dru`, which DRC reads on every run, so DRC enforces them at once.
+  - **With KiCad open**, KiCad 10 only reads the new Board Setup values when it opens the project. Tell the user once: Board Setup shows them the next time they open the project, and pressing OK in Board Setup before then writes the old values back. Don't ask them to close anything. Until then KiCad still routes with its old classes, so pass `width` on every track (0.15 mm signals, the class width for power). Check the files with `get_design_rules`.
   - The values:
-    - minimum clearance 0.15 mm, minimum track 0.15 mm, minimum connection 0.15 mm. These are the PCBWay standard-price floor; the net classes below set the 0.2 mm lab default.
+    - minimum clearance 0.15 mm, minimum track 0.15 mm, minimum connection 0.15 mm. These are the PCBWay standard-price floor; signals are routed at it too (the Default class below).
     - via 0.6 mm, through hole 0.3 mm, annular ring 0.15 mm
     - copper to hole 0.25 mm, copper to edge 0.5 mm, hole to hole 0.4 mm
     - no micro or blind vias
@@ -50,7 +50,7 @@ Ask for whatever you can't read from the board, and don't guess currents or volt
 
   | Class | Track | Clearance | Via drill / pad |
   |---|---|---|---|
-  | Default | 0.2 mm | 0.2 mm | 0.3 / 0.6 mm |
+  | Default | 0.15 mm | 0.2 mm | 0.3 / 0.6 mm |
   | Power, GND | width for the current, at least 0.5 mm | 0.3 mm | 0.4 / 0.8 mm |
   | HV (> 50 V) | width for the current | from the §3.3 voltage table | 0.4 / 0.8 mm |
 
@@ -68,10 +68,10 @@ Ask for whatever you can't read from the board, and don't guess currents or volt
   5. **Everything else:** the PowerLab router (or by hand).
 
   Locked copper is kept: the router leaves nets with locked copper out and routes around it. Steps 1–4 are routed by hand first on a power board. If they aren't done, say so and recommend doing them first.
-- **Power rails (§3.3, "power rails are copper areas, not traces"):** low-current rails (+3V3, +5V, VBUS…) may be left to the PowerLab router: it routes them first at the Power class width and then gives each one a pour round its tracks (`powerPours`, default on). A rail you already routed by hand gets the pour too. Only high-current rails connect pads solid (`solidPourNets`); everything else uses thermal reliefs.
+- **Power rails (§3.3, "power rails are copper areas, not traces"):** low-current rails (+3V3, +5V, VBUS…) may be left to the PowerLab router: it routes them first at the Power class width and then gives each one a pour round its tracks (`powerPours`, default on). A rail you already routed by hand gets the pour too. Only high-current power rails connect pads solid (`solidPourNets`); everything else uses thermal reliefs, and GND always does.
 - **GND (§3.3):** GND is a pour, never tracks.
   - **Check for existing pours first** with `query_zones`. Never add a second pour for the same net on a layer that already has one ("zones intersect" in DRC).
-  - If the board has no GND pour, create one before routing with `add_copper_pour` on the bottom layer and on the top (leave out `outline` to cover the whole board; on 4 layers, the inner GND plane layer). **GND pours connect pads with thermal reliefs** (`padConnection: "thermal"`, the default) so the pads can be soldered. Solid connection (`padConnection: "solid"`) is only for high-current power pours.
+  - If the board has no GND pour, create one before routing with `add_copper_pour` on the bottom layer and on the top (leave out `outline` to cover the whole board; on 4 layers, the inner GND plane layer). **GND pours connect pads with thermal reliefs** (`padConnection: "thermal"`, the default) so the pads can be soldered, **every GND pour and plane, also round high-current GND pads** (give those wider spokes instead). Solid connection (`padConnection: "solid"`) is only for high-current power pours (DC bus, switch node, phase). Check existing GND zones with `query_zones` and set any solid one to thermal with `edit_zone`.
   - **No GND fan-out before routing:** never give every GND pad a via up front. Only decoupling caps get a via at their GND pad now (lock it). A fine-pitch IC GND pin next to a GND exposed pad joins the pad straight across, without a via.
 - **3D models:** if footprints lost their 3D models, tell the user to run **Tools → Update Footprints from Library** with **Reset 3D models** ticked.
 
@@ -95,11 +95,19 @@ Ask for whatever you can't read from the board, and don't guess currents or volt
 ## 4. Finish by hand
 The router never forces a connection. Whatever it leaves, and every DRC error it adds, you fix yourself, as a person would:
 - **Connections left (`report.left`):** route each one by hand with `route_pad_to_pad` or `route_trace` (and `add_via` where it must change layer), at the net's class width, following §3.4: straight into the pad centre, 45° corners, no detours.
+- **Drawing a track by hand** (every connection while the router is off):
+  - **Only 0°, 45° and 90°.** Plan the run as straight pieces joined by 45° bends: out of the pad along its axis, a 45° bend, straight on, a 45° bend, straight into the next pad's centre. Never draw a connection as one slanted line between two points that aren't in line, and never join two pieces at 90°: cut every corner at 45°.
+  - **One call per run:** pass the bends as waypoints to `route_trace` (or use `route_pad_to_pad`) so the run is drawn in one piece, rather than many short calls whose ends meet at odd angles.
+  - **Same-net neighbours directly:** a decoupling cap and its IC pin, two caps in parallel, a bead and its cap: one short straight track pad to pad. Never round the part, out and back, or through a via when the direct track is free.
+  - **Buses together:** lines that run side by side (SPI, JTAG, a parallel bus) keep one pitch and bend together. Draw the outer line first and the others parallel to it, so none takes a kink or a different angle.
+  - **Signals at 0.15 mm** (the Default class); power at its class width.
+  - **Check after each block:** save, run `check_routing` for that block's nets and redraw whatever it lists (off-angle pieces, corners, kinks, detours, off-centre pad entries) before moving on.
 - **DRC errors:** run `run_drc` and compare with the baseline. Fix every new error: move or reroute the track, nudge a via. The goal is **0 new errors**. Track-width or clearance errors usually mean the net classes don't match the board constraints: fix the rules and route again rather than hiding the errors.
 - **Pour-net pads the pour can't reach** (unconnected in DRC, e.g. a GND pad boxed in by tracks): give that pad a via (0.4/0.8 mm) next to it with a short stub, then refill.
 - **Removing copper:** with KiCad open, `delete_trace` deletes in KiCad's board (by `traceUuid` from `query_traces`, by `position`, or every track of a `net`); a point on a via deletes the via. It refuses locked copper. `modify_trace` still doesn't reach KiCad's board: delete and route the track again instead.
 
 ## 5. Check the result against the rules (§3.3–3.7)
+- **Measure it:** save and run `check_routing` on the whole board. Fix everything it lists; a detour you keep on purpose (a gate-drive loop round a via row) goes in the review with the reason.
 - **Look at it** (`powerlab-visual-review`): render top copper, bottom copper and both together. Look for:
   - corners that serve nothing, wiggles round pads, stair-steps, U-turns or loops round a via or pad;
   - two tracks of one net side by side, or on top of each other;
