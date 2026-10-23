@@ -27,7 +27,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 diff --git a/README.md b/README.md
-index 831a2f3..aabca60 100644
+index 831a2f3..d2232f8 100644
 --- a/README.md
 +++ b/README.md
 @@ -23,8 +23,8 @@ The [Model Context Protocol](https://modelcontextprotocol.io/) is an open standa
@@ -36,8 +36,8 @@ index 831a2f3..aabca60 100644
  
 -- 233 tools registered, 173 of them indexed for keyword discovery
 -- 173 tools across 16 categories with JSON Schema validation
-+- 239 tools registered, 180 of them indexed for keyword discovery
-+- 180 tools across 16 categories with JSON Schema validation
++- 242 tools registered, 183 of them indexed for keyword discovery
++- 183 tools across 16 categories with JSON Schema validation
  - Keyword tool discovery via `search_tools` / `get_category_tools`
  - 23 dynamic resources exposing project state
  - Complete schematic workflow with 65 tools (authoring, batch edits, hierarchy, layout) and dynamic symbol loading (~10,000 symbols)
@@ -46,7 +46,7 @@ index 831a2f3..aabca60 100644
  - **32 essential tools** that `search_tools` surfaces first, covering the
    operations nearly every session needs
 -- **173 tools indexed across 16 categories** (board, component, export, drc,
-+- **180 tools indexed across 16 categories** (board, component, export, drc,
++- **183 tools indexed across 16 categories** (board, component, export, drc,
    schematic, library, symbol_library, symbol_pins, schematic_hierarchy,
    schematic_layout, schematic_batch, routing, autoroute, validation,
    parts-registry, digikey)
@@ -55,31 +55,39 @@ index 831a2f3..aabca60 100644
  ## Available Tools
  
 -The server exposes every tool directly, so your assistant can call any of them without a discovery step -- just ask for what you want to accomplish. **173 tools** are additionally indexed into 16 functional categories, so `search_tools` and `get_category_tools` can find one by keyword.
-+The server exposes every tool directly, so your assistant can call any of them without a discovery step -- just ask for what you want to accomplish. **180 tools** are additionally indexed into 16 functional categories, so `search_tools` and `get_category_tools` can find one by keyword.
++The server exposes every tool directly, so your assistant can call any of them without a discovery step -- just ask for what you want to accomplish. **183 tools** are additionally indexed into 16 functional categories, so `search_tools` and `get_category_tools` can find one by keyword.
  
  The lists below are a curated tour of the most useful tools, not the full set.
 -For the complete, generated reference of all 233 tools -- including how each one
-+For the complete, generated reference of all 239 tools -- including how each one
++For the complete, generated reference of all 242 tools -- including how each one
  is discovered -- see [Tool Inventory](docs/TOOL_INVENTORY.md).
  
  ### Project Management (12 tools)
-@@ -1513,8 +1513,8 @@ How many Basic parts are available?
+@@ -629,6 +629,7 @@ is discovered -- see [Tool Inventory](docs/TOOL_INVENTORY.md).
+ - `route_arc_trace` - Route a curved trace
+ - `add_gnd_stitching_vias` - Stitch a ground plane with vias
+ - `query_zones` - Inspect copper zones
++- `delete_zone` / `edit_zone` - Remove a zone, or change its net, layers, priority, clearance, pad connection or outline
+ 
+ ### Schematic (46 tools)
+ 
+@@ -1513,8 +1514,8 @@ How many Basic parts are available?
  
  - **JSON-RPC 2.0 Transport:** Bi-directional communication via STDIO
  - **Protocol Version:** MCP 2025-06-18
 -- **Capabilities:** Tools (233), Resources (23)
 -- **Tool discovery:** keyword search catalogue indexing 173 tools in 16 categories
-+- **Capabilities:** Tools (237), Resources (23)
-+- **Tool discovery:** keyword search catalogue indexing 180 tools in 16 categories
++- **Capabilities:** Tools (242), Resources (23)
++- **Tool discovery:** keyword search catalogue indexing 183 tools in 16 categories
  - **Error Handling:** Standard JSON-RPC error codes
  
  ### TypeScript Server (`src/`)
-@@ -1664,7 +1664,7 @@ npm run format
+@@ -1664,7 +1665,7 @@ npm run format
  
  See [STATUS_SUMMARY.md](docs/STATUS_SUMMARY.md) for the complete status matrix and [CHANGELOG.md](CHANGELOG.md) for detailed release notes.
  
 -**Working Features (233 tools):**
-+**Working Features (239 tools):**
++**Working Features (242 tools):**
  
  - Project management with snapshot checkpointing
  - Complete board design (outline, layers, zones, mounting holes, text, SVG logos)
@@ -309,10 +317,10 @@ index 3caa343..1c33714 100644
                      "position": position,
                      "layer": layer,
 diff --git a/python/commands/board/view.py b/python/commands/board/view.py
-index 16a4915..922b826 100644
+index 16a4915..c01abe6 100644
 --- a/python/commands/board/view.py
 +++ b/python/commands/board/view.py
-@@ -15,7 +15,50 @@ from utils.kicad_cli import kicad_cli_not_found_message, resolve_kicad_cli
+@@ -15,7 +15,52 @@ from utils.kicad_cli import kicad_cli_not_found_message, resolve_kicad_cli
  logger = logging.getLogger("kicad_interface")
  
  
@@ -320,25 +328,19 @@ index 16a4915..922b826 100644
 +BOARD_BACKGROUND = (0, 16, 35)  # KiCad's default PCB editor background (PowerLab patch)
 +
 +
-+def _crop_svg(svg_path: str, pcb_path: str, region: Dict[str, Any]) -> Optional[str]:
-+    """Narrow kicad-cli's SVG (page-size-mode 2) to `region` in board mm: {x0, y0, x1, y1},
-+    or {x, y, size} for a square round a point. The SVG's frame is the board's edge box,
-+    centred on it (PowerLab patch). Returns an error text, or None."""
++def _crop_svg(svg_path: str, pcb_path: str, region: Any) -> Optional[str]:
++    """Narrow kicad-cli's SVG (page-size-mode 2) to `region` in board mm, in any shape
++    utils.region_box takes ({x0, y0, x1, y1}, {x, y, size}, {x, y, width, height}, ...).
++    The SVG's frame is the board's edge box, centred on it (PowerLab patch). Returns an
++    error text, or None."""
 +    import re
 +
++    from utils.region_box import checked_region_box
++
 +    try:
-+        if "size" in region:
-+            half = float(region["size"]) / 2
-+            x0, y0 = float(region["x"]) - half, float(region["y"]) - half
-+            x1, y1 = float(region["x"]) + half, float(region["y"]) + half
-+        else:
-+            x0, y0, x1, y1 = (float(region[k]) for k in ("x0", "y0", "x1", "y1"))
-+    except (KeyError, TypeError, ValueError):
-+        return "region needs x0, y0, x1, y1 (mm), or x, y and size"
-+    x0, x1 = min(x0, x1), max(x0, x1)
-+    y0, y1 = min(y0, y1), max(y0, y1)
-+    if x1 - x0 < 0.5 or y1 - y0 < 0.5:
-+        return "region is smaller than 0.5 mm"
++        x0, y0, x1, y1 = checked_region_box(region)  # PowerLab patch (#81): more shapes
++    except ValueError as e:
++        return str(e)
 +    with open(svg_path, encoding="utf-8") as fh:
 +        text = fh.read()
 +    m = re.search(r'viewBox="\s*([-0-9.]+)\s+([-0-9.]+)\s+([-0-9.]+)\s+([-0-9.]+)\s*"', text)
@@ -347,6 +349,14 @@ index 16a4915..922b826 100644
 +    vx, vy, vw, vh = (float(g) for g in m.groups())
 +    bb = pcbnew.LoadBoard(pcb_path).GetBoardEdgesBoundingBox()
 +    cx, cy = pcbnew.ToMM(bb.GetCenter().x), pcbnew.ToMM(bb.GetCenter().y)
++    bx0, by0 = pcbnew.ToMM(bb.GetLeft()), pcbnew.ToMM(bb.GetTop())
++    bx1, by1 = pcbnew.ToMM(bb.GetRight()), pcbnew.ToMM(bb.GetBottom())
++    if bx1 > bx0 and (x1 < bx0 or x0 > bx1 or y1 < by0 or y0 > by1):
++        return (
++            f"region x {x0:g}..{x1:g}, y {y0:g}..{y1:g} mm is outside the board, which spans "
++            f"x {bx0:g}..{bx1:g}, y {by0:g}..{by1:g} mm (board coordinates, as "
++            "get_board_extents and get_component_list give them)"
++        )
 +    ox, oy = cx - vw / 2 - vx, cy - vh / 2 - vy  # board mm at the SVG's user-space origin
 +    w, h = x1 - x0, y1 - y0
 +    head = text[:m.end()]
@@ -364,7 +374,7 @@ index 16a4915..922b826 100644
      """Convert SVG to PNG. No cffi dependency.
  
      Priority:
-@@ -32,8 +75,17 @@ def _svg_to_png(svg_path: str, width: int, height: int) -> Optional[bytes]:
+@@ -32,8 +77,17 @@ def _svg_to_png(svg_path: str, width: int, height: int) -> Optional[bytes]:
  
          doc = fitz.open(svg_path)
          page = doc[0]
@@ -384,7 +394,7 @@ index 16a4915..922b826 100644
      except Exception:
          pass
  
-@@ -182,6 +234,10 @@ class BoardViewCommands:
+@@ -182,6 +236,10 @@ class BoardViewCommands:
                  "Edge.Cuts",
              ]
              response_mode = params.get("responseMode", "inline")
@@ -395,7 +405,7 @@ index 16a4915..922b826 100644
  
              kicad_cli = resolve_kicad_cli()
              if not kicad_cli:
-@@ -206,7 +262,7 @@ class BoardViewCommands:
+@@ -206,7 +264,7 @@ class BoardViewCommands:
                      "--output",
                      output_svg,
                      "--mode-single",
@@ -404,7 +414,7 @@ index 16a4915..922b826 100644
                      # Render the board, not the drawing sheet. kicad-cli's
                      # default (page-size-mode 0) plots only the area inside the
                      # sheet, so board geometry past the page edge is left out.
-@@ -246,6 +302,14 @@ class BoardViewCommands:
+@@ -246,6 +304,19 @@ class BoardViewCommands:
                      }
  
                  svg_path = svg_files[0]
@@ -415,11 +425,16 @@ index 16a4915..922b826 100644
 +                    # becomes its viewBox.
 +                    err = _crop_svg(svg_path, pcb_path, region)
 +                    if err:
-+                        return {"success": False, "message": "Bad region", "errorDetails": err}
++                        # PowerLab patch (#81): the reason goes in the message Claude sees
++                        return {
++                            "success": False,
++                            "message": f"Bad region: {err}",
++                            "errorDetails": err,
++                        }
  
                  # --- Render to bytes (shared for both response modes) ---
                  board_dir = os.path.dirname(pcb_path)
-@@ -256,7 +320,9 @@ class BoardViewCommands:
+@@ -256,7 +327,9 @@ class BoardViewCommands:
                          image_bytes = f.read()
                      mime_format = "svg"
                  else:
@@ -430,7 +445,7 @@ index 16a4915..922b826 100644
                      if png_bytes is None:
                          # No PNG converter — fall back to SVG inline
                          with open(svg_path, "r", encoding="utf-8") as f:
-@@ -277,7 +343,10 @@ class BoardViewCommands:
+@@ -277,7 +350,10 @@ class BoardViewCommands:
  
                  # --- Package response according to responseMode ---
                  if response_mode == "file":
@@ -442,6 +457,241 @@ index 16a4915..922b826 100644
                      with open(output_path, "wb") as f:
                          f.write(image_bytes)
                      return {
+diff --git a/python/commands/board_region.py b/python/commands/board_region.py
+new file mode 100644
+index 0000000..cfdd6ad
+--- /dev/null
++++ b/python/commands/board_region.py
+@@ -0,0 +1,229 @@
++"""get_elements_in_region on the board (PowerLab patch, #80).
++
++The tool read only schematics and required schematicPath, so Claude, routing in the PCB
++editor and asking what lies in an area of the board, got "Input validation error ...
++expected string, received undefined". Now, without schematicPath, it lists the board's
++footprints, pads, tracks, vias and zones in the rectangle: live from KiCad's board when
++KiCad has it open, else from the board file (pcbPath, or the loaded board).
++
++An item counts when it touches the rectangle: a footprint or zone whose bounding box
++overlaps it, a track crossing it, a pad or via whose centre is in it. Each list is capped
++at `limit` (default 100); `counts` are the full numbers.
++"""
++
++from typing import Any, Dict, Tuple
++
++Box = Tuple[float, float, float, float]  # x0, y0, x1, y1 in mm
++
++
++def _inside(box: Box, x: float, y: float) -> bool:
++    return box[0] <= x <= box[2] and box[1] <= y <= box[3]
++
++
++def _overlaps(box: Box, other: Box) -> bool:
++    return not (other[2] < box[0] or other[0] > box[2] or other[3] < box[1] or other[1] > box[3])
++
++
++def segment_crosses(box: Box, ax: float, ay: float, bx: float, by: float, half_width: float = 0.0) -> bool:
++    """A track from (ax, ay) to (bx, by), `half_width` wide each side, touches the box
++    (Liang-Barsky clipping on the box grown by the half width)."""
++    x0, y0, x1, y1 = box[0] - half_width, box[1] - half_width, box[2] + half_width, box[3] + half_width
++    dx, dy = bx - ax, by - ay
++    t0, t1 = 0.0, 1.0
++    for p, q in ((-dx, ax - x0), (dx, x1 - ax), (-dy, ay - y0), (dy, y1 - ay)):
++        if p == 0:
++            if q < 0:
++                return False
++            continue
++        t = q / p
++        if p < 0:
++            t0 = max(t0, t)
++        else:
++            t1 = min(t1, t)
++        if t0 > t1:
++            return False
++    return True
++
++
++def collect(box: Box, footprints, pads, tracks, vias, zones, limit: int = 100) -> Dict[str, Any]:
++    """The response from item summaries (dicts) that touch `box`."""
++    found = {
++        "footprints": [f for f in footprints if _overlaps(box, f.pop("_bbox"))],
++        "pads": [p for p in pads if _inside(box, p["x"], p["y"])],
++        "tracks": [
++            t for t in tracks
++            if segment_crosses(box, t["start"]["x"], t["start"]["y"], t["end"]["x"], t["end"]["y"],
++                               t["width"] / 2)
++        ],
++        "vias": [v for v in vias if _inside(box, v["x"], v["y"])],
++        "zones": [z for z in zones if _overlaps(box, z.pop("_bbox"))],
++    }
++    counts = {k: len(v) for k, v in found.items()}
++    out: Dict[str, Any] = {
++        "success": True,
++        "mode": "board",
++        "region": {"x1": box[0], "y1": box[1], "x2": box[2], "y2": box[3], "unit": "mm"},
++        "counts": counts,
++    }
++    truncated = []
++    for key, items in found.items():
++        out[key] = items[:limit]
++        if len(items) > limit:
++            truncated.append(key)
++    if truncated:
++        out["truncated"] = truncated
++        out["note"] = (f"{', '.join(truncated)} cut to {limit} each (limit); narrow the region "
++                       "or raise limit for the rest")
++    out["message"] = (
++        f"Board region: {counts['footprints']} footprints, {counts['pads']} pads, "
++        f"{counts['tracks']} tracks, {counts['vias']} vias, {counts['zones']} zones"
++    )
++    return out
++
++
++def _r(v: float) -> float:
++    return round(v, 4)
++
++
++# --- offline: pcbnew -------------------------------------------------------------------
++
++def _via_width(via: Any) -> int:
++    import pcbnew
++
++    try:
++        return via.GetWidth(pcbnew.F_Cu)  # KiCad 9+: per layer (padstacks)
++    except TypeError:
++        return via.GetWidth()
++
++
++def swig_items(board: Any, box: Box, limit: int = 100) -> Dict[str, Any]:
++    import pcbnew
++
++    mm = lambda v: v / 1_000_000
++    footprints, pads = [], []
++    for fp in board.GetFootprints():
++        bb = fp.GetBoundingBox(False)  # without fields, like a courtyard-less body
++        pos = fp.GetPosition()
++        ref = fp.GetReference()
++        footprints.append({
++            "reference": ref,
++            "value": fp.GetValue(),
++            "x": _r(mm(pos.x)), "y": _r(mm(pos.y)),
++            "rotation": _r(fp.GetOrientationDegrees()),
++            "side": "bottom" if fp.IsFlipped() else "top",
++            "locked": bool(fp.IsLocked()),
++            "_bbox": (mm(bb.GetLeft()), mm(bb.GetTop()), mm(bb.GetRight()), mm(bb.GetBottom())),
++        })
++        for pad in fp.Pads():
++            p = pad.GetPosition()
++            pads.append({
++                "reference": ref, "pad": pad.GetNumber(), "net": pad.GetNetname(),
++                "x": _r(mm(p.x)), "y": _r(mm(p.y)),
++            })
++    tracks, vias = [], []
++    for t in board.GetTracks():
++        if t.Type() == pcbnew.PCB_VIA_T:
++            p = t.GetPosition()
++            vias.append({
++                "uuid": t.m_Uuid.AsString(), "net": t.GetNetname(),
++                "x": _r(mm(p.x)), "y": _r(mm(p.y)),
++                "size": _r(mm(_via_width(t))),
++                "drill": _r(mm(t.GetDrillValue())),
++            })
++        else:
++            s, e = t.GetStart(), t.GetEnd()
++            tracks.append({
++                "uuid": t.m_Uuid.AsString(), "net": t.GetNetname(),
++                "layer": board.GetLayerName(t.GetLayer()), "width": _r(mm(t.GetWidth())),
++                "start": {"x": _r(mm(s.x)), "y": _r(mm(s.y))},
++                "end": {"x": _r(mm(e.x)), "y": _r(mm(e.y))},
++                **({"arc": True} if t.Type() == pcbnew.PCB_ARC_T else {}),
++            })
++    zones = []
++    for z in board.Zones():
++        bb = z.GetBoundingBox()
++        try:
++            layers = [board.GetLayerName(l) for l in z.GetLayerSet().Seq()]
++        except Exception:
++            layers = [board.GetLayerName(z.GetLayer())]
++        zones.append({
++            "uuid": z.m_Uuid.AsString(), "net": z.GetNetname(), "layers": layers,
++            "priority": z.GetAssignedPriority(), "name": z.GetZoneName(),
++            "isRuleArea": bool(z.GetIsRuleArea()),
++            "_bbox": (mm(bb.GetLeft()), mm(bb.GetTop()), mm(bb.GetRight()), mm(bb.GetBottom())),
++        })
++    return collect(box, footprints, pads, tracks, vias, zones, limit)
++
++
++# --- live: kipy -------------------------------------------------------------------------
++
++def ipc_items(kboard: Any, box: Box, limit: int = 100) -> Dict[str, Any]:
++    from kipy.board_types import ArcTrack
++    from kipy.proto.board.board_types_pb2 import BoardLayer
++
++    mm = lambda v: v / 1_000_000
++    layer_name = lambda l: (lambda n: n[3:].replace("_", ".") if n.startswith("BL_") else n)(BoardLayer.Name(l))
++    footprints, pads = [], []
++    fps = list(kboard.get_footprints())
++    boxes: Dict[str, Box] = {}
++    try:  # one request for all the boxes
++        for fp, bb in zip(fps, kboard.get_item_bounding_box(fps)):
++            if bb is not None:
++                boxes[fp.id.value] = (mm(bb.pos.x), mm(bb.pos.y), mm(bb.pos.x + bb.size.x), mm(bb.pos.y + bb.size.y))
++    except Exception:
++        pass
++    for fp in fps:
++        ref = fp.reference_field.text.value if fp.reference_field else ""
++        fp_pads = list(fp.definition.pads)
++        if fp.id.value in boxes:
++            bbox = boxes[fp.id.value]
++        else:  # the pads' centres, or the anchor
++            pts = [(mm(p.position.x), mm(p.position.y)) for p in fp_pads] or [(mm(fp.position.x), mm(fp.position.y))]
++            bbox = (min(x for x, _ in pts), min(y for _, y in pts), max(x for x, _ in pts), max(y for _, y in pts))
++        footprints.append({
++            "reference": ref,
++            "value": fp.value_field.text.value if fp.value_field else "",
++            "x": _r(mm(fp.position.x)), "y": _r(mm(fp.position.y)),
++            "rotation": _r(fp.orientation.degrees if fp.orientation else 0.0),
++            "side": "bottom" if fp.layer == BoardLayer.BL_B_Cu else "top",
++            "locked": bool(fp.locked),
++            "_bbox": bbox,
++        })
++        for p in fp_pads:
++            pads.append({
++                "reference": ref, "pad": p.number, "net": p.net.name if p.net else "",
++                "x": _r(mm(p.position.x)), "y": _r(mm(p.position.y)),
++            })
++    tracks = []
++    for t in kboard.get_tracks():
++        tracks.append({
++            "uuid": t.id.value, "net": t.net.name if t.net else "", "layer": layer_name(t.layer),
++            "width": _r(mm(t.width)),
++            "start": {"x": _r(mm(t.start.x)), "y": _r(mm(t.start.y))},
++            "end": {"x": _r(mm(t.end.x)), "y": _r(mm(t.end.y))},
++            **({"arc": True} if isinstance(t, ArcTrack) else {}),
++        })
++    vias = [
++        {
++            "uuid": v.id.value, "net": v.net.name if v.net else "",
++            "x": _r(mm(v.position.x)), "y": _r(mm(v.position.y)),
++            "size": _r(mm(v.diameter)), "drill": _r(mm(v.drill_diameter)),
++        }
++        for v in kboard.get_vias()
++    ]
++    zones = []
++    for z in kboard.get_zones():
++        pts = [n.point for poly in z._proto.outline.polygons for n in poly.outline.nodes if n.HasField("point")]
++        if not pts:
++            continue
++        rule = z.is_rule_area()
++        zones.append({
++            "uuid": z.id.value, "net": "" if rule or z.net is None else z.net.name,
++            "layers": [layer_name(l) for l in z.layers], "priority": z.priority, "name": z.name,
++            "isRuleArea": rule,
++            "_bbox": (mm(min(p.x_nm for p in pts)), mm(min(p.y_nm for p in pts)),
++                      mm(max(p.x_nm for p in pts)), mm(max(p.y_nm for p in pts))),
++        })
++    out = collect(box, footprints, pads, tracks, vias, zones, limit)
++    out["source"] = "KiCad's open board"
++    return out
 diff --git a/python/commands/component.py b/python/commands/component.py
 index f635672..7ea84f4 100644
 --- a/python/commands/component.py
@@ -7305,7 +7555,7 @@ index 0000000..4700077
 +    report["thin_tracks_left"] = thin_tracks(board)
 +    return report
 diff --git a/python/commands/routing.py b/python/commands/routing.py
-index be3cf94..67ee134 100644
+index be3cf94..3d86963 100644
 --- a/python/commands/routing.py
 +++ b/python/commands/routing.py
 @@ -92,12 +92,66 @@ def apply_netclass_to_project_settings(
@@ -7385,7 +7635,18 @@ index be3cf94..67ee134 100644
  
          directory = os.path.dirname(pro_path) or "."
          fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=".netclass-", suffix=".kicad_pro")
-@@ -1625,11 +1681,15 @@ class RoutingCommands:
+@@ -1283,6 +1339,10 @@ class RoutingCommands:
+                             "unit": "mm",
+                         },
+                     }
++                    # PowerLab patch (#79): what delete_zone / edit_zone work with
++                    from commands.zone_edit import swig_zone_settings
++
++                    entry.update(swig_zone_settings(zone))
+                     # Area is only available when zone is filled.
+                     try:
+                         entry["filledArea"] = zone.GetFilledArea() / (scale * scale)
+@@ -1625,11 +1685,15 @@ class RoutingCommands:
      def create_netclass(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """Create a new net class with specified properties"""
          try:
@@ -7403,7 +7664,7 @@ index be3cf94..67ee134 100644
                  }
  
              name = params.get("name")
-@@ -1643,6 +1703,18 @@ class RoutingCommands:
+@@ -1643,6 +1707,18 @@ class RoutingCommands:
              diff_pair_width = params.get("diffPairWidth")
              diff_pair_gap = params.get("diffPairGap")
              nets = params.get("nets", [])
@@ -7422,7 +7683,7 @@ index be3cf94..67ee134 100644
  
              if not name:
                  return {
-@@ -1656,12 +1728,21 @@ class RoutingCommands:
+@@ -1656,12 +1732,21 @@ class RoutingCommands:
              # the project file up front so the durable write below runs even if a
              # SWIG API (which shifted across KiCad 6->10) throws (issue #185).
              pro_path = None
@@ -7450,7 +7711,7 @@ index be3cf94..67ee134 100644
  
              scale = 1000000  # mm to nm
              net_class_values: Dict[str, Any] = {}
-@@ -1671,6 +1752,8 @@ class RoutingCommands:
+@@ -1671,6 +1756,8 @@ class RoutingCommands:
              # here is logged but must NOT skip the .kicad_pro persistence below,
              # which is the deterministic, SWIG-independent part (issue #185).
              try:
@@ -7459,7 +7720,7 @@ index be3cf94..67ee134 100644
                  # KiCad 6/7 returns NETCLASSES with .Find/.Add; KiCad 9/10 returns
                  # a netclasses_map (SWIG-wrapped std::map) that is dict-like.
                  net_classes = self.board.GetNetClasses()
-@@ -1743,8 +1826,9 @@ class RoutingCommands:
+@@ -1743,8 +1830,9 @@ class RoutingCommands:
                      "diffPairGap": _safe_get("GetDiffPairGap"),
                  }
              except Exception as exc:
@@ -7471,7 +7732,7 @@ index be3cf94..67ee134 100644
  
              # Persist the class DEFINITION (net_settings.classes) using the same
              # normalized values as the live path, so the persisted class can never
-@@ -1759,8 +1843,11 @@ class RoutingCommands:
+@@ -1759,8 +1847,11 @@ class RoutingCommands:
                  "microvia_drill": uvia_drill,
                  "diff_pair_width": diff_pair_width,
                  "diff_pair_gap": diff_pair_gap,
@@ -7484,7 +7745,7 @@ index be3cf94..67ee134 100644
  
              warnings = [w for w in (in_memory_warning, persist.get("warning")) if w]
              if in_memory_warning and not persist.get("persisted"):
-@@ -1774,7 +1861,12 @@ class RoutingCommands:
+@@ -1774,7 +1865,12 @@ class RoutingCommands:
              result = {
                  "success": True,
                  "message": f"Created net class: {name}",
@@ -7498,7 +7759,7 @@ index be3cf94..67ee134 100644
                  "persisted": persist.get("persisted", False),
              }
              if persist.get("projectFile"):
-@@ -1875,6 +1967,13 @@ class RoutingCommands:
+@@ -1875,6 +1971,13 @@ class RoutingCommands:
  
              zone.SetMinThickness(int(min_width * scale))
  
@@ -8165,6 +8426,576 @@ index 2ad29f6..10ddd45 100644
      @staticmethod
      def add_text(
          schematic_path: Path,
+diff --git a/python/commands/zone_edit.py b/python/commands/zone_edit.py
+new file mode 100644
+index 0000000..0a31b85
+--- /dev/null
++++ b/python/commands/zone_edit.py
+@@ -0,0 +1,564 @@
++"""delete_zone and edit_zone, and query_zones in live mode (PowerLab patch, #79).
++
++add_copper_pour, add_zone, query_zones and refill_zones existed, but no tool could remove
++a zone or change one, so a pour on the wrong net or layer stayed on the board. A zone is
++picked by its uuid (query_zones gives it) or by net / layer / name when only one zone
++matches. Live (KiCad open on the board) the change is made in KiCad's board through kipy
++in one commit, and the zones are refilled there; offline it is made on the loaded board
++(pcbnew), and the edited zone's old fill is dropped until refill_zones.
++
++Locked zones are kept, as delete_trace keeps locked copper: delete_zone leaves them
++unless `includeLocked`, and edit_zone won't give a locked zone a new outline unless the
++same call unlocks it (`locked: false`). KiCad 10.0.5's API reports every zone as
++unlocked, ignores a lock on update and unlocks a zone it updates, so live mode reads the
++locks from the saved file, and an edit_zone that locks, unlocks or changes a locked zone
++runs on the saved file (save, edit, revert, as LIVE_VIA_FILE_COMMANDS do).
++"""
++
++import re
++from typing import Any, Callable, Dict, List, Optional, Tuple
++
++_UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
++_TO_MM = {"mm": 1.0, "mil": 0.0254, "inch": 25.4}
++# KiCad 10's own layer names, for the zones' (copper) layers and filters
++_LAYER_ALIASES = {"F.Silkscreen": "F.SilkS", "B.Silkscreen": "B.SilkS"}
++COPPER_FIELDS = ("newNet", "clearance", "minThickness", "padConnection", "fillType")
++
++
++def _uuid_text(value: Any) -> str:
++    m = _UUID_RE.search(str(value or ""))
++    return m.group(0).lower() if m else str(value or "").strip().lower()
++
++
++def _layer_name(name: Any) -> str:
++    name = str(name)
++    return _LAYER_ALIASES.get(name, name)
++
++
++# --- the parts without pcbnew or kipy (unit tested on their own) ----------------------
++
++def select_zones(zones: List[Dict[str, Any]], params: Dict[str, Any], many: bool = False
++                 ) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
++    """The zones `params` names: by `uuid`, else by `net`, `layer` and `name` together.
++    `zones` are summaries with uuid, net, layers and name. Returns (zones, None), or
++    ([], an error response). More than one match is an error unless `many`."""
++    uuid = params.get("uuid") or params.get("zoneUuid")
++    net, layer, name = params.get("net"), params.get("layer"), params.get("name")
++    if uuid:
++        wanted = _uuid_text(uuid)
++        found = [z for z in zones if _uuid_text(z["uuid"]) == wanted]
++        if not found:
++            return [], {
++                "success": False,
++                "message": f"No zone with uuid {uuid}",
++                "errorDetails": "query_zones lists the zones with their uuids",
++                "zones": [_brief(z) for z in zones][:50],
++            }
++        return found, None
++    if net is None and not layer and not name:
++        return [], {
++            "success": False,
++            "message": "Say which zone: uuid (from query_zones), or net, layer and/or name",
++        }
++    found = [
++        z for z in zones
++        if (net is None or z["net"] == net)
++        and (not layer or _layer_name(layer) in [_layer_name(l) for l in z["layers"]])
++        and (not name or z.get("name") == name)
++    ]
++    what = ", ".join(f"{k} {v!r}" for k, v in (("net", net), ("layer", layer), ("name", name))
++                     if v is not None and v != "")
++    if not found:
++        return [], {
++            "success": False,
++            "message": f"No zone with {what}",
++            "errorDetails": "query_zones lists the zones with their uuids",
++            "zones": [_brief(z) for z in zones][:50],
++        }
++    if len(found) > 1 and not many:
++        return [], {
++            "success": False,
++            "message": f"{len(found)} zones have {what}; give the uuid of the one you mean",
++            "zones": [_brief(z) for z in found][:50],
++        }
++    return found, None
++
++
++def locked_zone_uuids(board_text: str) -> set:
++    """The uuids of the locked zones in a .kicad_pcb's text. KiCad 10.0.5's API reports
++    every zone as unlocked (and ignores a lock on update), so live mode reads the lock
++    from the saved file: `(locked yes)` among a zone's first fields, before its uuid."""
++    out = set()
++    for m in re.finditer(r"\(zone\s", board_text):
++        head = board_text[m.end():m.end() + 1500]
++        u = re.search(r'\(uuid\s+"?([0-9a-fA-F-]{36})"?\)', head)
++        if u and re.search(r"\(locked(\s+yes)?\)", head[:u.start()]):
++            out.add(u.group(1).lower())
++    return out
++
++
++def _brief(z: Dict[str, Any]) -> Dict[str, Any]:
++    keys = ("uuid", "net", "layers", "priority", "name", "isRuleArea", "locked", "boundingBox")
++    return {k: z[k] for k in keys if k in z}
++
++
++def parse_zone_changes(params: Dict[str, Any]) -> Tuple[Dict[str, Any], Optional[str]]:
++    """edit_zone's changes, checked, in mm: newNet, layers, priority, clearance,
++    minThickness, padConnection, fillType, newName, outline (list of (x, y)), locked.
++    Returns (changes, None) or ({}, an error text)."""
++    out: Dict[str, Any] = {}
++    to_mm = _TO_MM.get(params.get("unit") or "mm")
++    if to_mm is None:
++        return {}, f"unknown unit {params.get('unit')!r}; use mm, mil or inch"
++    if params.get("newNet") is not None:
++        out["newNet"] = str(params["newNet"])
++    layers = params.get("newLayers", params.get("newLayer"))
++    if layers is not None:
++        layers = [layers] if isinstance(layers, str) else list(layers)
++        if not layers or not all(isinstance(l, str) and l for l in layers):
++            return {}, "newLayers must be a layer name or a list of them, e.g. ['F.Cu', 'B.Cu']"
++        out["layers"] = [_layer_name(l) for l in layers]
++    if params.get("priority") is not None:
++        try:
++            out["priority"] = int(params["priority"])
++        except (TypeError, ValueError):
++            return {}, f"priority must be a whole number, got {params['priority']!r}"
++        if out["priority"] < 0:
++            return {}, "priority can't be negative"
++    for key, alias in (("clearance", None), ("minThickness", "minWidth")):
++        value = params.get(key, params.get(alias) if alias else None)
++        if value is None:
++            continue
++        try:
++            value = float(value) * to_mm
++        except (TypeError, ValueError):
++            return {}, f"{key} must be a number, got {value!r}"
++        if value < 0 or (key == "minThickness" and value == 0):
++            return {}, f"{key} must be more than 0"
++        out[key] = value
++    if params.get("padConnection") is not None:
++        if params["padConnection"] not in ("thermal", "solid"):
++            return {}, "padConnection must be 'thermal' (reliefs) or 'solid'"
++        out["padConnection"] = params["padConnection"]
++    if params.get("fillType") is not None:
++        if params["fillType"] not in ("solid", "hatched"):
++            return {}, "fillType must be 'solid' or 'hatched'"
++        out["fillType"] = params["fillType"]
++    if params.get("newName") is not None:
++        out["newName"] = str(params["newName"])
++    if params.get("outline") is not None:
++        points = []
++        for p in params["outline"] or []:
++            try:
++                if isinstance(p, dict):
++                    points.append((float(p["x"]) * to_mm, float(p["y"]) * to_mm))
++                else:
++                    points.append((float(p[0]) * to_mm, float(p[1]) * to_mm))
++            except (KeyError, IndexError, TypeError, ValueError):
++                return {}, f"outline points are {{x, y}}; got {p!r}"
++        if len(points) < 3:
++            return {}, "a new outline needs at least 3 points"
++        out["outline"] = points
++    if params.get("locked") is not None:
++        out["locked"] = bool(params["locked"])
++    if not out:
++        return {}, ("Nothing to change: give newNet, newLayers, priority, clearance, "
++                    "minThickness, padConnection, fillType, newName, outline or locked")
++    return out, None
++
++
++def _locked_outline_error(zone: Dict[str, Any], changes: Dict[str, Any]) -> Optional[str]:
++    if zone.get("locked") and "outline" in changes and changes.get("locked") is not False:
++        return ("The zone is locked; to give it a new outline pass locked: false too "
++                "(or unlock it in KiCad)")
++    if zone.get("isRuleArea"):
++        bad = [k for k in COPPER_FIELDS if k in changes]
++        if bad:
++            return f"{', '.join(bad)} don't apply to a rule area (keep-out)"
++    return None
++
++
++# --- offline: pcbnew -----------------------------------------------------------------
++
++def swig_zone_settings(zone: Any) -> Dict[str, Any]:
++    """The settings query_zones reports beyond net, layers and priority."""
++    import pcbnew
++
++    out: Dict[str, Any] = {}
++    try:
++        out["name"] = zone.GetZoneName()
++    except Exception:
++        pass
++    try:
++        out["isRuleArea"] = bool(zone.GetIsRuleArea())
++        out["locked"] = bool(zone.IsLocked())
++    except Exception:
++        pass
++    if out.get("isRuleArea"):
++        return out
++    try:
++        conn = zone.GetPadConnection()
++        out["padConnection"] = {
++            pcbnew.ZONE_CONNECTION_FULL: "solid",
++            pcbnew.ZONE_CONNECTION_THERMAL: "thermal",
++        }.get(conn, str(conn))
++    except Exception:
++        pass
++    try:
++        clearance = zone.GetLocalClearance()
++        if clearance is not None:
++            out["clearance"] = clearance / 1_000_000
++    except Exception:
++        pass
++    return out
++
++
++def _swig_summary(board: Any, zone: Any) -> Dict[str, Any]:
++    try:
++        seq = zone.GetLayerSet().Seq()
++        layers = [board.GetLayerName(l) for l in seq]
++    except Exception:
++        layers = [board.GetLayerName(zone.GetLayer())]
++    try:
++        bb = zone.Outline().BBox()  # GetBoundingBox is cached by the board
++    except Exception:
++        bb = zone.GetBoundingBox()
++    out = {
++        "uuid": zone.m_Uuid.AsString(),
++        "net": zone.GetNetname(),
++        "layers": layers,
++        "priority": zone.GetAssignedPriority(),
++        "boundingBox": {
++            "x1": bb.GetLeft() / 1e6, "y1": bb.GetTop() / 1e6,
++            "x2": bb.GetRight() / 1e6, "y2": bb.GetBottom() / 1e6, "unit": "mm",
++        },
++        "_zone": zone,
++    }
++    out.update(swig_zone_settings(zone))
++    return out
++
++
++def _public(z: Dict[str, Any]) -> Dict[str, Any]:
++    return {k: v for k, v in z.items() if not k.startswith("_")}
++
++
++def swig_delete_zone(board: Any, params: Dict[str, Any]) -> Dict[str, Any]:
++    from utils.board_items import delete_board_item
++
++    if not board:
++        return {"success": False, "message": "No board is loaded"}
++    zones = [_swig_summary(board, z) for z in list(board.Zones())]
++    found, err = select_zones(zones, params, many=bool(params.get("all")))
++    if err:
++        return err
++    keep = [] if params.get("includeLocked") else [z for z in found if z.get("locked")]
++    found = [z for z in found if not any(z is k for k in keep)]
++    if not found:
++        return {"success": False,
++                "message": "Only locked zones match; unlock them in KiCad first, or pass includeLocked: true"}
++    for z in found:
++        delete_board_item(board, z["_zone"])
++    board.SetModified()
++    # `refill` is for live mode; offline the fill runs in refill_zones' own process
++    hint = "; run refill_zones so the other pours fill the space" if params.get("refill") is not False else ""
++    out = {
++        "success": True,
++        "message": f"Deleted {len(found)} zone(s){hint}",
++        "deletedCount": len(found),
++        "deleted": [_brief(z) for z in found],
++    }
++    if keep:
++        out["lockedKept"] = [_brief(z) for z in keep]
++    return out
++
++
++def swig_edit_zone(board: Any, params: Dict[str, Any]) -> Dict[str, Any]:
++    import pcbnew
++
++    if not board:
++        return {"success": False, "message": "No board is loaded"}
++    changes, err_text = parse_zone_changes(params)
++    if err_text:
++        return {"success": False, "message": err_text}
++    zones = [_swig_summary(board, z) for z in list(board.Zones())]
++    found, err = select_zones(zones, params)
++    if err:
++        return err
++    target = found[0]
++    err_text = _locked_outline_error(target, changes)
++    if err_text:
++        return {"success": False, "message": err_text}
++    zone = target["_zone"]
++    nm = lambda mm: int(round(mm * 1_000_000))
++
++    if "newNet" in changes:
++        if changes["newNet"] == "":
++            zone.SetNetCode(0)
++        else:
++            nets = board.GetNetInfo().NetsByName()
++            if not nets.has_key(changes["newNet"]):
++                return {"success": False, "message": f"The board has no net {changes['newNet']!r}"}
++            zone.SetNet(nets[changes["newNet"]])
++    if "layers" in changes:
++        lset = pcbnew.LSET()
++        for name in changes["layers"]:
++            lid = board.GetLayerID(name)
++            if lid < 0:
++                return {"success": False, "message": f"Unknown layer {name!r}"}
++            if not target.get("isRuleArea") and not pcbnew.IsCopperLayer(lid):
++                return {"success": False, "message": f"{name} isn't a copper layer"}
++            lset.AddLayer(lid)
++        if len(changes["layers"]) == 1:
++            zone.SetLayer(board.GetLayerID(changes["layers"][0]))
++        else:
++            zone.SetLayerSet(lset)
++    if "priority" in changes:
++        zone.SetAssignedPriority(changes["priority"])
++    if "clearance" in changes:
++        zone.SetLocalClearance(nm(changes["clearance"]))
++    if "minThickness" in changes:
++        zone.SetMinThickness(nm(changes["minThickness"]))
++    if "padConnection" in changes:
++        zone.SetPadConnection(
++            pcbnew.ZONE_CONNECTION_FULL if changes["padConnection"] == "solid"
++            else pcbnew.ZONE_CONNECTION_THERMAL
++        )
++    if "fillType" in changes:
++        zone.SetFillMode(
++            pcbnew.ZONE_FILL_MODE_HATCH_PATTERN if changes["fillType"] == "hatched"
++            else pcbnew.ZONE_FILL_MODE_POLYGONS
++        )
++    if "newName" in changes:
++        zone.SetZoneName(changes["newName"])
++    if "locked" in changes:
++        zone.SetLocked(changes["locked"])
++    if "outline" in changes:
++        outline = zone.Outline()
++        outline.RemoveAllContours()
++        outline.NewOutline()
++        for x, y in changes["outline"]:
++            outline.Append(pcbnew.VECTOR2I(nm(x), nm(y)))
++        zone.HatchBorder()  # the border hatching and the cached box follow the new outline
++        zone.CacheBoundingBox()
++    unfilled = any(k not in ("newName", "locked") for k in changes)
++    if unfilled:
++        zone.UnFill()  # the old fill no longer matches; refill_zones makes the new one
++    board.SetModified()
++    # `refill` is for live mode; offline the fill runs in refill_zones' own process
++    hint = "; run refill_zones to fill it again" if unfilled and params.get("refill") is not False else ""
++    return {
++        "success": True,
++        "message": f"Edited the zone{hint}",
++        "changed": sorted(changes),
++        "zone": _brief(_swig_summary(board, zone)),
++    }
++
++
++# --- live: kipy, in KiCad's board ---------------------------------------------------
++
++def _ipc_layer_name(layer: int) -> str:
++    from kipy.proto.board.board_types_pb2 import BoardLayer
++
++    name = BoardLayer.Name(layer)
++    return name[3:].replace("_", ".") if name.startswith("BL_") else name
++
++
++def _ipc_layer(name: str) -> Optional[int]:
++    from kipy.proto.board.board_types_pb2 import BoardLayer
++
++    try:
++        return BoardLayer.Value("BL_" + _layer_name(name).replace(".", "_"))
++    except ValueError:
++        return None
++
++
++def _ipc_summary(zone: Any, locked_uuids: Any = ()) -> Dict[str, Any]:
++    from kipy.proto.board.board_types_pb2 import ZoneConnectionStyle
++
++    points = [
++        node.point
++        for poly in zone._proto.outline.polygons
++        for node in poly.outline.nodes
++        if node.HasField("point")
++    ]
++    rule = zone.is_rule_area()
++    out: Dict[str, Any] = {
++        "uuid": zone.id.value,
++        "net": "" if rule or zone.net is None else zone.net.name,
++        "layers": [_ipc_layer_name(l) for l in zone.layers],
++        "priority": zone.priority,
++        "name": zone.name,
++        "isRuleArea": rule,
++        "locked": bool(zone.locked or zone.id.value.lower() in locked_uuids),
++        "isFilled": bool(zone.filled),
++        "_zone": zone,
++    }
++    if points:
++        xs, ys = [p.x_nm for p in points], [p.y_nm for p in points]
++        out["boundingBox"] = {
++            "x1": min(xs) / 1e6, "y1": min(ys) / 1e6, "x2": max(xs) / 1e6, "y2": max(ys) / 1e6,
++            "unit": "mm",
++        }
++    if not rule:
++        out["minThickness"] = zone.min_thickness / 1e6
++        out["clearance"] = zone.clearance / 1e6
++        style = zone._proto.copper_settings.connection.zone_connection
++        out["padConnection"] = {
++            ZoneConnectionStyle.ZCS_FULL: "solid",
++            ZoneConnectionStyle.ZCS_THERMAL: "thermal",
++        }.get(style, ZoneConnectionStyle.Name(style))
++    return out
++
++
++def ipc_query_zones(kboard: Any, params: Dict[str, Any], locked_uuids: Any = ()) -> Dict[str, Any]:
++    """query_zones on KiCad's board, so live uuids are the ones delete_zone / edit_zone
++    find there (zones added live aren't in the saved file yet)."""
++    net, layer, bbox = params.get("net"), params.get("layer"), params.get("boundingBox")
++    zones = [_ipc_summary(z, locked_uuids) for z in kboard.get_zones()]
++    out = []
++    for z in zones:
++        if net and z["net"] != net:
++            continue
++        if layer and _layer_name(layer) not in z["layers"]:
++            continue
++        if bbox and "boundingBox" in z:
++            scale = _TO_MM.get(bbox.get("unit", "mm"), 1.0)
++            x1, y1 = bbox.get("x1", 0) * scale, bbox.get("y1", 0) * scale
++            x2, y2 = bbox.get("x2", 0) * scale, bbox.get("y2", 0) * scale
++            b = z["boundingBox"]
++            if b["x2"] < min(x1, x2) or b["x1"] > max(x1, x2) or b["y2"] < min(y1, y2) or b["y1"] > max(y1, y2):
++                continue
++        out.append(_public(z))
++    return {"success": True, "zoneCount": len(out), "zones": out}
++
++
++def _commit(kboard: Any, message: str, fn: Callable[[], Any]) -> None:
++    commit = kboard.begin_commit()
++    try:
++        fn()
++        kboard.push_commit(commit, message)
++    except Exception:
++        kboard.drop_commit(commit)
++        raise
++
++
++def _refill(kboard: Any, params: Dict[str, Any], out: Dict[str, Any]) -> None:
++    if params.get("refill", True) is False:
++        out["message"] += "; zones not refilled (refill: false)"
++        return
++    try:
++        kboard.refill_zones(block=True, max_poll_seconds=60.0)
++        out["message"] += ", zones refilled"
++    except Exception as e:  # the edit stands; say the fill is old
++        out["message"] += f"; refilling the zones failed ({e}), run refill_zones"
++
++
++def ipc_delete_zone(kboard: Any, params: Dict[str, Any], locked_uuids: Any = ()) -> Dict[str, Any]:
++    zones = [_ipc_summary(z, locked_uuids) for z in kboard.get_zones()]
++    found, err = select_zones(zones, params, many=bool(params.get("all")))
++    if err:
++        return err
++    keep = [] if params.get("includeLocked") else [z for z in found if z.get("locked")]
++    found = [z for z in found if not any(z is k for k in keep)]
++    if not found:
++        return {"success": False,
++                "message": "Only locked zones match; unlock them in KiCad first, or pass includeLocked: true"}
++    _commit(kboard, "Delete zone", lambda: kboard.remove_items([z["_zone"] for z in found]))
++    out = {
++        "success": True,
++        "message": f"Deleted {len(found)} zone(s) in KiCad's board",
++        "deletedCount": len(found),
++        "deleted": [_brief(z) for z in found],
++    }
++    if keep:
++        out["lockedKept"] = [_brief(z) for z in keep]
++    _refill(kboard, params, out)
++    return out
++
++
++def ipc_edit_needs_file(kboard: Any, params: Dict[str, Any], locked_uuids: Any = ()) -> bool:
++    """Whether edit_zone must run on the saved file in live mode: KiCad 10.0.5's API
++    ignores a zone's lock on update, and an update through it unlocks a locked zone."""
++    if params.get("locked") is not None:
++        return True
++    zones = [_ipc_summary(z, locked_uuids) for z in kboard.get_zones()]
++    found, err = select_zones(zones, params)
++    return not err and bool(found[0].get("locked"))
++
++
++def ipc_edit_zone(kboard: Any, params: Dict[str, Any], locked_uuids: Any = ()) -> Dict[str, Any]:
++    from kipy.board_types import ZoneFillMode
++    from kipy.geometry import PolyLine, PolyLineNode
++    from kipy.proto.board.board_types_pb2 import ZoneConnectionStyle
++
++    changes, err_text = parse_zone_changes(params)
++    if err_text:
++        return {"success": False, "message": err_text}
++    zones = [_ipc_summary(z, locked_uuids) for z in kboard.get_zones()]
++    found, err = select_zones(zones, params)
++    if err:
++        return err
++    target = found[0]
++    err_text = _locked_outline_error(target, changes)
++    if err_text:
++        return {"success": False, "message": err_text}
++    zone = target["_zone"]
++    nm = lambda mm: int(round(mm * 1_000_000))
++
++    if "newNet" in changes:
++        if changes["newNet"] == "":
++            zone._proto.copper_settings.net.Clear()
++        else:
++            net = next((n for n in kboard.get_nets() if n.name == changes["newNet"]), None)
++            if net is None:
++                return {"success": False, "message": f"KiCad's board has no net {changes['newNet']!r}"}
++            zone.net = net
++    if "layers" in changes:
++        ids = []
++        for name in changes["layers"]:
++            lid = _ipc_layer(name)
++            if lid is None:
++                return {"success": False, "message": f"Unknown layer {name!r}"}
++            if not target.get("isRuleArea") and not _layer_name(name).endswith(".Cu"):
++                return {"success": False, "message": f"{name} isn't a copper layer"}
++            ids.append(lid)
++        zone.layers = ids
++    if "priority" in changes:
++        zone.priority = changes["priority"]
++    if "clearance" in changes:
++        zone.clearance = nm(changes["clearance"])
++    if "minThickness" in changes:
++        zone.min_thickness = nm(changes["minThickness"])
++    if "padConnection" in changes:
++        zone._proto.copper_settings.connection.zone_connection = (
++            ZoneConnectionStyle.ZCS_FULL if changes["padConnection"] == "solid"
++            else ZoneConnectionStyle.ZCS_THERMAL
++        )
++    if "fillType" in changes:
++        zone._proto.copper_settings.fill_mode = (
++            ZoneFillMode.ZFM_HATCHED if changes["fillType"] == "hatched" else ZoneFillMode.ZFM_SOLID
++        )
++    if "newName" in changes:
++        zone.name = changes["newName"]
++    if "locked" in changes:
++        zone.locked = changes["locked"]
++    if "outline" in changes:
++        line = PolyLine()
++        line.closed = True
++        for x, y in changes["outline"]:
++            line.append(PolyLineNode.from_xy(nm(x), nm(y)))
++        del zone._proto.outline.polygons[:]
++        zone._proto.outline.polygons.add().outline.CopyFrom(line._proto)
++        del zone._proto.filled_polygons[:]
++
++    _commit(kboard, "Edit zone", lambda: kboard.update_items([zone]))
++    after = next((z for z in kboard.get_zones() if z.id.value == zone.id.value), zone)
++    out = {
++        "success": True,
++        "message": "Edited the zone in KiCad's board",
++        "changed": sorted(changes),
++        "zone": _brief(_ipc_summary(after, locked_uuids)),
++    }
++    if any(k not in ("newName", "locked") for k in changes):
++        _refill(kboard, params, out)
++    return out
 diff --git a/python/kicad_api/ipc_backend.py b/python/kicad_api/ipc_backend.py
 index 6f9a813..a2d32a8 100644
 --- a/python/kicad_api/ipc_backend.py
@@ -8344,14 +9175,14 @@ index 6f9a813..a2d32a8 100644
              # Create outline polyline
              outline = PolyLine()
 diff --git a/python/kicad_interface.py b/python/kicad_interface.py
-index c6ac305..b90e920 100644
+index c6ac305..1a96469 100644
 --- a/python/kicad_interface.py
 +++ b/python/kicad_interface.py
 @@ -36,6 +36,7 @@ if sys.platform == "win32":
  
  import sexpdata
  from annotations import AnnotationLoader
-+from commands import part_spacing, powerlab_route  # PowerLab patch
++from commands import part_spacing, powerlab_route, zone_edit  # PowerLab patch
  from commands.schematic_handlers import SchematicHandlersMixin
  from commands.wire_manager import WireManager
  from resources.resource_definitions import RESOURCE_DEFINITIONS, handle_resource_read
@@ -8371,15 +9202,17 @@ index c6ac305..b90e920 100644
              "get_component_properties": self.component_commands.get_component_properties,
              "get_component_list": self.component_commands.get_component_list,
              "get_component_geometry": self.component_commands.get_component_geometry,
-@@ -558,6 +561,7 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -558,6 +561,9 @@ class KiCADInterface(SchematicHandlersMixin):
              "create_netclass": self.routing_commands.create_netclass,
              "set_net_color": self.routing_commands.set_net_color,
              "add_copper_pour": self.routing_commands.add_copper_pour,
 +            "add_zone": self._handle_add_zone,  # PowerLab patch: add_zone had no handler
++            "delete_zone": self._handle_delete_zone,  # PowerLab patch (#79)
++            "edit_zone": self._handle_edit_zone,  # PowerLab patch (#79)
              "route_differential_pair": self.routing_commands.route_differential_pair,
              "refill_zones": self._handle_refill_zones,
              # Design rule commands
-@@ -693,6 +697,8 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -693,6 +699,8 @@ class KiCADInterface(SchematicHandlersMixin):
              "add_schematic_hierarchical_label": self._handle_add_schematic_hierarchical_label,
              "add_schematic_text": self._handle_add_schematic_text,
              "list_schematic_texts": self._handle_list_schematic_texts,
@@ -8388,7 +9221,7 @@ index c6ac305..b90e920 100644
              "add_sheet_pin": self._handle_add_sheet_pin,
              "import_svg_logo": self._handle_import_svg_logo,
              # UI/Process management commands
-@@ -732,10 +738,15 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -732,10 +740,15 @@ class KiCADInterface(SchematicHandlersMixin):
              "remove_library_table_entry": remove_library_table_entry,
              "set_library_table_uri": set_library_table_uri,
              # Freerouting autoroute commands
@@ -8405,7 +9238,7 @@ index c6ac305..b90e920 100644
              # Eagle import commands
              "import_eagle_project": self.eagle_commands.import_eagle_project,
              # Schematic migration
-@@ -756,12 +767,14 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -756,13 +769,18 @@ class KiCADInterface(SchematicHandlersMixin):
          "route_trace": "_ipc_route_trace",
          "route_arc_trace": "_ipc_route_arc_trace",
          "add_via": "_ipc_add_via",
@@ -8418,9 +9251,13 @@ index c6ac305..b90e920 100644
          "add_copper_pour": "_ipc_add_copper_pour",
 +        "add_zone": "_ipc_add_copper_pour",  # PowerLab patch: add_zone had no handler
          "refill_zones": "_ipc_refill_zones",
++        "query_zones": "_ipc_query_zones",  # PowerLab patch (#79): KiCad's zones and uuids
++        "delete_zone": "_ipc_delete_zone",  # PowerLab patch (#79)
++        "edit_zone": "_ipc_edit_zone",  # PowerLab patch (#79)
          # Board commands
          "add_text": "_ipc_add_text",
-@@ -771,6 +784,10 @@ class KiCADInterface(SchematicHandlersMixin):
+         "add_board_text": "_ipc_add_text",
+@@ -771,6 +789,10 @@ class KiCADInterface(SchematicHandlersMixin):
          "add_board_outline": "_ipc_add_board_outline",
          "add_mounting_hole": "_ipc_add_mounting_hole",
          "get_layer_list": "_ipc_get_layer_list",
@@ -8431,7 +9268,7 @@ index c6ac305..b90e920 100644
          # Component commands
          "place_component": "_ipc_place_component",
          "move_component": "_ipc_move_component",
-@@ -779,11 +796,32 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -779,11 +801,32 @@ class KiCADInterface(SchematicHandlersMixin):
          "get_component_list": "_ipc_get_component_list",
          "get_component_properties": "_ipc_get_component_properties",
          "set_footprint_type": "_ipc_set_footprint_type",
@@ -8464,7 +9301,7 @@ index c6ac305..b90e920 100644
      # Commands that are implemented by the explicit IPC command handlers in
      # command_routes, rather than by the generic IPC_CAPABLE_COMMANDS fast path.
      IPC_DIRECT_COMMANDS = {
-@@ -1021,6 +1059,14 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -1021,6 +1064,14 @@ class KiCADInterface(SchematicHandlersMixin):
                  ):
                      self._downgrade_session_to_swig()
  
@@ -8479,7 +9316,7 @@ index c6ac305..b90e920 100644
              # Check if we can use IPC for this command (real-time UI sync).
              # A session pinned to SWIG never routes board commands over IPC,
              # even when IPC is connected — the GUI may hold a stale copy of
-@@ -1075,6 +1121,22 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -1075,6 +1126,22 @@ class KiCADInterface(SchematicHandlersMixin):
              if handler:
                  # Execute the command
                  result = handler(params)
@@ -8502,7 +9339,7 @@ index c6ac305..b90e920 100644
                  logger.debug(f"Command result: {result}")
  
                  # Add backend indicator
-@@ -1231,11 +1293,13 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -1231,11 +1298,15 @@ class KiCADInterface(SchematicHandlersMixin):
          "replace_board_outline",
          "delete_graphic",
          "update_graphic",
@@ -8513,10 +9350,12 @@ index c6ac305..b90e920 100644
          "move_footprint_text",
          "add_copper_pour",
 +        "add_zone",
++        "delete_zone",  # PowerLab patch (#79)
++        "edit_zone",  # PowerLab patch (#79)
          "refill_zones",
          "import_svg_logo",
          "sync_schematic_to_board",
-@@ -1848,6 +1912,376 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -1848,6 +1919,392 @@ class KiCADInterface(SchematicHandlersMixin):
          state = self._dirty_state(board_path)
          return {"success": True, "boardPath": board_path, **state}
  
@@ -8879,6 +9718,22 @@ index c6ac305..b90e920 100644
 +            ),
 +        }
 +
++    def _handle_delete_zone(self, params: Dict[str, Any]) -> Dict[str, Any]:
++        """delete_zone on the loaded board (PowerLab patch, #79; live: _ipc_delete_zone)."""
++        try:
++            return zone_edit.swig_delete_zone(self.routing_commands.board, params)
++        except Exception as e:
++            logger.error(f"delete_zone error: {e}")
++            return {"success": False, "message": f"Failed to delete zone: {e}"}
++
++    def _handle_edit_zone(self, params: Dict[str, Any]) -> Dict[str, Any]:
++        """edit_zone on the loaded board (PowerLab patch, #79; live: _ipc_edit_zone)."""
++        try:
++            return zone_edit.swig_edit_zone(self.routing_commands.board, params)
++        except Exception as e:
++            logger.error(f"edit_zone error: {e}")
++            return {"success": False, "message": f"Failed to edit zone: {e}"}
++
 +    def _handle_add_zone(self, params: Dict[str, Any]) -> Dict[str, Any]:
 +        """add_zone = add_copper_pour with explicit points in any unit (PowerLab patch)."""
 +        to_mm = {"mm": 1.0, "mil": 0.0254, "inch": 25.4}.get(params.get("unit") or "mm", 1.0)
@@ -8893,7 +9748,77 @@ index c6ac305..b90e920 100644
      def _handle_batch_move_components(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """Batch move wrapper that preserves the external-edit save guard."""
          if getattr(self, "session_backend", None) == "ipc" and not self._ipc_session_alive():
-@@ -5079,6 +5513,65 @@ print("ok")
+@@ -4667,6 +5124,59 @@ class KiCADInterface(SchematicHandlersMixin):
+             logger.error(traceback.format_exc())
+             return {"success": False, "message": str(e)}
+ 
++    def _board_elements_in_region(self, params: Dict[str, Any]) -> Dict[str, Any]:
++        """get_elements_in_region on the board (PowerLab patch, #80): footprints, pads,
++        tracks, vias and zones in the rectangle, from KiCad's open board when it has it
++        (pcbPath's board, or any with no pcbPath), else from pcbPath's file or the loaded
++        board."""
++        from commands import board_region
++        from utils.region_box import region_box
++
++        try:
++            if params.get("region") is not None:
++                box = region_box(params["region"])
++            elif all(params.get(k) is not None for k in ("x1", "y1", "x2", "y2")):
++                box = region_box({k: params[k] for k in ("x1", "y1", "x2", "y2")})
++            else:
++                return {
++                    "success": False,
++                    "message": "Give the rectangle as x1, y1, x2, y2 (mm), or region",
++                }
++        except ValueError as e:
++            return {"success": False, "message": f"Bad region: {e}"}
++        limit = max(1, int(params.get("limit") or 100))
++        pcb_path = params.get("pcbPath")
++
++        if self._session_allows_ipc():
++            if not self.ipc_board_api:
++                self._try_enable_ipc_backend()
++            live = self.use_ipc and self.ipc_board_api and (
++                self._ipc_board_path_matches(pcb_path) if pcb_path else self._ipc_has_open_board()
++            )
++            if live:
++                result = board_region.ipc_items(self.ipc_board_api._get_board(), box, limit)
++                result["_backend"] = "ipc"
++                return result
++
++        board = self.board
++        if pcb_path and (
++            board is None
++            or self._normalize_board_path(board.GetFileName()) != self._normalize_board_path(pcb_path)
++        ):
++            if not os.path.exists(pcb_path):
++                return {"success": False, "message": f"PCB file not found: {pcb_path}"}
++            board = pcbnew.LoadBoard(pcb_path)
++        if board is None:
++            return {
++                "success": False,
++                "message": "No board is loaded",
++                "errorDetails": "Give pcbPath for the board's items, or schematicPath for a "
++                                "schematic's symbols, wires and labels",
++            }
++        result = board_region.swig_items(board, box, limit)
++        result["source"] = board.GetFileName()
++        return result
++
+     def _handle_get_elements_in_region(self, params: Dict[str, Any]) -> Dict[str, Any]:
+         """List all wires, labels, and symbols within a rectangular region"""
+         logger.info("Getting elements in schematic region")
+@@ -4677,7 +5187,8 @@ class KiCADInterface(SchematicHandlersMixin):
+ 
+             schematic_path = params.get("schematicPath")
+             if not schematic_path:
+-                return {"success": False, "message": "schematicPath is required"}
++                # PowerLab patch (#80): without a schematic, the board's items
++                return self._board_elements_in_region(params)
+ 
+             x1 = float(params.get("x1", 0))
+             y1 = float(params.get("y1", 0))
+@@ -5079,6 +5590,65 @@ print("ok")
              logger.error(f"IPC route_arc_trace error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -8959,7 +9884,7 @@ index c6ac305..b90e920 100644
      def _ipc_add_via(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for add_via - adds via with real-time UI update"""
          try:
-@@ -5131,21 +5624,37 @@ print("ok")
+@@ -5131,21 +5701,37 @@ print("ok")
              net = params.get("net")
              clearance = params.get("clearance", 0.5)
              min_width = params.get("minWidth", 0.25)
@@ -9004,7 +9929,7 @@ index c6ac305..b90e920 100644
  
              success = self.ipc_board_api.add_zone(
                  points=formatted_points,
-@@ -5156,6 +5665,7 @@ print("ok")
+@@ -5156,6 +5742,7 @@ print("ok")
                  priority=priority,
                  fill_mode=fill_type,
                  name=name,
@@ -9012,7 +9937,73 @@ index c6ac305..b90e920 100644
              )
  
              return {
-@@ -5204,12 +5714,18 @@ print("ok")
+@@ -5179,6 +5766,65 @@ print("ok")
+             logger.error(f"IPC add_copper_pour error: {e}")
+             return {"success": False, "message": str(e)}
+ 
++    def _live_locked_zone_uuids(self) -> set:
++        """Locked zones of KiCad's open board, from its saved file (PowerLab patch, #79):
++        KiCad 10.0.5's API reports every zone as unlocked."""
++        try:
++            path = self.ipc_backend.get_open_board_path()
++            with open(path, encoding="utf-8") as fh:
++                return zone_edit.locked_zone_uuids(fh.read())
++        except Exception as e:
++            logger.debug(f"No zone locks from the saved board: {e}")
++            return set()
++
++    def _ipc_query_zones(self, params: Dict[str, Any]) -> Dict[str, Any]:
++        """IPC handler for query_zones (PowerLab patch, #79): KiCad's zones, with the uuids
++        delete_zone and edit_zone find there."""
++        try:
++            return zone_edit.ipc_query_zones(
++                self.ipc_board_api._get_board(), params, self._live_locked_zone_uuids()
++            )
++        except Exception as e:
++            logger.error(f"IPC query_zones error: {e}")
++            return {"success": False, "message": "Failed to query zones", "errorDetails": str(e)}
++
++    def _ipc_delete_zone(self, params: Dict[str, Any]) -> Dict[str, Any]:
++        """IPC handler for delete_zone (PowerLab patch, #79): one commit in KiCad's board."""
++        try:
++            return zone_edit.ipc_delete_zone(
++                self.ipc_board_api._get_board(), params, self._live_locked_zone_uuids()
++            )
++        except Exception as e:
++            logger.error(f"IPC delete_zone error: {e}")
++            return {"success": False, "message": f"Failed to delete zone: {e}"}
++
++    def _ipc_edit_zone(self, params: Dict[str, Any]) -> Dict[str, Any]:
++        """IPC handler for edit_zone (PowerLab patch, #79): one commit in KiCad's board.
++        KiCad 10.0.5's API ignores a zone's lock on update and unlocks a locked zone it
++        updates, so a call that locks or unlocks, or edits a locked zone, runs on the saved
++        file instead (LIVE_VIA_FILE_COMMANDS' save, edit, revert)."""
++        try:
++            kboard = self.ipc_board_api._get_board()
++            locked_uuids = self._live_locked_zone_uuids()
++            if zone_edit.ipc_edit_needs_file(kboard, params, locked_uuids):
++                live = self._live_board_for_file_edit()
++                if live is not None:
++                    result = self._edit_saved_board_then_revert(
++                        "edit_zone", self._handle_edit_zone, params, live
++                    )
++                    if result.get("success") and "refill_zones" in result.get("message", ""):
++                        if params.get("refill", True) is not False:
++                            try:
++                                live[1].refill_zones(block=True, max_poll_seconds=60.0)
++                                result["message"] = "Edited the zone, zones refilled in KiCad"
++                            except Exception as e:
++                                result["message"] += f" (refilling in KiCad failed: {e})"
++                    return result
++            return zone_edit.ipc_edit_zone(kboard, params, locked_uuids)
++        except Exception as e:
++            logger.error(f"IPC edit_zone error: {e}")
++            return {"success": False, "message": f"Failed to edit zone: {e}"}
++
+     def _ipc_refill_zones(self, params: Dict[str, Any]) -> Dict[str, Any]:
+         """IPC handler for refill_zones - refills all zones with real-time UI update"""
+         try:
+@@ -5204,12 +5850,18 @@ print("ok")
              layer = params.get("layer", "F.SilkS")
              size = params.get("size", 1.0)
              rotation = params.get("rotation", 0)
@@ -9033,7 +10024,7 @@ index c6ac305..b90e920 100644
                  "success": success,
                  "message": (
                      f"Added text '{text}' (visible in KiCAD UI)"
-@@ -5217,6 +5733,10 @@ print("ok")
+@@ -5217,6 +5869,10 @@ print("ok")
                      else "Failed to add text"
                  ),
              }
@@ -9044,7 +10035,7 @@ index c6ac305..b90e920 100644
          except Exception as e:
              logger.error(f"IPC add_text error: {e}")
              return {"success": False, "message": str(e)}
-@@ -5349,6 +5869,19 @@ print("ok")
+@@ -5349,6 +6005,19 @@ print("ok")
                  x = x * 0.0254
                  y = y * 0.0254
  
@@ -9064,7 +10055,7 @@ index c6ac305..b90e920 100644
              success = self.ipc_board_api.move_component(
                  reference=reference, x=x, y=y, rotation=rotation
              )
-@@ -5356,7 +5889,9 @@ print("ok")
+@@ -5356,7 +6025,9 @@ print("ok")
              return {
                  "success": success,
                  "message": (
@@ -9075,7 +10066,7 @@ index c6ac305..b90e920 100644
                      if success
                      else "Failed to move component"
                  ),
-@@ -5456,11 +5991,306 @@ print("ok")
+@@ -5456,11 +6127,306 @@ print("ok")
              return {"success": False, "message": str(e)}
  
      def _ipc_delete_trace(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -9387,7 +10378,7 @@ index c6ac305..b90e920 100644
  
      def _ipc_query_traces(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for query_traces - reads traces from the live KiCAD board."""
-@@ -5558,11 +6388,20 @@ print("ok")
+@@ -5558,11 +6524,20 @@ print("ok")
          and correctly generates PCB_SHAPE arcs for rounded corners.
          """
          shape = params.get("shape", "rectangle")
@@ -9408,7 +10399,7 @@ index c6ac305..b90e920 100644
              return self.board_commands.add_board_outline(params)
  
          try:
-@@ -5614,6 +6453,50 @@ print("ok")
+@@ -5614,6 +6589,50 @@ print("ok")
              logger.error(f"IPC add_board_outline error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -9459,7 +10450,7 @@ index c6ac305..b90e920 100644
      def _ipc_add_mounting_hole(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for add_mounting_hole - adds mounting hole with real-time UI update"""
          try:
-@@ -5833,6 +6716,100 @@ print("ok")
+@@ -5833,6 +6852,100 @@ print("ok")
              logger.error(f"IPC set_footprint_type error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -9561,7 +10552,7 @@ index c6ac305..b90e920 100644
      # Legacy IPC command handlers (explicit ipc_* commands)
  
 diff --git a/python/schemas/tool_schemas.py b/python/schemas/tool_schemas.py
-index e739f90..074e082 100644
+index e739f90..aa6d188 100644
 --- a/python/schemas/tool_schemas.py
 +++ b/python/schemas/tool_schemas.py
 @@ -405,6 +405,31 @@ BOARD_TOOLS = [
@@ -9596,7 +10587,24 @@ index e739f90..074e082 100644
      {
          "name": "add_layer",
          "title": "Enable Copper Layer",
-@@ -585,6 +610,10 @@ BOARD_TOOLS = [
+@@ -529,6 +554,16 @@ BOARD_TOOLS = [
+                         '"file": write to <board>_2d_view.<ext> next to the PCB and return filePath.'
+                     ),
+                 },
++                # PowerLab patch (#81)
++                "region": {
++                    "type": "object",
++                    "description": (
++                        "A close-up, in board mm: {x0, y0, x1, y1}, {x, y, size} (square round "
++                        "a point), {x, y, width, height} (top-left corner), {cx, cy, width, "
++                        "height}, {xmin, ymin, xmax, ymax}, {left, top, right, bottom}, "
++                        "{x1, y1, x2, y2} or [x0, y0, x1, y1]"
++                    ),
++                },
+             },
+         },
+     },
+@@ -585,6 +620,10 @@ BOARD_TOOLS = [
                      "default": False,
                      "description": "True for plated through-hole (PTH) with copper pad; false (default) for NPTH (mask only).",
                  },
@@ -9607,7 +10615,7 @@ index e739f90..074e082 100644
                  "footprintLibId": {
                      "type": "string",
                      "description": "Optional library:name FPID (e.g. 'MountingHole:MountingHole_3.2mm'). Defaults to MountingHole:MountingHole_<diameter>mm. A non-empty FPID is required for the footprint to be selectable in KiCad's GUI Move tool.",
-@@ -803,6 +832,12 @@ COMPONENT_TOOLS = [
+@@ -803,6 +842,12 @@ COMPONENT_TOOLS = [
                      "type": "string",
                      "description": "New footprint library:name",
                  },
@@ -9620,6 +10628,200 @@ index e739f90..074e082 100644
              },
              "required": ["reference"],
          },
+@@ -1558,6 +1603,59 @@ ROUTING_TOOLS = [
+             },
+         },
+     },
++    # PowerLab patch (#79)
++    {
++        "name": "delete_zone",
++        "title": "Delete Zone",
++        "description": "Deletes a copper zone (pour) or rule area, by uuid (query_zones) or by "
++        "net / layer / name when one zone matches (all: every match). Locked zones are kept "
++        "unless includeLocked. Live: one commit in KiCad's board, zones refilled.",
++        "inputSchema": {
++            "type": "object",
++            "properties": {
++                "uuid": {"type": "string", "description": "The zone's uuid, from query_zones"},
++                "net": {"type": "string", "description": "Without uuid: the zone's net"},
++                "layer": {"type": "string", "description": "Without uuid: a layer it is on"},
++                "name": {"type": "string", "description": "Without uuid: its name"},
++                "all": {"type": "boolean", "description": "Delete every match"},
++                "includeLocked": {"type": "boolean", "default": False},
++                "refill": {"type": "boolean", "default": True, "description": "Live: refill after"},
++            },
++        },
++    },
++    {
++        "name": "edit_zone",
++        "title": "Edit Zone",
++        "description": "Changes one copper zone (pour) or rule area, picked by uuid (query_zones) "
++        "or its current net / layer / name: newNet, newLayers, priority, clearance, "
++        "minThickness, padConnection (thermal/solid), fillType, newName, outline, locked. "
++        "Live: one commit in KiCad's board, zones refilled; offline run refill_zones after.",
++        "inputSchema": {
++            "type": "object",
++            "properties": {
++                "uuid": {"type": "string", "description": "The zone's uuid, from query_zones"},
++                "net": {"type": "string", "description": "Without uuid: the zone's current net"},
++                "layer": {"type": "string", "description": "Without uuid: a layer it is on"},
++                "name": {"type": "string", "description": "Without uuid: its name"},
++                "newNet": {"type": "string", "description": "New net ('' = no net)"},
++                "newLayers": {"type": "array", "items": {"type": "string"}},
++                "priority": {"type": "integer"},
++                "clearance": {"type": "number"},
++                "minThickness": {"type": "number"},
++                "padConnection": {"type": "string", "enum": ["thermal", "solid"]},
++                "fillType": {"type": "string", "enum": ["solid", "hatched"]},
++                "newName": {"type": "string"},
++                "outline": {
++                    "type": "array",
++                    "items": {"type": "object"},
++                    "description": "New outline, at least 3 {x, y} points",
++                },
++                "locked": {"type": "boolean"},
++                "unit": {"type": "string", "enum": ["mm", "mil", "inch"], "default": "mm"},
++                "refill": {"type": "boolean", "default": True, "description": "Live: refill after"},
++            },
++        },
++    },
+     {
+         "name": "add_gnd_stitching_vias",
+         "title": "Add GND Stitching Vias",
+@@ -2875,13 +2973,21 @@ SCHEMATIC_TOOLS = [
+     {
+         "name": "get_elements_in_region",
+         "title": "Get Elements in Region",
+-        "description": "Lists all symbols, wires, and labels within a rectangular region of the schematic. Useful for understanding what is in a specific area before modifying it.",
++        "description": "Lists what lies within a rectangle (mm). With schematicPath: the schematic's symbols, wires and labels. Without it (PowerLab patch, #80): the board's footprints, pads, tracks, vias and zones, live from KiCad when it has the board open, else from pcbPath or the loaded board; lists capped at limit.",
+         "inputSchema": {
+             "type": "object",
+             "properties": {
+                 "schematicPath": {
+                     "type": "string",
+-                    "description": "Path to the .kicad_sch schematic file",
++                    "description": "Schematic mode: the .kicad_sch file. Leave out for the board.",
++                },
++                "pcbPath": {
++                    "type": "string",
++                    "description": "Board mode: the .kicad_pcb file (default: KiCad's open board, or the loaded one)",
++                },
++                "limit": {
++                    "type": "number",
++                    "description": "Board mode: most items listed per kind (default 100)",
+                 },
+                 "x1": {
+                     "type": "number",
+@@ -2900,7 +3006,7 @@ SCHEMATIC_TOOLS = [
+                     "description": "Bottom Y coordinate of the region in mm",
+                 },
+             },
+-            "required": ["schematicPath", "x1", "y1", "x2", "y2"],
++            "required": ["x1", "y1", "x2", "y2"],
+         },
+     },
+     {
+diff --git a/python/utils/region_box.py b/python/utils/region_box.py
+new file mode 100644
+index 0000000..a15e7d3
+--- /dev/null
++++ b/python/utils/region_box.py
+@@ -0,0 +1,95 @@
++"""A rectangle in board mm from the shapes callers write it in (PowerLab patch, #81).
++
++get_board_2d_view's `region` took only {x0, y0, x1, y1} or {x, y, size}. Claude also
++writes {x, y, width, height}, {xmin, ymin, xmax, ymax}, {left, top, right, bottom} or a
++4-number list; the zod schema dropped the unknown keys and the tool answered "Bad region"
++with no reason. No pcbnew import, so it can be tested on its own.
++"""
++
++from typing import Any, Dict, Tuple
++
++ACCEPTED = (
++    "{x0, y0, x1, y1}, {x1, y1, x2, y2}, {x, y, width, height} (x, y = top-left corner), "
++    "{x, y, w, h}, {xmin, ymin, xmax, ymax} (or minX/minY/maxX/maxY), "
++    "{left, top, right, bottom}, {x, y, size} (a square round x, y), "
++    "{cx, cy, width, height} (centre), or [x0, y0, x1, y1]; all in board mm"
++)
++
++_CORNER_KEYS = (
++    ("x0", "y0", "x1", "y1"),
++    ("xmin", "ymin", "xmax", "ymax"),
++    ("minx", "miny", "maxx", "maxy"),
++    ("left", "top", "right", "bottom"),
++    ("x1", "y1", "x2", "y2"),
++)
++
++_TO_MM = {"mm": 1.0, "mil": 0.0254, "mils": 0.0254, "inch": 25.4, "in": 25.4}
++
++
++def region_box(region: Any) -> Tuple[float, float, float, float]:
++    """(x0, y0, x1, y1) in mm with x0 < x1 and y0 < y1. Raises ValueError saying what
++    was wrong and which shapes work."""
++    if isinstance(region, (list, tuple)):
++        if len(region) != 4:
++            raise ValueError(f"a region list needs 4 numbers [x0, y0, x1, y1], got {len(region)}")
++        return _ordered(*(_number(v, f"[{i}]") for i, v in enumerate(region)))
++    if not isinstance(region, dict):
++        raise ValueError(f"region must be an object or a list, got {type(region).__name__}")
++    # keys are matched without case, '_' or '-' (minX, min_x, MinX all work)
++    r = {str(k).lower().replace("_", "").replace("-", ""): v for k, v in region.items()}
++    unit = str(r.pop("unit", "mm") or "mm").lower()
++    if unit not in _TO_MM:
++        raise ValueError(f"unknown unit {unit!r}; use mm, mil or inch")
++    scale = _TO_MM[unit]
++
++    def num(key: str) -> float:
++        return _number(r[key], key) * scale
++
++    if "size" in r and "x" in r and "y" in r:
++        half = num("size") / 2
++        x, y = num("x"), num("y")
++        return _ordered(x - half, y - half, x + half, y + half)
++    for w_key, h_key in (("width", "height"), ("w", "h")):
++        if w_key in r and h_key in r:
++            w, h = num(w_key), num(h_key)
++            if "cx" in r and "cy" in r:
++                cx, cy = num("cx"), num("cy")
++                return _ordered(cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2)
++            for x_key, y_key in (("x", "y"), ("x0", "y0"), ("left", "top"), ("xmin", "ymin")):
++                if x_key in r and y_key in r:
++                    x, y = num(x_key), num(y_key)
++                    return _ordered(x, y, x + w, y + h)
++    for keys in _CORNER_KEYS:
++        if all(k in r for k in keys):
++            return _ordered(*(num(k) for k in keys))
++    got = ", ".join(sorted(region)) or "no keys"
++    raise ValueError(f"region has {got}; use one of {ACCEPTED}")
++
++
++def checked_region_box(region: Any, smallest: float = 0.5) -> Tuple[float, float, float, float]:
++    """region_box, and the region must be at least `smallest` mm on each side."""
++    x0, y0, x1, y1 = region_box(region)
++    if x1 - x0 < smallest or y1 - y0 < smallest:
++        raise ValueError(
++            f"region is {x1 - x0:.3g} x {y1 - y0:.3g} mm; it must be at least {smallest} mm "
++            f"on each side (for a square round a point use {{x, y, size}})"
++        )
++    return x0, y0, x1, y1
++
++
++def _number(value: Any, key: str) -> float:
++    if isinstance(value, bool):
++        raise ValueError(f"region {key} must be a number, got {value!r}")
++    try:
++        return float(value)
++    except (TypeError, ValueError):
++        raise ValueError(f"region {key} must be a number, got {value!r}") from None
++
++
++def _ordered(x0: float, y0: float, x1: float, y1: float) -> Tuple[float, float, float, float]:
++    return min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)
++
++
++def region_dict(box: Tuple[float, float, float, float]) -> Dict[str, Any]:
++    x0, y0, x1, y1 = box
++    return {"x0": round(x0, 4), "y0": round(y0, 4), "x1": round(x1, 4), "y1": round(y1, 4), "unit": "mm"}
 diff --git a/src/command-timeout.ts b/src/command-timeout.ts
 index dfd876c..1f020d4 100644
 --- a/src/command-timeout.ts
@@ -9651,7 +10853,7 @@ index dfd876c..1f020d4 100644
      return LONG_COMMAND_TIMEOUT_MS;
    }
 diff --git a/src/tools/board.ts b/src/tools/board.ts
-index 2738ebc..5fbf340 100644
+index 2738ebc..e982c9a 100644
 --- a/src/tools/board.ts
 +++ b/src/tools/board.ts
 @@ -295,7 +295,9 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
@@ -9740,7 +10942,7 @@ index 2738ebc..5fbf340 100644
        });
  
        return {
-@@ -522,8 +568,34 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
+@@ -522,8 +568,46 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
          .describe(
            '"inline" (default): image returned directly; "file": written to disk, filePath returned',
          ),
@@ -9756,19 +10958,31 @@ index 2738ebc..5fbf340 100644
 +        .describe(
 +          "File mode only: where to write the image (default: <board>_2d_view.<ext> next to the board). Use numbered names to keep a series of review views.",
 +        ),
++      // PowerLab patch (#81): passthrough, so other shapes reach Python instead of being
++      // stripped by zod ("Bad region" with no reason).
 +      region: z
-+        .object({
-+          x0: z.number().optional(),
-+          y0: z.number().optional(),
-+          x1: z.number().optional(),
-+          y1: z.number().optional(),
-+          x: z.number().optional(),
-+          y: z.number().optional(),
-+          size: z.number().optional(),
-+        })
++        .union([
++          z
++            .object({
++              x0: z.number().optional(),
++              y0: z.number().optional(),
++              x1: z.number().optional(),
++              y1: z.number().optional(),
++              x2: z.number().optional(),
++              y2: z.number().optional(),
++              x: z.number().optional(),
++              y: z.number().optional(),
++              size: z.number().optional(),
++              width: z.number().optional(),
++              height: z.number().optional(),
++              unit: z.enum(["mm", "mil", "inch"]).optional(),
++            })
++            .passthrough(),
++          z.array(z.number()).length(4),
++        ])
 +        .optional()
 +        .describe(
-+          "A close-up of part of the board, in board mm: {x0, y0, x1, y1}, or {x, y, size} for a square round a point. Use it to check spacing and routing in a block; a whole-board view hides parts packed pad to pad.",
++          "A close-up of part of the board, in board mm (the coordinates get_component_list and get_board_extents give). Any of: {x0, y0, x1, y1} (two corners), {x, y, size} (a square of that side round a point), {x, y, width, height} (top-left corner and size; also {x, y, w, h}), {cx, cy, width, height} (centre and size), {xmin, ymin, xmax, ymax} (or minX/minY/maxX/maxY), {left, top, right, bottom}, {x1, y1, x2, y2}, or [x0, y0, x1, y1]. At least 0.5 mm each way, and it must overlap the board. Use it to check spacing and routing in a block; a whole-board view hides parts packed pad to pad.",
 +        ),
      },
 -    async ({ pcbPath, layers, width, height, format, responseMode }) => {
@@ -9776,7 +10990,7 @@ index 2738ebc..5fbf340 100644
        logger.debug("Getting 2D board view");
        const result = await callKicadScript("get_board_2d_view", {
          pcbPath,
-@@ -532,6 +604,9 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
+@@ -532,6 +616,9 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
          height,
          format,
          responseMode,
@@ -10061,18 +11275,21 @@ index d9942f7..2429611 100644
    server.tool(
      "export_dsn",
 diff --git a/src/tools/registry.ts b/src/tools/registry.ts
-index 902f7b1..a95979d 100644
+index 902f7b1..8ac525f 100644
 --- a/src/tools/registry.ts
 +++ b/src/tools/registry.ts
-@@ -36,6 +36,7 @@ export const toolCategories: ToolCategory[] = [
+@@ -36,7 +36,10 @@ export const toolCategories: ToolCategory[] = [
        "list_graphics",
        "delete_graphic",
        "update_graphic",
 +      "edit_board_text",
        "add_zone",
++      "delete_zone",
++      "edit_zone",
        "get_board_extents",
        "get_board_2d_view",
-@@ -59,6 +60,7 @@ export const toolCategories: ToolCategory[] = [
+       "set_board_origin",
+@@ -59,6 +62,7 @@ export const toolCategories: ToolCategory[] = [
        "get_ratsnest",
        "estimate_airwire_lengths",
        "check_placement_clearance",
@@ -10080,7 +11297,7 @@ index 902f7b1..a95979d 100644
        "move_footprint_text",
        "add_component_annotation",
        "group_components",
-@@ -143,6 +145,8 @@ export const toolCategories: ToolCategory[] = [
+@@ -143,6 +147,8 @@ export const toolCategories: ToolCategory[] = [
        "export_schematic_pdf",
        "add_schematic_text",
        "list_schematic_texts",
@@ -10089,7 +11306,7 @@ index 902f7b1..a95979d 100644
      ],
    },
    {
-@@ -235,7 +239,8 @@ export const toolCategories: ToolCategory[] = [
+@@ -235,7 +241,8 @@ export const toolCategories: ToolCategory[] = [
    {
      name: "autoroute",
      description: "Freerouting autorouter: automatic PCB routing via Specctra DSN/SES",
@@ -10100,7 +11317,7 @@ index 902f7b1..a95979d 100644
    {
      name: "validation",
 diff --git a/src/tools/routing.ts b/src/tools/routing.ts
-index 27f6b90..b1f39dc 100644
+index 27f6b90..4fd8413 100644
 --- a/src/tools/routing.ts
 +++ b/src/tools/routing.ts
 @@ -120,8 +120,30 @@ export function registerRoutingTools(server: McpServer, callKicadScript: Functio
@@ -10146,7 +11363,94 @@ index 27f6b90..b1f39dc 100644
      },
      async (args: any) => {
        const result = await callKicadScript("add_copper_pour", args);
-@@ -395,9 +422,26 @@ export function registerRoutingTools(server: McpServer, callKicadScript: Functio
+@@ -228,7 +255,7 @@ export function registerRoutingTools(server: McpServer, callKicadScript: Functio
+   // Query zones tool
+   server.tool(
+     "query_zones",
+-    "Query copper zones (filled pours) on the board with optional filters by net, layer, or bounding box. Returns zone net, layers, priority, fill state, and bounding box. Useful for auditing power planes and GND pours that query_traces does not include.",
++    "Query copper zones (filled pours) and rule areas on the board with optional filters by net, layer, or bounding box. Returns each zone's uuid (for delete_zone and edit_zone), net, layers, priority, name, pad connection, clearance, locked, rule area, fill state, and bounding box. With KiCad open on the board it reads KiCad's board. Useful for auditing power planes and GND pours that query_traces does not include.",
+     {
+       net: z.string().optional().describe("Filter by net name"),
+       layer: z
+@@ -259,6 +286,77 @@ export function registerRoutingTools(server: McpServer, callKicadScript: Functio
+     },
+   );
+ 
++  // PowerLab patch (#79): zones could be added and queried, but not removed or changed.
++  const zonePick = {
++    uuid: z.string().optional().describe("The zone's uuid, from query_zones (preferred)"),
++    net: z
++      .string()
++      .optional()
++      .describe("Without uuid: the zone's current net (\"\" for rule areas / no net)"),
++    layer: z.string().optional().describe("Without uuid: a layer the zone is on, e.g. B.Cu"),
++    name: z.string().optional().describe("Without uuid: the zone's name"),
++  };
++
++  server.tool(
++    "delete_zone",
++    "Delete a copper zone (pour) or rule area. Pick it by uuid (query_zones), or by net / layer / name when only one zone matches (all: true deletes every match). Locked zones are kept unless includeLocked. With KiCad open on the board it deletes in KiCad's board in one undoable step and refills the zones; offline, run refill_zones afterwards.",
++    {
++      ...zonePick,
++      all: z.boolean().optional().describe("Delete every zone that matches net / layer / name"),
++      includeLocked: z.boolean().optional().describe("Delete locked zones too (default false)"),
++      refill: z
++        .boolean()
++        .optional()
++        .describe("Live mode: refill the zones afterwards (default true)"),
++    },
++    async (args: any) => {
++      const result = await callKicadScript("delete_zone", args);
++      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
++    },
++  );
++
++  server.tool(
++    "edit_zone",
++    "Change one copper zone (pour) or rule area: its net, layers, priority, clearance, minimum width, pad connection, fill type, name, lock or outline. Pick it by uuid (query_zones), or by its current net / layer / name when only one zone matches; the new values are the new* fields and the others. Only the given properties change. A locked zone gets a new outline only with locked: false. With KiCad open on the board it edits KiCad's board in one undoable step and refills the zones; offline the zone's old fill is dropped, so run refill_zones afterwards.",
++    {
++      ...zonePick,
++      newNet: z.string().optional().describe("New net name (\"\" = no net)"),
++      newLayers: z
++        .array(z.string())
++        .optional()
++        .describe("New layers, e.g. [\"B.Cu\"] or [\"F.Cu\", \"B.Cu\"]"),
++      priority: z
++        .number()
++        .optional()
++        .describe("New priority: higher fills first (a power pour above the GND pour)"),
++      clearance: z.number().optional().describe("New clearance to other copper"),
++      minThickness: z.number().optional().describe("New minimum copper width of the fill"),
++      padConnection: z
++        .enum(["thermal", "solid"])
++        .optional()
++        .describe("How pads join the pour: thermal reliefs, or solid (high-current power pours only)"),
++      fillType: z.enum(["solid", "hatched"]).optional().describe("New fill type"),
++      newName: z.string().optional().describe("New zone name"),
++      outline: z
++        .array(z.object({ x: z.number(), y: z.number() }))
++        .optional()
++        .describe("New outline: at least 3 {x, y} points"),
++      locked: z.boolean().optional().describe("Lock or unlock the zone"),
++      unit: z
++        .enum(["mm", "mil", "inch"])
++        .optional()
++        .describe("Unit for clearance, minThickness and outline (default mm)"),
++      refill: z
++        .boolean()
++        .optional()
++        .describe("Live mode: refill the zones afterwards (default true)"),
++    },
++    async (args: any) => {
++      const result = await callKicadScript("edit_zone", args);
++      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
++    },
++  );
++
+   // ------------------------------------------------------
+   // Add GND Stitching Vias Tool
+   //
+@@ -395,9 +493,26 @@ export function registerRoutingTools(server: McpServer, callKicadScript: Functio
    // Create netclass tool
    server.tool(
      "create_netclass",
@@ -10223,7 +11527,7 @@ index dd067be..5e4ee2e 100644
        schematicPath: z.string().describe("Path to the .kicad_sch file"),
        reference: z.string().describe("Reference of the component to replace (e.g., D1)"),
 diff --git a/src/tools/schematic.ts b/src/tools/schematic.ts
-index f2b7f4d..7927796 100644
+index f2b7f4d..f0dee9f 100644
 --- a/src/tools/schematic.ts
 +++ b/src/tools/schematic.ts
 @@ -37,7 +37,12 @@ export function registerSchematicTools(server: McpServer, callKicadScript: Funct
@@ -10240,7 +11544,69 @@ index f2b7f4d..7927796 100644
        footprint: z
          .string()
          .optional()
-@@ -2153,12 +2158,13 @@ edit_schematic_component and set its value to an empty string.`,
+@@ -1821,16 +1826,45 @@ edit_schematic_component and set its value to an empty string.`,
+   // Get elements in a region
+   server.tool(
+     "get_elements_in_region",
+-    "List all symbols, wires, and labels within a rectangular region of the schematic. Useful for understanding what is in a specific area before modifying it.",
++    // PowerLab patch (#80): the board too; schematicPath was required, so a call from PCB
++    // work failed validation ("expected string, received undefined").
++    "List what lies within a rectangle (mm). Schematic: give schematicPath (the .kicad_sch) " +
++      "for its symbols, wires and labels. Board: leave schematicPath out (and give pcbPath, or " +
++      "use the open/loaded board) for the footprints (reference, value, position, side), pads, " +
++      "tracks, vias and zones touching the rectangle; read live from KiCad when it has the " +
++      "board open, else from the board file. Board lists are capped at limit (default 100); " +
++      "counts are the full numbers. Useful for seeing what is in an area before changing it.",
+     {
+-      schematicPath: z.string().describe("Path to the .kicad_sch schematic file"),
++      schematicPath: z
++        .string()
++        .optional()
++        .describe("Schematic mode: the .kicad_sch file. Leave out for the board."),
++      pcbPath: z
++        .string()
++        .optional()
++        .describe("Board mode: the .kicad_pcb file (default: KiCad's open board, or the loaded one)"),
+       x1: z.number().describe("Left X coordinate of the region in mm"),
+       y1: z.number().describe("Top Y coordinate of the region in mm"),
+       x2: z.number().describe("Right X coordinate of the region in mm"),
+       y2: z.number().describe("Bottom Y coordinate of the region in mm"),
++      limit: z
++        .number()
++        .optional()
++        .describe("Board mode: most items listed per kind (default 100)"),
+     },
+-    async (args: { schematicPath: string; x1: number; y1: number; x2: number; y2: number }) => {
++    async (args: {
++      schematicPath?: string;
++      pcbPath?: string;
++      x1: number;
++      y1: number;
++      x2: number;
++      y2: number;
++      limit?: number;
++    }) => {
+       const result = await callKicadScript("get_elements_in_region", args);
++      if (result.success && result.mode === "board") {
++        return { content: [{ type: "text", text: JSON.stringify(result) }] };
++      }
+       if (result.success) {
+         const c = result.counts;
+         const lines = [
+@@ -1863,8 +1897,11 @@ edit_schematic_component and set its value to an empty string.`,
+         }
+         return { content: [{ type: "text", text: lines.join("\n") }] };
+       }
++      const details = result.errorDetails ? ` (${result.errorDetails})` : "";
+       return {
+-        content: [{ type: "text", text: `Failed: ${result.message || "Unknown error"}` }],
++        content: [
++          { type: "text", text: `Failed: ${result.message || "Unknown error"}${details}` },
++        ],
+       };
+     },
+   );
+@@ -2153,12 +2190,13 @@ edit_schematic_component and set its value to an empty string.`,
          }
          const lines = texts.map(
            (t: any) =>
@@ -10256,7 +11622,7 @@ index f2b7f4d..7927796 100644
          );
          return {
            content: [
-@@ -2181,6 +2187,51 @@ edit_schematic_component and set its value to an empty string.`,
+@@ -2181,6 +2219,51 @@ edit_schematic_component and set its value to an empty string.`,
      },
    );
  
