@@ -16,7 +16,7 @@ import time
 import wx
 import wx.html2
 
-from . import attachments, config, history, library, plan, report, review, updates, usage
+from . import attachments, config, history, i18n, library, plan, report, review, updates, usage
 from .common import find_gh, open_console, open_terminal, clean_env
 
 # Tools Claude may use without asking. Headless runs can't show permission
@@ -70,6 +70,29 @@ ALIVE_EVERY = 3  # seconds; resend an unchanged activity this often, so the page
 THINKING_SUMMARIES = '{"thinking": {"type": "adaptive", "display": "summarized"}}'
 SUMMARY_MODELS = ("claude-opus-5-5", "claude-sonnet-5-5")
 LIVE_THOUGHT_CHARS = 1500  # the end of the thinking so far, shown while Claude thinks
+# Resuming a session sends its whole conversation again with every message. A chat reopened
+# later (its prompt cache long gone), or one past this size, continues in a new session that
+# gets only the user's last prompts and the project (continue_note).
+FRESH_AFTER_TOKENS = 200_000
+LAST_PROMPTS = 3
+PROJECT_NOTES = ("design-requirements.md", os.path.join("placement", "block-plan.json"),
+                 os.path.join("design-review", "design-review.md"))
+
+
+def continue_note(prompts, earlier, cwd):
+    """System-prompt text for a chat continued in a new session."""
+    note = ("\nThis message continues an earlier chat on this project in a new session, to save "
+            "tokens: you don't have its conversation. The user's last prompts before this one, "
+            "oldest first:\n")
+    note += "".join(f"{i}. {p.strip()[:1500]}\n" for i, p in enumerate(prompts, 1)) or "(none)\n"
+    found = [n for n in PROJECT_NOTES if os.path.isfile(os.path.join(cwd, n))]
+    note += ("Work out where things stand from the project itself: the board and schematic "
+             "through the kicad tools" + (", and " + ", ".join(found) if found else "") + ". "
+             "Then do what the new message asks. Don't tell the user you started afresh.")
+    if earlier:
+        note += (f" Only if you still can't tell what the user means or how to continue, read "
+                 f"the earlier chat (their prompts and your replies) in {earlier}.")
+    return note + "\n"
 
 PANEL_NOTE = (
     "You are running in a narrow command panel docked beside KiCad, one headless "
@@ -331,7 +354,8 @@ class CardWindow(wx.Frame):
                 card = self.card()
             except Exception as e:  # a bad file never breaks the window
                 card = {"kind": self.kind, "path": self.path, "error": f"It can't be shown: {e}"}
-            for data in [{"kind": "busy", "value": bool(self.panel.proc)}, card] + self.pending:
+            first = [i18n.page_event(self.panel.lang), {"kind": "busy", "value": bool(self.panel.proc)}, card]
+            for data in first + self.pending:
                 self.web.RunScriptAsync(f"app.event({json.dumps(data)})")
             self.pending = []
         elif kind in self.FORWARD:
@@ -363,6 +387,7 @@ class ClaudePanel(wx.Frame):
         self.events = []  # the chat's messages, saved so they come back after a restart
         self.retry = None  # (text, files) of the last message sent into a resumed session
         self.stale_session = False
+        self.fresh = False  # the next message continues the chat in a new session (continue_note)
         self.watched = {}
         self.started = 0.0
         self.last_text = ""
@@ -373,6 +398,7 @@ class ClaudePanel(wx.Frame):
         self.capturing = False
         self.sending = False
         self.settings = config.settings()
+        self.lang = i18n.current(self.settings)  # the panel's text and Claude's replies
         self.ready = False
         self.pending = []
         self.context_items = None
@@ -464,6 +490,7 @@ class ClaudePanel(wx.Frame):
         project = os.path.basename(cwd.rstrip(os.sep)) if cwd != os.path.expanduser("~") else ""
         self.SetTitle("PowerLab Assistant" + (f" — {project}" if project else ""))
         self.session_id, self.events = history.load(cwd)
+        self.fresh = bool(self.events)
         for event in self.events:
             if event["kind"] == "image":
                 self.show_image(event.get("path", ""), record=False)
@@ -475,8 +502,9 @@ class ClaudePanel(wx.Frame):
                 self.emit(**event)
         if self.events:
             self.emit("busy", value=False)  # tools cut off last time stop spinning
-            self.emit("note", level="info", text="Continuing your last chat on this project. "
-                                                 "Press + for a new one.")
+            self.emit("note", level="info", text="Your last chat on this project. To save tokens, "
+                      "your next message continues it with only your last prompts and the project. "
+                      "Press + for a new chat.")
 
     def in_background(self, work, done):
         """Run work() off the GUI thread (network, git, subprocesses), then done(result)."""
@@ -504,6 +532,7 @@ class ClaudePanel(wx.Frame):
         for data in self.pending:
             self.send_to_page(data)
         self.pending = []
+        self.emit(**i18n.page_event(self.lang))
         self.emit("suggestions", items=[{"label": l, "text": t} for l, t in self.source.suggestions])
         self.emit("models", current=self.model,
                   items=[{"id": i, "label": l, "short": s, "hint": h} for i, l, s, h in MODELS])
@@ -561,6 +590,7 @@ class ClaudePanel(wx.Frame):
             self.proc.terminate()
         self.session_id = None
         self.events = []
+        self.fresh = False
         self.save_chat()
         self.load_page()
 
@@ -632,6 +662,14 @@ class ClaudePanel(wx.Frame):
             self.settings["model"] = msg["id"]
             config.save_settings(self.settings)
             self.emit("model", current=self.model)
+
+    def msg_language(self, msg):
+        if msg.get("code") in i18n.CODES:
+            self.lang = self.settings["language"] = msg["code"]
+            config.save_settings(self.settings)
+            self.emit(**i18n.page_event(self.lang))
+            for window in list(self.card_windows.values()):
+                window.send(i18n.page_event(self.lang))
 
     def msg_save_send(self, msg):
         if self.held_text:
@@ -966,19 +1004,29 @@ class ClaudePanel(wx.Frame):
             return
         if snap.cwd != self.chat_cwd:
             self.open_chat(snap.cwd)
+        resend = files is not None
+        fresh, earlier = "", ""
+        if self.fresh and self.events:
+            before = self.events
+            if resend:  # the message is already in the chat: it isn't one of the last prompts
+                users = [i for i, e in enumerate(before) if e["kind"] == "user"]
+                before = before[:users[-1]] if users else before
+            earlier = history.write_earlier(snap.cwd, before)
+            fresh = continue_note(history.last_prompts(before, LAST_PROMPTS), earlier, snap.cwd)
         args = [
             self.claude, "-p",
             "--output-format", "stream-json", "--verbose", "--include-partial-messages",
-            "--append-system-prompt", snap.context + "\n" + PANEL_NOTE + views_note(),
+            "--append-system-prompt",
+            snap.context + "\n" + PANEL_NOTE + views_note() + i18n.reply_note(self.lang) + fresh,
         ]
-        resend = files is not None
         if not resend:
             files, self.attached = self.attached, []
-        extra = attachments.folders(files) + [VIEWS_DIR]
+        extra = attachments.folders(files) + [VIEWS_DIR] + ([os.path.dirname(earlier)] if earlier else [])
         for d in config.work_dirs() + [f for f in extra if f not in config.work_dirs()]:
             args += ["--add-dir", d]
-        if self.session_id:
+        if self.session_id and not fresh:
             args += ["--resume", self.session_id]
+        self.fresh = False
         if self.model:
             args += ["--model", self.model]
         args += ["--effort", self.effort]
@@ -989,7 +1037,7 @@ class ClaudePanel(wx.Frame):
             self.say("user", text=text, files=[os.path.basename(p) for p in files])
             self.emit_attached()
             self.save_chat()
-        self.retry = (text, files) if self.session_id else None
+        self.retry = (text, files) if self.session_id and not fresh else None
         report.note_event("send", self.source.editor)
         self.watched = {p: os.path.getmtime(p) for p in snap.watch if os.path.isfile(p)}
         self.started = time.time()
@@ -1142,6 +1190,10 @@ class ClaudePanel(wx.Frame):
                       + (f" · {', '.join(used)} · {self.effort} effort" if used else ""))
             text, tip = usage.summary(self.limits, tokens, window)
             self.emit("usage", text=text, tip=tip)
+            if tokens > FRESH_AFTER_TOKENS and not msg.get("is_error"):
+                self.fresh = True
+                self.emit("note", level="info", text="This chat got long. To save tokens, your next "
+                          "message continues it with only your last prompts and the project.")
 
     def set_activity(self, phase, name=""):
         """Tell the page what Claude is doing: on a change, and every ALIVE_EVERY seconds
@@ -1204,8 +1256,9 @@ class ClaudePanel(wx.Frame):
         if self.stale_session and self.retry:
             text, files = self.retry
             self.session_id = None
+            self.fresh = True
             self.emit("note", level="info", text="Claude Code no longer has the earlier conversation "
-                                                 "(it deletes old chats), so this starts a new one.")
+                      "(it deletes old chats), so this continues it from your last prompts.")
             self.launch(text, files)
             if self.proc:
                 return

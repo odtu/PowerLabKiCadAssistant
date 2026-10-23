@@ -366,14 +366,85 @@ class ChatHistoryTests(unittest.TestCase):
         second = self.fake_panel()
         second.source.editor = "schematic"
         second.open_chat(self.project)
-        self.assertEqual(second.session_id, "s-1")  # the next message resumes it
+        self.assertEqual(second.session_id, "s-1")
+        self.assertTrue(second.fresh)  # continued in a new session, not resumed (see below)
         kinds = [e["kind"] for e in second.emitted]
         self.assertEqual(kinds, ["user", "text", "tool", "busy", "note"])
         self.assertEqual(second.emitted[1]["text"], "Done.")
-        self.assertIn("Continuing your last chat", second.emitted[-1]["text"])
+        self.assertIn("Your last chat on this project", second.emitted[-1]["text"])
         # Another project has its own chat.
         second.open_chat(self.project + "-other")
         self.assertEqual((second.session_id, second.events, second.emitted), (None, [], []))
+
+    def test_reopened_chat_continues_from_the_last_prompts(self):
+        # Resuming sends the whole conversation again with every message; a reopened chat
+        # gets only the last prompts and the project, with the chat so far in a file.
+        from powerlab_assistant import panel as panel_mod
+        first = self.fake_panel()
+        first.open_chat(self.project)
+        for i in range(5):
+            first.say("user", text=f"Prompt {i}", files=[])
+            first.say("tool", id=f"t{i}", name="Run drc", detail="")
+            first.say("text", text=f"Reply {i}")
+        first.session_id = "s-1"
+        first.save_chat()
+        os.makedirs(self.project, exist_ok=True)
+        with open(os.path.join(self.project, "design-requirements.md"), "w") as f:
+            f.write("# Requirements\n")
+
+        second = self.fake_panel()
+        second.open_chat(self.project)
+        runs = []
+
+        class Proc:
+            stdin = types.SimpleNamespace(write=lambda text: runs[-1].append(text), close=lambda: None)
+
+        def popen(args, **kwargs):
+            runs.append([args])
+            return Proc()
+
+        snap = types.SimpleNamespace(cwd=self.project, context="ctx", state="", watch=[])
+        for name in ("launch", "emit_attached", "api_env"):
+            setattr(type(second), name, getattr(panel_mod.ClaudePanel, name))
+        second.snapshot, second.read_stream = lambda: snap, None
+        second.sending, second.attached, second.summaries = False, [], False
+        second.model, second.claude, second.lang = "claude-opus-5-5", "claude", "en"
+        saved = panel_mod.subprocess.Popen, panel_mod.threading.Thread
+        panel_mod.subprocess.Popen = popen
+        panel_mod.threading.Thread = lambda **kw: types.SimpleNamespace(start=lambda: None)
+        self.addCleanup(setattr, panel_mod.subprocess, "Popen", saved[0])
+        self.addCleanup(setattr, panel_mod.threading, "Thread", saved[1])
+
+        second.launch("Carry on")
+        args = runs[0][0]
+        self.assertNotIn("--resume", args)
+        note = args[args.index("--append-system-prompt") + 1]
+        self.assertIn("1. Prompt 2\n2. Prompt 3\n3. Prompt 4\n", note)
+        self.assertNotIn("Prompt 1", note)
+        self.assertNotIn("Reply 4", note)  # what Claude did isn't sent
+        self.assertIn("design-requirements.md", note)
+        earlier = self.history.earlier_path(self.project)
+        self.assertIn(earlier, note)
+        self.assertIn(os.path.dirname(earlier), args)  # Claude may read it
+        with open(earlier, encoding="utf-8") as f:
+            text = f.read()
+        self.assertIn("## User\nPrompt 0", text)
+        self.assertIn("Claude: Reply 4", text)
+        self.assertIn("(steps: Run drc)", text)
+        self.assertIsNone(second.retry)  # nothing to resend into an old session
+        # Within the sitting, the next message resumes the new session as before.
+        second.proc = None
+        second.handle({"type": "system", "subtype": "init", "session_id": "s-2"})
+        second.launch("And the next")
+        self.assertEqual(runs[1][0][runs[1][0].index("--resume") + 1], "s-2")
+        self.assertNotIn("last prompts before this one", runs[1][0][runs[1][0].index("--append-system-prompt") + 1])
+        # A chat that grew past FRESH_AFTER_TOKENS starts afresh next time too.
+        second.proc = None
+        second.handle({"type": "result", "subtype": "success", "num_turns": 1,
+                       "usage": {"input_tokens": 10, "cache_read_input_tokens": panel_mod.FRESH_AFTER_TOKENS}})
+        self.assertTrue(second.fresh)
+        second.launch("Third")
+        self.assertNotIn("--resume", runs[2][0])
 
     def test_requirements_skill_questions_become_buttons(self):
         # The intake rounds of powerlab-board-requirements must parse as answer buttons:
@@ -776,6 +847,15 @@ class DesignReviewTests(unittest.TestCase):
         self.assertIn("data-path=", card["body"])  # click opens the image
         self.assertIn("Image not found: images/01-placement.png", card["body"])
 
+    def test_review_skips_rules_not_whole_sections(self):
+        # #83: "HS without fast signals" let a review skip all of HS on boards with no
+        # USB/Ethernet/HDMI, although HS also covers CAN/RS-485 pairs, SPI and clocks.
+        skill = self.skill("powerlab-design-review")
+        self.assertNotIn("Skip whole sections", skill)
+        self.assertNotIn("HS without fast signals", skill)
+        for part in ("CAN", "RS-485", "SPI", "HS-014", '"Not checked"'):
+            self.assertIn(part, skill)
+
     def test_review_text_is_escaped(self):
         body = self.review.body_html(
             "# T\n\n<script>alert(1)</script> **b** [x](javascript:alert(1)) [ok](https://e.com)\n"
@@ -1086,7 +1166,7 @@ class BlockPlanTests(unittest.TestCase):
         self.assertIn("case 'plan_update':", page)
         self.assertIn("Send moves to Claude", page)
         self.assertIn("[[90, '↻ 90°'], [45, '↻ 45°'], [-45, '↺ 45°']]", page)  # common angles first
-        self.assertIn("inp.placeholder = 'any °'", page)  # then any angle
+        self.assertIn("inp.placeholder = t('any °')", page)  # then any angle
         self.assertIn("follow(id, tf);", page)  # links follow a drag, with the gap measured live
         with open(os.path.join(ROOT, "skills", "powerlab-placement", "SKILL.md"), encoding="utf-8") as f:
             skill = f.read()
@@ -2574,6 +2654,60 @@ class McpPatchTests(unittest.TestCase):
         tracks = [t for t in board.GetTracks() if t.Type() == pcbnew.PCB_TRACE_T]
         self.assertEqual(len(tracks), 4)  # two legs, the chamfer and the diagonal
         self.assertTrue(all(t.GetWidth() == class_width for t in tracks))
+
+
+class LanguageTests(unittest.TestCase):
+    """The panel's languages: Claude writes in the chosen one, the panel shows lang/<code>.json."""
+
+    def setUp(self):
+        from powerlab_assistant import i18n
+        import i18n_strings
+        self.i18n, self.tool = i18n, i18n_strings
+
+    def test_languages(self):
+        codes = self.i18n.CODES
+        self.assertEqual(len(codes), 19)
+        for code in ("en", "tr", "zh", "zh-TW", "de", "fr", "es", "pt", "it", "pl", "ru", "uk",
+                     "ar", "fa", "hi", "ja", "ko", "vi", "id"):
+            self.assertIn(code, codes)
+        self.assertEqual(self.i18n.page_event("ar")["dir"], "rtl")
+        self.assertEqual(self.i18n.page_event("tr")["dir"], "ltr")
+        self.assertEqual(self.i18n.page_event("en")["strings"], {})
+        self.assertEqual(self.i18n.current({"language": "uk"}), "uk")
+        self.assertIn(self.i18n.current({"language": "xx"}), codes)  # unknown: Windows' or English
+
+    def test_claude_writes_in_the_chosen_language(self):
+        self.assertEqual(self.i18n.reply_note("en"), "")
+        note = self.i18n.reply_note("tr")
+        self.assertIn("Turkish (Türkçe)", note)
+        # Markers the panel parses stay English, whatever the language.
+        self.assertIn("' (Recommended)'", note)
+        self.assertIn("'**Verdict:**'", note)
+
+    def test_english_list_is_up_to_date(self):
+        # After adding panel text: python tools/i18n_strings.py, then translate it.
+        import json
+        with open(os.path.join(self.tool.LANG, "en.json"), encoding="utf-8") as f:
+            self.assertEqual(list(json.load(f)), self.tool.strings())
+
+    def test_translations_keep_their_placeholders(self):
+        import warnings
+        texts = self.tool.strings()
+        for code in self.i18n.CODES[1:]:
+            self.assertTrue(os.path.isfile(os.path.join(self.tool.LANG, f"{code}.json")), code)
+            missing, bad = self.tool.problems(code, texts)
+            self.assertEqual(bad, [], code)  # a lost {n} would show as "{n}" in the panel
+            if missing:  # shown in English until translated; not a failure
+                warnings.warn(f"{code}: {len(missing)} texts not translated yet")
+
+    def test_filled_in_notes_are_keys(self):
+        # panel.py's notes reach the page already filled in; their keys have {names}.
+        texts = self.tool.strings()
+        for key in ("Not found on the board: {value}", "Claude Code stopped unexpectedly (exit code {returncode}).",
+                    "{n} steps", "Turn {name} {a}° clockwise", "Your last chat on this project. To save tokens, "
+                    "your next message continues it with only your last prompts and the project. Press + for a new chat."):
+            self.assertIn(key, texts)
+        self.assertNotIn("bottom", texts)  # compared in the page's script, never shown
 
 
 class PanelDefaultsTests(unittest.TestCase):

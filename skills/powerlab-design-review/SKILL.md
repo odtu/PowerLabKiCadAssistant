@@ -18,7 +18,7 @@ Say in one line that you're starting the review, e.g. "Layout done. Reviewing it
 2. If the project has `design-requirements.md`, read it: currents, voltages, enclosure, fab, layers. Anything a rule needs that it doesn't say (e.g. phase current for track widths) is a question for the user, not a guess.
 3. **Is KiCad's board up to date?** If a tool changed the `.kicad_pcb` file itself in this task (e.g. `clean_up_routing`, or `powerlab_route` while KiCad didn't have the board open) and the user hasn't used File → Revert since, stop and ask them to. Your fixes go to KiCad's live board, and saving it would overwrite the file with the old copy.
 4. Save the board (`save_board`). kicad-cli and the renders read the saved `.kicad_pcb`, not KiCad's live copy. Save again after every group of fixes.
-5. Pick the rules that apply to this board from `handbook/91-checklist.md`. Skip whole sections that don't apply (RF without a radio, HS without fast signals, SMPS without a switching converter), and say which ones you skipped.
+5. Pick the rules that apply to this board from `handbook/91-checklist.md`, rule by rule, from the board's parts and nets, not by section title. A rule is out only when the board has nothing it is about: HS-009 without USB-C, HS-016 without HDMI or MIPI, RF without a radio module, antenna or RF connector, SMPS without a switching converter. HS isn't only USB, Ethernet and HDMI: it also covers CAN, RS-485 and encoder pairs, SPI, clocks and other fast edges (HS-001, HS-011 to HS-014), which most lab boards have. Don't announce the rules you leave out in the chat; list them under "Not checked" in the review, with the reason (e.g. "RF: no radio or antenna on the board").
 
 ## One round
 1. **DRC.** One plain command:
