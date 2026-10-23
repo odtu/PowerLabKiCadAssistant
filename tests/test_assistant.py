@@ -142,6 +142,20 @@ class SkillToolsEnvTests(unittest.TestCase):
         self.assertIn("PowerLab router", panel.PANEL_NOTE)
         self.assertIn("never offer it", panel.PANEL_NOTE)
 
+    def test_powerlab_router_switch(self):
+        # The router is off until it has had more local testing: its tools are blocked and
+        # Claude routes by hand. undo_autoroute still undoes an earlier run.
+        from powerlab_assistant import panel
+        route = ("mcp__kicad__powerlab_route", "mcp__kicad__powerlab_route_status")
+        for tool in route:
+            self.assertEqual(tool in panel.DISALLOWED_TOOLS, not panel.POWERLAB_ROUTER)
+        self.assertNotIn("mcp__kicad__undo_autoroute", panel.DISALLOWED_TOOLS)
+        if not panel.POWERLAB_ROUTER:
+            self.assertIn("route by hand", panel.PANEL_NOTE)
+            self.assertIn("switched off", panel.PANEL_NOTE)
+            with open(os.path.join(ROOT, "skills", "powerlab-autoroute", "SKILL.md"), encoding="utf-8") as f:
+                self.assertIn("The PowerLab router is switched off for now", f.read())
+
     def test_mcp_server_is_not_edited(self):
         # Issue #73: a kicad tool misbehaved, so Claude edited the installed MCP server and
         # ran `npm run build`, which the panel blocked. The server is off-limits to edits.

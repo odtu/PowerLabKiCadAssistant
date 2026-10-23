@@ -1,14 +1,16 @@
 ---
 name: powerlab-autoroute
-description: Route a KiCad PCB the METU Power Lab way, with the PowerLab router (powerlab_route, applies the lab rules) or by hand with the kicad MCP tools. Use when the user asks to route, autoroute or auto-route the board, the remaining nets or some signals, or to run the PowerLab router. Covers the first question (by hand or PowerLab router), setting the lab design rules and net classes first, power pours, GND pours with thermal reliefs, protecting hand-routed power and gate-drive nets, live routing in KiCad, finishing what the router leaves by hand, stitching vias, DRC, and the design review that always follows.
+description: Route a KiCad PCB the METU Power Lab way, by hand with the kicad MCP tools (the PowerLab router is switched off for now). Use when the user asks to route, autoroute or auto-route the board, the remaining nets or some signals, or to run the PowerLab router. Covers setting the lab design rules and net classes first, power pours, GND pours with thermal reliefs, protecting hand-routed power and gate-drive nets, live routing in KiCad, finishing what the router leaves by hand, stitching vias, DRC, and the design review that always follows.
 ---
 
 # Routing: the PowerLab router or by hand
 
 **The lab design rules come first.** Before anything else, load the `powerlab-pcb-design-rules` skill. Every width, clearance, via and routing-order decision below comes from it: §2.6 for constraints and net classes, §3.3 for pours and high-current copper, §3.4 for routing, §3.5 for vias. A router only routes as well as the rules it is given.
 
+> **The PowerLab router is switched off for now** while it gets more local testing: the panel blocks `powerlab_route` and `powerlab_route_status`. Route by hand. Skip the question in §0 and all of §3, don't offer the router, and if the user asks for it, say it isn't available yet. Where a step below says "the router", you do it by hand. (`undo_autoroute` still undoes an earlier router run.)
+
 ## 0. Ask first: by hand or the PowerLab router
-Ask this before anything else, as one `<choices>` question, unless the user already said which:
+Ask this before anything else, as one `<choices>` question, unless the user already said which (skip it while the router is switched off):
 
 ```
 <choices>
@@ -74,6 +76,8 @@ Ask for whatever you can't read from the board, and don't guess currents or volt
 - **3D models:** if footprints lost their 3D models, tell the user to run **Tools → Update Footprints from Library** with **Reset 3D models** ticked.
 
 ## 3. Route with the PowerLab router
+*Switched off for now: skip this section and route by hand (§4's rules apply to every connection).*
+
 - **Saved board:** with the board open in KiCad, `powerlab_route` refuses to start while KiCad has copper or footprint changes that aren't saved: ask the user to press Ctrl+S, then call it again.
 - **Baseline DRC:** run `run_drc` once before routing, so new errors can be told apart from old ones. The report also lists the new DRC errors it found itself.
 - **Which nets:** by default every Default-class net (routed from scratch: their unlocked tracks and vias are removed first), plus the nets of other classes that have no tracks yet (e.g. power rails). Nets with locked copper, pour nets and other-class nets that already have tracks are left out; the report lists them under `nets_left_out`. Pass `nets` to route fewer or to route a hand-routed rail again.

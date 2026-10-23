@@ -18,7 +18,7 @@ It runs [Claude Code](https://docs.claude.com/claude-code) on your computer with
 
 <p align="center"><img src="docs/images/block-plan.png" width="70%" alt="The block plan card in the panel: the round board with its blocks, top side solid and bottom side hatched, the gate-drive links with their lengths, and the block list"></p>
 
-**Routing, by hand or with the PowerLab router.** The router applies the lab rules while it routes: power rails first, GND pours kept whole, few corners and vias, pads entered at their centres.
+**Routing, by hand or with the PowerLab router.** The router applies the lab rules while it routes: power rails first, GND pours kept whole, few corners and vias, pads entered at their centres. *The router is switched off for now while it gets more testing; Claude routes by hand until it's back.*
 
 ![The PowerLab router's result on a 2-layer ESP32 test board, drawn net by net from the ratsnest, power first, then the GND pours](docs/images/powerlab-router.gif)
 

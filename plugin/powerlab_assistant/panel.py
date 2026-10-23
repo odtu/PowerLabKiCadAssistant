@@ -29,13 +29,19 @@ ALLOWED_TOOLS = [
     # which would also allow Remove-Item.
     "PowerShell(tar -a -cf:*)",
 ]
+# The PowerLab router (powerlab_route) is switched off until it has had more local testing:
+# its tools are blocked and Claude routes by hand. Its code stays in the MCP patch, and the
+# powerlab-autoroute skill keeps its section. To switch it back on, set this to True, put
+# back PANEL_NOTE's routing question (by hand or the PowerLab router, recommended) and
+# remove the "switched off" notes in that skill.
+POWERLAB_ROUTER = False
 # Tools Claude may not use: AskUserQuestion has no one to answer it (see <choices>), and
 # routing is the PowerLab router's or by hand: the kicad MCP server's Freerouting tools
 # are left out of the panel.
 DISALLOWED_TOOLS = [
     "AskUserQuestion", "mcp__kicad__autoroute", "mcp__kicad__check_freerouting",
     "mcp__kicad__export_dsn", "mcp__kicad__import_ses",
-]
+] + ([] if POWERLAB_ROUTER else ["mcp__kicad__powerlab_route", "mcp__kicad__powerlab_route_status"])
 
 
 def install_denies():
@@ -173,9 +179,9 @@ PANEL_NOTE = (
     "powerlab-placement skill. Its first step is a block plan drawn on the outline, which "
     "the user agrees before you place any part.\n"
     "Routing: when the user asks to route the board or some nets, load the powerlab-autoroute "
-    "skill. Its first step is one question with <choices>: by hand, or with the PowerLab "
-    "router (recommended: it routes the board, then you fix its DRC errors and what it left by "
-    "hand). Freerouting isn't available in the panel; never offer it. Routing by hand means "
+    "skill and route by hand. The PowerLab router is switched off for now while it is being "
+    "tested: don't offer it, and if the user asks for it, say it isn't available yet. "
+    "Freerouting isn't available in the panel; never offer it. Routing by hand means "
     "you draw the tracks and vias with the kicad tools (route_trace, route_pad_to_pad, "
     "add_via), following the lab rules.\n"
     "When you finish a placement or routing task, or the user asks for a review, load the "
