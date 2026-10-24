@@ -127,6 +127,15 @@ class Track45Tests(unittest.TestCase):
             self.assertGreaterEqual(math.hypot(*last), track45.escape_length(b, u, 0.25) - 1e-6)
         self.assertOctilinear(pts)
 
+    def test_bend_under_the_pad_copper_is_fine(self):
+        """TestPCB2's TCK test point: a track already ending 0.6 mm from a 1 mm pad's centre
+        swung right and back in five tiny pieces to keep a full escape. A bend that lies on
+        the pad's own copper doesn't show: straight on, then one 45 degree piece in."""
+        tp = pad(95.12, 61.4, w=1.0, h=1.0, shape="circle")
+        pts = track45.route([(95.45, 62.0), (95.12, 61.4)], 0.15, end_pad=tp, start_dir=(0, -1))
+        self.assertEqual(pts, [(95.45, 62.0), (95.45, 61.73), (95.12, 61.4)])
+        self.assertTrue(track45.pad_contains(tp, *pts[1]))
+
     def test_rotated_pad_axis_follows_kicad_orientation(self):
         # KiCad turns counter-clockwise on screen: a 90 degree pad has its x axis pointing up
         ex, ey = track45._pad_axes(pad(angle=90))

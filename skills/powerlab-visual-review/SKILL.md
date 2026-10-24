@@ -48,7 +48,7 @@ A rendered view shows all of these at a glance. On the lab's ESC3Phase board, re
      - switching tracks not on the same layer as the high-current copper beside them
      - no tracks under inductors or transformers
      - fast signals on one layer, without vias where possible
-     - only 0°, 45° and 90° segments; no 90° corners, no acute angles, no kinks, detours or stubs: **measure with `check_routing`** (save first), and look close up at what it lists; a slanted line or a 90° corner is easy to miss on a whole-board view
+     - straight segments only at 0°, 45° and 90° (arcs are fine, preferred on high-speed lines); no 90° corners, no acute angles, no kinks, detours or stubs: **measure with `check_routing`** (save first), and look close up at what it lists; a slanted line or a 90° corner is easy to miss on a whole-board view
      - same-net pads side by side joined directly, not round a part or out and back
      - parallel lines (a bus, SPI, JTAG) at one pitch, bending together
      - GND pads on pours with thermal spokes, never solid

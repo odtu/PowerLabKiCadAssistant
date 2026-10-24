@@ -9155,10 +9155,10 @@ index be3cf94..a5289a5 100644
                  zone.SetFillMode(pcbnew.ZONE_FILL_MODE_HATCH_PATTERN)
 diff --git a/python/commands/routing_check.py b/python/commands/routing_check.py
 new file mode 100644
-index 0000000..890d9c2
+index 0000000..94a17bb
 --- /dev/null
 +++ b/python/commands/routing_check.py
-@@ -0,0 +1,394 @@
+@@ -0,0 +1,409 @@
 +"""
 +check_routing (PowerLab patch): routing style, measured the way a reviewer looks at tracks.
 +
@@ -9166,7 +9166,8 @@ index 0000000..890d9c2
 +board left exactly those: a run drawn as one slanted line at an odd angle, a short kink just
 +before a pad, square 90-degree corners on JTAG lines, and two same-net pads side by side joined
 +by a track looping round them. This reports, per the lab rules (powerlab-pcb-design-rules 3.4):
-+- off_angle: a segment that isn't at 0, 45 or 90 degrees;
++- off_angle: a straight segment that isn't at 0, 45 or 90 degrees (arcs are fine: high-speed
++  traces bend in arcs);
 +- corner: a bend of more than 45 degrees (90-degree and sharper corners), where two tracks of
 +  a net meet with no pad or via there;
 +- kink: a short segment between two bends (a jog or a staircase step);
@@ -9189,6 +9190,7 @@ index 0000000..890d9c2
 +DETOUR_EXTRA = 1.0  # ... and at least this many mm longer
 +NEAR_PADS = 5.0  # mm; pads this close on a branched net (a rail) are judged too
 +MAX_LISTED = 150
++FRAME_DIST = 6.0  # mm; parts of the segment's net this close lend it their axes (a turned part)
 +KIND_ORDER = ("detour", "off_angle", "corner", "kink", "pad_entry", "solid_gnd")
 +
 +Point = Tuple[float, float]
@@ -9242,9 +9244,11 @@ index 0000000..890d9c2
 +            pad_at: Any = None, params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
 +    """Findings for plain data.
 +
-+    segments: {net, layer, a: (x, y), b: (x, y), width, id}, mm
++    segments: {net, layer, a: (x, y), b: (x, y), width, id, arc?: True, length?}, mm; an arc
++      is judged only by its length (it has no angle, corner or kink)
 +    vias: {net, at: (x, y)}
-+    pads: {id, net, ref, pad, at: (x, y), layers: set of layer names}
++    pads: {id, net, ref, pad, at: (x, y), rot?: the part's angle as a direction in board
++      coordinates (y down), half?, axis?, big?}
 +    zones: {net, layer, solid: bool, rule_area: bool, at: (x, y)}
 +    pad_at(net, layer, point) -> pad id whose copper holds the point, or None
 +    """
@@ -9253,6 +9257,9 @@ index 0000000..890d9c2
 +    want = lambda net: not nets or net in nets  # noqa: E731
 +    findings: List[Dict[str, Any]] = []
 +    pad_by_id = {p["id"]: p for p in pads}
++    pads_by_net: Dict[str, List[Dict[str, Any]]] = {}
++    for p in pads:
++        pads_by_net.setdefault(p["net"], []).append(p)
 +    end_pad: Dict[Tuple[str, int, int], Optional[str]] = {}
 +
 +    def pad_of(s: Dict[str, Any], p: Point) -> Optional[str]:
@@ -9276,7 +9283,7 @@ index 0000000..890d9c2
 +
 +    # off_angle
 +    for s in segments:
-+        if not want(s["net"]):
++        if not want(s["net"]) or s.get("arc"):
 +            continue
 +        L = _dist(s["a"], s["b"])
 +        if L < MIN_SEGMENT:
@@ -9284,9 +9291,13 @@ index 0000000..890d9c2
 +        pa, pb = pad_of(s, s["a"]), pad_of(s, s["b"])
 +        if pa and pa == pb:
 +            continue  # inside one pad
-+        off = off_45(_angle(s["a"], s["b"]))
++        # On the board's axes, or on the axes of a turned part the net connects nearby (the
++        # legs of a round board, a part at 30 degrees): its tracks follow its own frame.
++        mid = ((s["a"][0] + s["b"][0]) / 2, (s["a"][1] + s["b"][1]) / 2)
++        frames = {0.0} | {round(p["rot"] % 45.0, 2) for p in pads_by_net.get(s["net"], ())
++                           if p.get("rot") is not None and _dist(p["at"], mid) <= FRAME_DIST}
++        off = min(off_45(_angle(s["a"], s["b"]) - f) for f in frames)
 +        if off > ANGLE_TOL:
-+            mid = ((s["a"][0] + s["b"][0]) / 2, (s["a"][1] + s["b"][1]) / 2)
 +            findings.append(_finding("off_angle", s["net"], s["layer"], mid,
 +                                     f"{L:.2f} mm at {_angle(s['a'], s['b']) % 180:.1f} deg "
 +                                     f"({off:.1f} deg off 45-degree steps)", length=round(L, 3)))
@@ -9298,7 +9309,7 @@ index 0000000..890d9c2
 +            continue
 +        (s1, i1), (s2, i2) = lst
 +        p = s1["b"] if i1 else s1["a"]
-+        if via_at(s1["net"], p) or pad_of(s1, p):
++        if s1.get("arc") or s2.get("arc") or via_at(s1["net"], p) or pad_of(s1, p):
 +            continue
 +        a = s1["a"] if i1 else s1["b"]  # far end of s1
 +        c = s2["b"] if i2 == 0 else s2["a"]  # far end of s2
@@ -9313,7 +9324,7 @@ index 0000000..890d9c2
 +                                     f"{what}: {t:.0f} deg bend; cut it at 45 degrees",
 +                                     angle=round(t, 1)))
 +    for s in segments:
-+        if not want(s["net"]):
++        if not want(s["net"]) or s.get("arc"):
 +            continue
 +        L = _dist(s["a"], s["b"])
 +        if L >= max(KINK_LEN, 3 * s["width"]):
@@ -9398,7 +9409,7 @@ index 0000000..890d9c2
 +        node_keys = set()
 +        for s in segs:
 +            ka, kb = _key(s["layer"], s["a"]), _key(s["layer"], s["b"])
-+            link(ka, kb, _dist(s["a"], s["b"]))
++            link(ka, kb, s.get("length") or _dist(s["a"], s["b"]))
 +            node_keys.update((ka, kb))
 +            for p, k in ((s["a"], ka), (s["b"], kb)):
 +                pid = pad_of(s, p)
@@ -9507,10 +9518,13 @@ index 0000000..890d9c2
 +    for t in board.GetTracks():
 +        if t.Type() == pcbnew.PCB_VIA_T:
 +            vias.append({"net": t.GetNetname(), "at": (mm(t.GetPosition().x), mm(t.GetPosition().y))})
-+        elif t.Type() == pcbnew.PCB_TRACE_T:
-+            segments.append({"net": t.GetNetname(), "layer": t.GetLayerName(), "width": mm(t.GetWidth()),
-+                             "a": (mm(t.GetStart().x), mm(t.GetStart().y)),
-+                             "b": (mm(t.GetEnd().x), mm(t.GetEnd().y)), "id": t.m_Uuid.AsString()})
++        elif t.Type() in (pcbnew.PCB_TRACE_T, pcbnew.PCB_ARC_T):
++            seg = {"net": t.GetNetname(), "layer": t.GetLayerName(), "width": mm(t.GetWidth()),
++                   "a": (mm(t.GetStart().x), mm(t.GetStart().y)),
++                   "b": (mm(t.GetEnd().x), mm(t.GetEnd().y)), "id": t.m_Uuid.AsString()}
++            if t.Type() == pcbnew.PCB_ARC_T:
++                seg.update(arc=True, length=mm(t.GetLength()))
++            segments.append(seg)
 +    pad_objs = {}
 +    for fp in board.GetFootprints():
 +        for p in fp.Pads():
@@ -9523,6 +9537,7 @@ index 0000000..890d9c2
 +            if abs(size.x - size.y) > 1000:
 +                axis = (-p.GetOrientationDegrees() + (90.0 if size.y > size.x else 0.0)) % 180.0
 +            pads.append({"id": pid, "net": p.GetNetname(), "ref": fp.GetReference(), "pad": p.GetNumber(),
++                         "rot": (-fp.GetOrientationDegrees()) % 360.0,
 +                         "at": (mm(p.GetPosition().x), mm(p.GetPosition().y)), "half": half, "axis": axis,
 +                         # exposed pads and large power pads take tracks anywhere on them
 +                         "big": max(mm(size.x), mm(size.y)) >= 2.5})
@@ -10208,10 +10223,10 @@ index 2ad29f6..10ddd45 100644
          schematic_path: Path,
 diff --git a/python/commands/zone_edit.py b/python/commands/zone_edit.py
 new file mode 100644
-index 0000000..0a31b85
+index 0000000..b1e4cab
 --- /dev/null
 +++ b/python/commands/zone_edit.py
-@@ -0,0 +1,564 @@
+@@ -0,0 +1,593 @@
 +"""delete_zone and edit_zone, and query_zones in live mode (PowerLab patch, #79).
 +
 +add_copper_pour, add_zone, query_zones and refill_zones existed, but no tool could remove
@@ -10236,7 +10251,10 @@ index 0000000..0a31b85
 +_TO_MM = {"mm": 1.0, "mil": 0.0254, "inch": 25.4}
 +# KiCad 10's own layer names, for the zones' (copper) layers and filters
 +_LAYER_ALIASES = {"F.Silkscreen": "F.SilkS", "B.Silkscreen": "B.SilkS"}
-+COPPER_FIELDS = ("newNet", "clearance", "minThickness", "padConnection", "fillType")
++COPPER_FIELDS = ("newNet", "clearance", "minThickness", "padConnection", "fillType", "thermalGap", "spokeWidth")
++# Thermal reliefs need a gap and spokes: a zone that was solid (or made by a tool that left
++# them at 0) gets KiCad's defaults when it turns thermal, else DRC reports starved thermals.
++THERMAL_DEFAULT = 0.5  # mm, gap and spoke width
 +
 +
 +def _uuid_text(value: Any) -> str:
@@ -10318,7 +10336,8 @@ index 0000000..0a31b85
 +
 +def parse_zone_changes(params: Dict[str, Any]) -> Tuple[Dict[str, Any], Optional[str]]:
 +    """edit_zone's changes, checked, in mm: newNet, layers, priority, clearance,
-+    minThickness, padConnection, fillType, newName, outline (list of (x, y)), locked.
++    minThickness, padConnection, thermalGap, spokeWidth, fillType, newName, outline (list of
++    (x, y)), locked.
 +    Returns (changes, None) or ({}, an error text)."""
 +    out: Dict[str, Any] = {}
 +    to_mm = _TO_MM.get(params.get("unit") or "mm")
@@ -10339,7 +10358,8 @@ index 0000000..0a31b85
 +            return {}, f"priority must be a whole number, got {params['priority']!r}"
 +        if out["priority"] < 0:
 +            return {}, "priority can't be negative"
-+    for key, alias in (("clearance", None), ("minThickness", "minWidth")):
++    for key, alias in (("clearance", None), ("minThickness", "minWidth"), ("thermalGap", None),
++                       ("spokeWidth", "thermalSpokeWidth")):
 +        value = params.get(key, params.get(alias) if alias else None)
 +        if value is None:
 +            continue
@@ -10347,7 +10367,7 @@ index 0000000..0a31b85
 +            value = float(value) * to_mm
 +        except (TypeError, ValueError):
 +            return {}, f"{key} must be a number, got {value!r}"
-+        if value < 0 or (key == "minThickness" and value == 0):
++        if value < 0 or (key in ("minThickness", "spokeWidth") and value == 0):
 +            return {}, f"{key} must be more than 0"
 +        out[key] = value
 +    if params.get("padConnection") is not None:
@@ -10377,7 +10397,8 @@ index 0000000..0a31b85
 +        out["locked"] = bool(params["locked"])
 +    if not out:
 +        return {}, ("Nothing to change: give newNet, newLayers, priority, clearance, "
-+                    "minThickness, padConnection, fillType, newName, outline or locked")
++                    "minThickness, padConnection, thermalGap, spokeWidth, fillType, newName, "
++                    "outline or locked")
 +    return out, None
 +
 +
@@ -10537,6 +10558,17 @@ index 0000000..0a31b85
 +            pcbnew.ZONE_CONNECTION_FULL if changes["padConnection"] == "solid"
 +            else pcbnew.ZONE_CONNECTION_THERMAL
 +        )
++    if changes.get("padConnection") == "thermal" or "thermalGap" in changes or "spokeWidth" in changes:
++        gap = changes.get("thermalGap")
++        if gap is None and zone.GetThermalReliefGap() <= 0:
++            gap = THERMAL_DEFAULT
++        if gap is not None:
++            zone.SetThermalReliefGap(nm(gap))
++        width = changes.get("spokeWidth")
++        if width is None and zone.GetThermalReliefSpokeWidth() <= 0:
++            width = THERMAL_DEFAULT
++        if width is not None:
++            zone.SetThermalReliefSpokeWidth(nm(width))
 +    if "fillType" in changes:
 +        zone.SetFillMode(
 +            pcbnew.ZONE_FILL_MODE_HATCH_PATTERN if changes["fillType"] == "hatched"
@@ -10748,6 +10780,18 @@ index 0000000..0a31b85
 +            ZoneConnectionStyle.ZCS_FULL if changes["padConnection"] == "solid"
 +            else ZoneConnectionStyle.ZCS_THERMAL
 +        )
++    if changes.get("padConnection") == "thermal" or "thermalGap" in changes or "spokeWidth" in changes:
++        spokes = zone._proto.copper_settings.connection.thermal_spokes
++        gap = changes.get("thermalGap")
++        if gap is None and spokes.gap.value_nm <= 0:
++            gap = THERMAL_DEFAULT
++        if gap is not None:
++            spokes.gap.value_nm = nm(gap)
++        width = changes.get("spokeWidth")
++        if width is None and spokes.width.value_nm <= 0:
++            width = THERMAL_DEFAULT
++        if width is not None:
++            spokes.width.value_nm = nm(width)
 +    if "fillType" in changes:
 +        zone._proto.copper_settings.fill_mode = (
 +            ZoneFillMode.ZFM_HATCHED if changes["fillType"] == "hatched" else ZoneFillMode.ZFM_SOLID
@@ -10955,7 +10999,7 @@ index 6f9a813..a2d32a8 100644
              # Create outline polyline
              outline = PolyLine()
 diff --git a/python/kicad_interface.py b/python/kicad_interface.py
-index c6ac305..d1268d9 100644
+index c6ac305..3fbcd0f 100644
 --- a/python/kicad_interface.py
 +++ b/python/kicad_interface.py
 @@ -36,6 +36,7 @@ if sys.platform == "win32":
@@ -11741,7 +11785,18 @@ index c6ac305..d1268d9 100644
  
              x1 = float(params.get("x1", 0))
              y1 = float(params.get("y1", 0))
-@@ -4982,47 +5629,30 @@ print("ok")
+@@ -4948,6 +5595,10 @@ print("ok")
+                         }
+                     self.board = reloaded
+                     self._update_command_handlers()
++                    # PowerLab patch: this handler wrote the file itself (save, then the
++                    # subprocess's save), so record it; otherwise the next auto-save sees
++                    # "changed externally" and refuses every later save.
++                    self._record_board_signature()
+                     logger.info("Zone fill subprocess succeeded")
+                     return {
+                         "success": True,
+@@ -4982,47 +5633,30 @@ print("ok")
      # =========================================================================
  
      def _ipc_route_trace(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -11808,7 +11863,7 @@ index c6ac305..d1268d9 100644
  
      def _ipc_route_arc_trace(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for route_arc_trace - adds copper arc with real-time UI update"""
-@@ -5079,6 +5709,65 @@ print("ok")
+@@ -5079,6 +5713,65 @@ print("ok")
              logger.error(f"IPC route_arc_trace error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -11874,7 +11929,7 @@ index c6ac305..d1268d9 100644
      def _ipc_add_via(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for add_via - adds via with real-time UI update"""
          try:
-@@ -5131,21 +5820,37 @@ print("ok")
+@@ -5131,21 +5824,37 @@ print("ok")
              net = params.get("net")
              clearance = params.get("clearance", 0.5)
              min_width = params.get("minWidth", 0.25)
@@ -11919,7 +11974,7 @@ index c6ac305..d1268d9 100644
  
              success = self.ipc_board_api.add_zone(
                  points=formatted_points,
-@@ -5156,6 +5861,7 @@ print("ok")
+@@ -5156,6 +5865,7 @@ print("ok")
                  priority=priority,
                  fill_mode=fill_type,
                  name=name,
@@ -11927,7 +11982,7 @@ index c6ac305..d1268d9 100644
              )
  
              return {
-@@ -5179,6 +5885,65 @@ print("ok")
+@@ -5179,6 +5889,65 @@ print("ok")
              logger.error(f"IPC add_copper_pour error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -11993,7 +12048,7 @@ index c6ac305..d1268d9 100644
      def _ipc_refill_zones(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for refill_zones - refills all zones with real-time UI update"""
          try:
-@@ -5204,12 +5969,18 @@ print("ok")
+@@ -5204,12 +5973,18 @@ print("ok")
              layer = params.get("layer", "F.SilkS")
              size = params.get("size", 1.0)
              rotation = params.get("rotation", 0)
@@ -12014,7 +12069,7 @@ index c6ac305..d1268d9 100644
                  "success": success,
                  "message": (
                      f"Added text '{text}' (visible in KiCAD UI)"
-@@ -5217,6 +5988,10 @@ print("ok")
+@@ -5217,6 +5992,10 @@ print("ok")
                      else "Failed to add text"
                  ),
              }
@@ -12025,7 +12080,7 @@ index c6ac305..d1268d9 100644
          except Exception as e:
              logger.error(f"IPC add_text error: {e}")
              return {"success": False, "message": str(e)}
-@@ -5349,6 +6124,19 @@ print("ok")
+@@ -5349,6 +6128,19 @@ print("ok")
                  x = x * 0.0254
                  y = y * 0.0254
  
@@ -12045,7 +12100,7 @@ index c6ac305..d1268d9 100644
              success = self.ipc_board_api.move_component(
                  reference=reference, x=x, y=y, rotation=rotation
              )
-@@ -5356,7 +6144,9 @@ print("ok")
+@@ -5356,7 +6148,9 @@ print("ok")
              return {
                  "success": success,
                  "message": (
@@ -12056,7 +12111,7 @@ index c6ac305..d1268d9 100644
                      if success
                      else "Failed to move component"
                  ),
-@@ -5456,11 +6246,306 @@ print("ok")
+@@ -5456,11 +6250,306 @@ print("ok")
              return {"success": False, "message": str(e)}
  
      def _ipc_delete_trace(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -12368,7 +12423,7 @@ index c6ac305..d1268d9 100644
  
      def _ipc_query_traces(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for query_traces - reads traces from the live KiCAD board."""
-@@ -5558,11 +6643,20 @@ print("ok")
+@@ -5558,11 +6647,20 @@ print("ok")
          and correctly generates PCB_SHAPE arcs for rounded corners.
          """
          shape = params.get("shape", "rectangle")
@@ -12389,7 +12444,7 @@ index c6ac305..d1268d9 100644
              return self.board_commands.add_board_outline(params)
  
          try:
-@@ -5614,6 +6708,50 @@ print("ok")
+@@ -5614,6 +6712,50 @@ print("ok")
              logger.error(f"IPC add_board_outline error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -12440,7 +12495,7 @@ index c6ac305..d1268d9 100644
      def _ipc_add_mounting_hole(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for add_mounting_hole - adds mounting hole with real-time UI update"""
          try:
-@@ -5833,6 +6971,100 @@ print("ok")
+@@ -5833,6 +6975,100 @@ print("ok")
              logger.error(f"IPC set_footprint_type error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -12542,7 +12597,7 @@ index c6ac305..d1268d9 100644
      # Legacy IPC command handlers (explicit ipc_* commands)
  
 diff --git a/python/schemas/tool_schemas.py b/python/schemas/tool_schemas.py
-index e739f90..6a51500 100644
+index e739f90..ea1ef9b 100644
 --- a/python/schemas/tool_schemas.py
 +++ b/python/schemas/tool_schemas.py
 @@ -405,6 +405,31 @@ BOARD_TOOLS = [
@@ -12705,7 +12760,7 @@ index e739f90..6a51500 100644
          },
      },
      {
-@@ -1558,6 +1649,59 @@ ROUTING_TOOLS = [
+@@ -1558,6 +1649,61 @@ ROUTING_TOOLS = [
              },
          },
      },
@@ -12749,6 +12804,8 @@ index e739f90..6a51500 100644
 +                "clearance": {"type": "number"},
 +                "minThickness": {"type": "number"},
 +                "padConnection": {"type": "string", "enum": ["thermal", "solid"]},
++                "thermalGap": {"type": "number", "description": "Thermal relief gap (mm)"},
++                "spokeWidth": {"type": "number", "description": "Thermal spoke width (mm)"},
 +                "fillType": {"type": "string", "enum": ["solid", "hatched"]},
 +                "newName": {"type": "string"},
 +                "outline": {
@@ -12765,7 +12822,7 @@ index e739f90..6a51500 100644
      {
          "name": "add_gnd_stitching_vias",
          "title": "Add GND Stitching Vias",
-@@ -2090,31 +2234,66 @@ DESIGN_RULE_TOOLS = [
+@@ -2090,31 +2236,66 @@ DESIGN_RULE_TOOLS = [
      {
          "name": "set_design_rules",
          "title": "Set Design Rules",
@@ -12852,7 +12909,7 @@ index e739f90..6a51500 100644
                  },
              },
          },
-@@ -2122,8 +2301,19 @@ DESIGN_RULE_TOOLS = [
+@@ -2122,8 +2303,19 @@ DESIGN_RULE_TOOLS = [
      {
          "name": "get_design_rules",
          "title": "Get Current Design Rules",
@@ -12874,7 +12931,7 @@ index e739f90..6a51500 100644
      },
      {
          "name": "run_drc",
-@@ -2875,13 +3065,21 @@ SCHEMATIC_TOOLS = [
+@@ -2875,13 +3067,21 @@ SCHEMATIC_TOOLS = [
      {
          "name": "get_elements_in_region",
          "title": "Get Elements in Region",
@@ -12898,7 +12955,7 @@ index e739f90..6a51500 100644
                  },
                  "x1": {
                      "type": "number",
-@@ -2900,7 +3098,7 @@ SCHEMATIC_TOOLS = [
+@@ -2900,7 +3100,7 @@ SCHEMATIC_TOOLS = [
                      "description": "Bottom Y coordinate of the region in mm",
                  },
              },
@@ -13614,10 +13671,10 @@ index 0000000..a15e7d3
 +    return {"x0": round(x0, 4), "y0": round(y0, 4), "x1": round(x1, 4), "y1": round(y1, 4), "unit": "mm"}
 diff --git a/python/utils/track45.py b/python/utils/track45.py
 new file mode 100644
-index 0000000..5a20e3d
+index 0000000..2d30edb
 --- /dev/null
 +++ b/python/utils/track45.py
-@@ -0,0 +1,466 @@
+@@ -0,0 +1,469 @@
 +"""Tracks the way a careful PCB designer draws them (PowerLab patch).
 +
 +Pure geometry, no pcbnew or kipy: route_trace and route_pad_to_pad build their polyline
@@ -13887,14 +13944,17 @@ index 0000000..5a20e3d
 +    if pad_a is not None:
 +        u = _unit(first)
 +        cost += _pad_dir_cost(pad_a, u, ent_a, next_pin)
-+        if len(pts) > 2 and _len(first) < escape_length(pad_a, u, width) + room_a - 1e-6:
++        # a bend under the pad's own copper doesn't show: only one just outside it is a kink
++        if (len(pts) > 2 and _len(first) < escape_length(pad_a, u, width) + room_a - 1e-6
++                and not pad_contains(pad_a, *pts[1])):
 +            cost += _KINK
 +    if dir_a is not None:
 +        cost += _bend_cost(_turn(dir_a, first))
 +    if pad_b is not None:
 +        u = _unit((-last[0], -last[1]))
 +        cost += _pad_dir_cost(pad_b, u, ent_b, next_pin)
-+        if len(pts) > 2 and _len(last) < escape_length(pad_b, u, width) + room_b - 1e-6:
++        if (len(pts) > 2 and _len(last) < escape_length(pad_b, u, width) + room_b - 1e-6
++                and not pad_contains(pad_b, *pts[-2])):
 +            cost += _KINK
 +    if dir_b is not None:
 +        cost += _bend_cost(_turn(last, dir_b))
@@ -14727,7 +14787,7 @@ index 902f7b1..21876ed 100644
    {
      name: "validation",
 diff --git a/src/tools/routing.ts b/src/tools/routing.ts
-index 27f6b90..bc684e7 100644
+index 27f6b90..4137efe 100644
 --- a/src/tools/routing.ts
 +++ b/src/tools/routing.ts
 @@ -30,7 +30,7 @@ export function registerRoutingTools(server: McpServer, callKicadScript: Functio
@@ -14832,7 +14892,7 @@ index 27f6b90..bc684e7 100644
      {
        net: z.string().optional().describe("Filter by net name"),
        layer: z
-@@ -259,6 +315,77 @@ export function registerRoutingTools(server: McpServer, callKicadScript: Functio
+@@ -259,6 +315,85 @@ export function registerRoutingTools(server: McpServer, callKicadScript: Functio
      },
    );
  
@@ -14885,6 +14945,14 @@ index 27f6b90..bc684e7 100644
 +        .enum(["thermal", "solid"])
 +        .optional()
 +        .describe("How pads join the pour: thermal reliefs, or solid (high-current power pours only)"),
++      thermalGap: z
++        .number()
++        .optional()
++        .describe("Thermal relief gap round each pad (default 0.5 mm when a zone turns thermal with none set)"),
++      spokeWidth: z
++        .number()
++        .optional()
++        .describe("Thermal spoke width (default 0.5 mm; wider, up to the pad's width, for high-current GND pads)"),
 +      fillType: z.enum(["solid", "hatched"]).optional().describe("New fill type"),
 +      newName: z.string().optional().describe("New zone name"),
 +      outline: z
@@ -14910,7 +14978,7 @@ index 27f6b90..bc684e7 100644
    // ------------------------------------------------------
    // Add GND Stitching Vias Tool
    //
-@@ -395,9 +522,26 @@ export function registerRoutingTools(server: McpServer, callKicadScript: Functio
+@@ -395,9 +530,26 @@ export function registerRoutingTools(server: McpServer, callKicadScript: Functio
    // Create netclass tool
    server.tool(
      "create_netclass",
@@ -14938,7 +15006,7 @@ index 27f6b90..bc684e7 100644
        traceWidth: z.number().optional().describe("Default trace width in mm"),
        clearance: z.number().optional().describe("Clearance in mm"),
        viaDiameter: z.number().optional().describe("Via diameter in mm"),
-@@ -510,7 +654,7 @@ export function registerRoutingTools(server: McpServer, callKicadScript: Functio
+@@ -510,7 +662,7 @@ export function registerRoutingTools(server: McpServer, callKicadScript: Functio
    // Route pad to pad tool
    server.tool(
      "route_pad_to_pad",
@@ -14947,7 +15015,7 @@ index 27f6b90..bc684e7 100644
      {
        fromRef: z.string().describe("Reference of the source component (e.g. 'U2')"),
        fromPad: z
-@@ -520,9 +664,40 @@ export function registerRoutingTools(server: McpServer, callKicadScript: Functio
+@@ -520,9 +672,40 @@ export function registerRoutingTools(server: McpServer, callKicadScript: Functio
        toPad: z
          .union([z.string(), z.number()])
          .describe("Pad number on the target component (e.g. '15' or 15)"),

@@ -56,6 +56,18 @@ class RoutingStyleTests(unittest.TestCase):
             self.assertEqual(self.kinds([seg("A", (0, 0), b)]), [])
         self.assertEqual(self.rc.off_45(46.0), 1.0)
 
+    def test_turned_parts_lend_their_axes(self):
+        # A leg of a round board turned 125.5 degrees: its gate track runs at 35.5 degrees,
+        # which is 90 degrees in the leg's frame. Not slanted; the same run far from the leg is.
+        a = math.radians(-35.5)  # 35.5 degrees up on screen, y pointing down
+        run = [seg("GATE_AH", (0, 0), (3 * math.cos(a), 3 * math.sin(a)))]
+        leg = [pad("Q1.4", "GATE_AH", (0.5, 0.0))]
+        leg[0]["rot"] = (-125.5) % 360.0
+        self.assertEqual(self.kinds(run, leg), [])
+        self.assertEqual(self.kinds(run), ["off_angle"])
+        far = [dict(leg[0], at=(30.0, 30.0))]
+        self.assertEqual(self.kinds(run, far), ["off_angle"])
+
     def test_corners_sharper_than_45_degrees(self):
         square = [seg("TDI", (0, 0), (5, 0)), seg("TDI", (5, 0), (5, 5))]
         found = self.rc.analyse(square, [], [], [], None)
@@ -143,7 +155,8 @@ class RoutingRulesTextTests(unittest.TestCase):
 
     def test_lab_rules(self):
         rules = self.read("powerlab-pcb-design-rules")
-        self.assertIn("**Only three directions: 0°, 45° and 90°.**", rules)
+        self.assertIn("**Straight pieces only at 0°, 45° and 90°; bends at 45° or as arcs.**", rules)
+        self.assertIn("**Arcs are fine anywhere and preferred on high-speed traces**", rules)
         self.assertIn("**Same-net pads next to each other connect directly**", rules)
         self.assertIn("**Parallel runs stay parallel.**", rules)
         self.assertIn("**GND pours and planes always use thermal reliefs, never solid**", rules)
