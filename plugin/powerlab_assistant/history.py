@@ -2,7 +2,10 @@
 
 One panel serves both editors, so each project folder has one chat: Claude Code's session
 id, so the next message continues the same conversation (`--resume`), and the messages shown
-in the panel, so they can be shown again. Stored in %APPDATA%\\PowerLabKiCadAssistant\\chats.
+in the panel, so they can be shown again. A chat reopened later isn't resumed: resuming sends
+the whole conversation again, every tool result and render, with each message. It continues
+in a new session told the user's last prompts, with the chat so far in a file (write_earlier)
+that Claude reads only if it needs to. Stored in %APPDATA%\\PowerLabKiCadAssistant\\chats.
 Nothing here is ever sent anywhere or put in problem reports.
 """
 
@@ -55,6 +58,51 @@ def load(cwd, folder=None):
     data = max(found, key=lambda d: (len(d[0].get("events") or []), d[1]))[0]
     events = [e for e in data.get("events") or [] if isinstance(e, dict) and e.get("kind") in KINDS]
     return data.get("session_id") or None, events
+
+
+def last_prompts(events, count=3):
+    """The user's last few messages (what they asked, not what Claude did)."""
+    return [e.get("text", "") for e in events if e.get("kind") == "user" and e.get("text")][-count:]
+
+
+def earlier_path(cwd, folder=None):
+    return os.path.join(folder or FOLDER, "earlier", _key(cwd), "earlier-chat.md")
+
+
+def write_earlier(cwd, events, folder=None):
+    """The chat so far as a short text file (prompts, replies, the steps' names), for a chat
+    continued in a new session: Claude reads it only when the last prompts aren't enough.
+    Returns its path, or "" if it couldn't be written."""
+    lines, steps = ["# Earlier chat on this project", ""], []
+
+    def flush():
+        if steps:
+            lines.extend([f"(steps: {', '.join(dict.fromkeys(steps))})", ""])
+            steps.clear()
+
+    for e in events:
+        kind, text = e.get("kind"), (e.get("text") or "").strip()
+        if kind == "tool":
+            steps.append(e.get("name", ""))
+            continue
+        if kind == "user":
+            flush()
+            lines.extend(["## User", text, ""])
+        elif kind == "text" and text:
+            flush()
+            lines.extend(["Claude: " + text, ""])
+        elif kind in ("review", "plan") and e.get("path"):
+            flush()
+            lines.extend([f"({'Design review' if kind == 'review' else 'Block plan'}: {e['path']})", ""])
+    flush()
+    path = earlier_path(cwd, folder)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+    except OSError:
+        return ""
+    return path
 
 
 def save(cwd, session_id, events, folder=None):

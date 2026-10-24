@@ -16,7 +16,7 @@ import time
 import wx
 import wx.html2
 
-from . import attachments, config, history, library, plan, report, review, updates, usage
+from . import attachments, config, history, i18n, library, plan, report, review, updates, usage
 from .common import find_gh, open_console, open_terminal, clean_env
 
 # Tools Claude may use without asking. Headless runs can't show permission
@@ -29,19 +29,42 @@ ALLOWED_TOOLS = [
     # which would also allow Remove-Item.
     "PowerShell(tar -a -cf:*)",
 ]
+# The PowerLab router (powerlab_route) is switched off until it has had more local testing:
+# its tools are blocked and Claude routes by hand. Its code stays in the MCP patch, and the
+# powerlab-autoroute skill keeps its section. To switch it back on, set this to True, put
+# back PANEL_NOTE's routing question (by hand or the PowerLab router, recommended) and
+# remove the "switched off" notes in that skill.
+POWERLAB_ROUTER = False
 # Tools Claude may not use: AskUserQuestion has no one to answer it (see <choices>), and
 # routing is the PowerLab router's or by hand: the kicad MCP server's Freerouting tools
 # are left out of the panel.
 DISALLOWED_TOOLS = [
     "AskUserQuestion", "mcp__kicad__autoroute", "mcp__kicad__check_freerouting",
     "mcp__kicad__export_dsn", "mcp__kicad__import_ses",
-]
+] + ([] if POWERLAB_ROUTER else ["mcp__kicad__powerlab_route", "mcp__kicad__powerlab_route_status"])
+
+
+def install_denies():
+    """Edit rules that keep Claude out of the installed kicad MCP server (issue #73): when a
+    tool misbehaved, it patched the server's files and tried to rebuild it. Claude Code
+    matches Windows paths in POSIX form (C:\\Users -> /c/Users); // makes the rule absolute."""
+    folder = config.mcp_path().replace("\\", "/").rstrip("/")
+    if not folder:
+        return []
+    drive = re.match(r"([A-Za-z]):/(.*)", folder)
+    if drive:
+        folder = "/" + drive.group(1).lower() + "/" + drive.group(2)
+    return ["Edit(/" + folder + "/**)"]
 
 IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
                ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml"}
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 VIEWS_DIR = os.path.join(os.path.dirname(attachments.FOLDER), "views")  # board renders for review
 LIBRARY_CHECK_EVERY = 10 * 60  # seconds between GitHub checks for library updates
+# Claude Code's own file and search tools: a failed call there is Claude's slip (an Edit
+# before its Read, a regex ripgrep can't parse), which it fixes in its next step. Shown in
+# red, users reported them as faults (#74, #78); they show as retried, the error on hover.
+OWN_TOOLS = {"Read", "Glob", "Grep", "Edit", "Write", "ToolSearch", "Skill"}
 # What Claude is doing, shown with a timer while it works: a long think shows no messages,
 # and looked like a hang. Content blocks of the streamed reply -> the activity they show.
 STREAM_ACTIVITY = {"thinking": "thinking", "redacted_thinking": "thinking", "text": "writing",
@@ -53,6 +76,29 @@ ALIVE_EVERY = 3  # seconds; resend an unchanged activity this often, so the page
 THINKING_SUMMARIES = '{"thinking": {"type": "adaptive", "display": "summarized"}}'
 SUMMARY_MODELS = ("claude-opus-5-5", "claude-sonnet-5-5")
 LIVE_THOUGHT_CHARS = 1500  # the end of the thinking so far, shown while Claude thinks
+# Resuming a session sends its whole conversation again with every message. A chat reopened
+# later (its prompt cache long gone), or one past this size, continues in a new session that
+# gets only the user's last prompts and the project (continue_note).
+FRESH_AFTER_TOKENS = 200_000
+LAST_PROMPTS = 3
+PROJECT_NOTES = ("design-requirements.md", os.path.join("placement", "block-plan.json"),
+                 os.path.join("design-review", "design-review.md"))
+
+
+def continue_note(prompts, earlier, cwd):
+    """System-prompt text for a chat continued in a new session."""
+    note = ("\nThis message continues an earlier chat on this project in a new session, to save "
+            "tokens: you don't have its conversation. The user's last prompts before this one, "
+            "oldest first:\n")
+    note += "".join(f"{i}. {p.strip()[:1500]}\n" for i, p in enumerate(prompts, 1)) or "(none)\n"
+    found = [n for n in PROJECT_NOTES if os.path.isfile(os.path.join(cwd, n))]
+    note += ("Work out where things stand from the project itself: the board and schematic "
+             "through the kicad tools" + (", and " + ", ".join(found) if found else "") + ". "
+             "Then do what the new message asks. Don't tell the user you started afresh.")
+    if earlier:
+        note += (f" Only if you still can't tell what the user means or how to continue, read "
+                 f"the earlier chat (their prompts and your replies) in {earlier}.")
+    return note + "\n"
 
 PANEL_NOTE = (
     "You are running in a narrow command panel docked beside KiCad, one headless "
@@ -116,6 +162,10 @@ PANEL_NOTE = (
     "Change designs only through the kicad MCP tools (board tools edit KiCad live when its "
     "API server is on); never hand-edit .kicad_pcb or .kicad_sch files. Never delete files or "
     "folders unless the user names them explicitly; if a request is ambiguous, ask.\n"
+    "The kicad MCP server, this panel and the powerlab skills are installed parts of the "
+    "assistant: never edit, rebuild or reinstall them (no npm, node, pip or git; the panel "
+    "blocks them). If a kicad tool fails or gives a wrong result, get the job done with other "
+    "tools if you can, and tell the user to send it with the panel's Report a problem button.\n"
     "For any schematic or PCB design, placement, routing, design-rule or review work, load "
     "the powerlab-pcb-design-rules skill first and follow it.\n"
     "When the user starts a new board, schematic or project from scratch, load the "
@@ -129,9 +179,9 @@ PANEL_NOTE = (
     "powerlab-placement skill. Its first step is a block plan drawn on the outline, which "
     "the user agrees before you place any part.\n"
     "Routing: when the user asks to route the board or some nets, load the powerlab-autoroute "
-    "skill. Its first step is one question with <choices>: by hand, or with the PowerLab "
-    "router (recommended: it routes the board, then you fix its DRC errors and what it left by "
-    "hand). Freerouting isn't available in the panel; never offer it. Routing by hand means "
+    "skill and route by hand. The PowerLab router is switched off for now while it is being "
+    "tested: don't offer it, and if the user asks for it, say it isn't available yet. "
+    "Freerouting isn't available in the panel; never offer it. Routing by hand means "
     "you draw the tracks and vias with the kicad tools (route_trace, route_pad_to_pad, "
     "add_via), following the lab rules.\n"
     "When you finish a placement or routing task, or the user asks for a review, load the "
@@ -310,7 +360,8 @@ class CardWindow(wx.Frame):
                 card = self.card()
             except Exception as e:  # a bad file never breaks the window
                 card = {"kind": self.kind, "path": self.path, "error": f"It can't be shown: {e}"}
-            for data in [{"kind": "busy", "value": bool(self.panel.proc)}, card] + self.pending:
+            first = [i18n.page_event(self.panel.lang), {"kind": "busy", "value": bool(self.panel.proc)}, card]
+            for data in first + self.pending:
                 self.web.RunScriptAsync(f"app.event({json.dumps(data)})")
             self.pending = []
         elif kind in self.FORWARD:
@@ -342,6 +393,7 @@ class ClaudePanel(wx.Frame):
         self.events = []  # the chat's messages, saved so they come back after a restart
         self.retry = None  # (text, files) of the last message sent into a resumed session
         self.stale_session = False
+        self.fresh = False  # the next message continues the chat in a new session (continue_note)
         self.watched = {}
         self.started = 0.0
         self.last_text = ""
@@ -352,6 +404,7 @@ class ClaudePanel(wx.Frame):
         self.capturing = False
         self.sending = False
         self.settings = config.settings()
+        self.lang = i18n.current(self.settings)  # the panel's text and Claude's replies
         self.ready = False
         self.pending = []
         self.context_items = None
@@ -443,6 +496,7 @@ class ClaudePanel(wx.Frame):
         project = os.path.basename(cwd.rstrip(os.sep)) if cwd != os.path.expanduser("~") else ""
         self.SetTitle("PowerLab Assistant" + (f" — {project}" if project else ""))
         self.session_id, self.events = history.load(cwd)
+        self.fresh = bool(self.events)
         for event in self.events:
             if event["kind"] == "image":
                 self.show_image(event.get("path", ""), record=False)
@@ -454,8 +508,9 @@ class ClaudePanel(wx.Frame):
                 self.emit(**event)
         if self.events:
             self.emit("busy", value=False)  # tools cut off last time stop spinning
-            self.emit("note", level="info", text="Continuing your last chat on this project. "
-                                                 "Press + for a new one.")
+            self.emit("note", level="info", text="Your last chat on this project. To save tokens, "
+                      "your next message continues it with only your last prompts and the project. "
+                      "Press + for a new chat.")
 
     def in_background(self, work, done):
         """Run work() off the GUI thread (network, git, subprocesses), then done(result)."""
@@ -483,6 +538,7 @@ class ClaudePanel(wx.Frame):
         for data in self.pending:
             self.send_to_page(data)
         self.pending = []
+        self.emit(**i18n.page_event(self.lang))
         self.emit("suggestions", items=[{"label": l, "text": t} for l, t in self.source.suggestions])
         self.emit("models", current=self.model,
                   items=[{"id": i, "label": l, "short": s, "hint": h} for i, l, s, h in MODELS])
@@ -540,6 +596,7 @@ class ClaudePanel(wx.Frame):
             self.proc.terminate()
         self.session_id = None
         self.events = []
+        self.fresh = False
         self.save_chat()
         self.load_page()
 
@@ -611,6 +668,14 @@ class ClaudePanel(wx.Frame):
             self.settings["model"] = msg["id"]
             config.save_settings(self.settings)
             self.emit("model", current=self.model)
+
+    def msg_language(self, msg):
+        if msg.get("code") in i18n.CODES:
+            self.lang = self.settings["language"] = msg["code"]
+            config.save_settings(self.settings)
+            self.emit(**i18n.page_event(self.lang))
+            for window in list(self.card_windows.values()):
+                window.send(i18n.page_event(self.lang))
 
     def msg_save_send(self, msg):
         if self.held_text:
@@ -945,30 +1010,40 @@ class ClaudePanel(wx.Frame):
             return
         if snap.cwd != self.chat_cwd:
             self.open_chat(snap.cwd)
+        resend = files is not None
+        fresh, earlier = "", ""
+        if self.fresh and self.events:
+            before = self.events
+            if resend:  # the message is already in the chat: it isn't one of the last prompts
+                users = [i for i, e in enumerate(before) if e["kind"] == "user"]
+                before = before[:users[-1]] if users else before
+            earlier = history.write_earlier(snap.cwd, before)
+            fresh = continue_note(history.last_prompts(before, LAST_PROMPTS), earlier, snap.cwd)
         args = [
             self.claude, "-p",
             "--output-format", "stream-json", "--verbose", "--include-partial-messages",
-            "--append-system-prompt", snap.context + "\n" + PANEL_NOTE + views_note(),
+            "--append-system-prompt",
+            snap.context + "\n" + PANEL_NOTE + views_note() + i18n.reply_note(self.lang) + fresh,
         ]
-        resend = files is not None
         if not resend:
             files, self.attached = self.attached, []
-        extra = attachments.folders(files) + [VIEWS_DIR]
+        extra = attachments.folders(files) + [VIEWS_DIR] + ([os.path.dirname(earlier)] if earlier else [])
         for d in config.work_dirs() + [f for f in extra if f not in config.work_dirs()]:
             args += ["--add-dir", d]
-        if self.session_id:
+        if self.session_id and not fresh:
             args += ["--resume", self.session_id]
+        self.fresh = False
         if self.model:
             args += ["--model", self.model]
         args += ["--effort", self.effort]
         args += ["--allowedTools", ",".join(ALLOWED_TOOLS)]
-        args += ["--disallowedTools", ",".join(DISALLOWED_TOOLS)]
+        args += ["--disallowedTools", ",".join(DISALLOWED_TOOLS + install_denies())]
 
         if not resend:
             self.say("user", text=text, files=[os.path.basename(p) for p in files])
             self.emit_attached()
             self.save_chat()
-        self.retry = (text, files) if self.session_id else None
+        self.retry = (text, files) if self.session_id and not fresh else None
         report.note_event("send", self.source.editor)
         self.watched = {p: os.path.getmtime(p) for p in snap.watch if os.path.isfile(p)}
         self.started = time.time()
@@ -1078,15 +1153,17 @@ class ClaudePanel(wx.Frame):
                     if isinstance(detail, list):
                         detail = " ".join(b.get("text", "") for b in detail if isinstance(b, dict))
                     detail = str(detail)[:200]
-                self.say("tool_done", id=block.get("tool_use_id"), error=failed, text=detail)
                 name, image = self.image_reads.pop(block.get("tool_use_id"), ("tool", ""))
+                slip = failed and name in OWN_TOOLS
+                self.say("tool_done", id=block.get("tool_use_id"), error=failed and not slip,
+                         **({"slip": True} if slip else {}), text=detail)
                 written = self.review_writes.pop(block.get("tool_use_id"), None)
                 if written and not failed:
                     self.review_md = written
                 plan_path = self.plan_writes.pop(block.get("tool_use_id"), None)
                 if plan_path and not failed:
                     self.show_plan(plan_path)
-                report.note_event("tool", f"{name} {'error' if failed else 'ok'}")
+                report.note_event("tool", f"{name} {'slip' if slip else 'error' if failed else 'ok'}")
                 if image and not failed and os.path.splitext(image)[1].lower() in IMAGE_TYPES:
                     self.show_image(image)
                 if not self.image_reads:  # every tool of this step is done
@@ -1119,6 +1196,10 @@ class ClaudePanel(wx.Frame):
                       + (f" · {', '.join(used)} · {self.effort} effort" if used else ""))
             text, tip = usage.summary(self.limits, tokens, window)
             self.emit("usage", text=text, tip=tip)
+            if tokens > FRESH_AFTER_TOKENS and not msg.get("is_error"):
+                self.fresh = True
+                self.emit("note", level="info", text="This chat got long. To save tokens, your next "
+                          "message continues it with only your last prompts and the project.")
 
     def set_activity(self, phase, name=""):
         """Tell the page what Claude is doing: on a change, and every ALIVE_EVERY seconds
@@ -1181,8 +1262,9 @@ class ClaudePanel(wx.Frame):
         if self.stale_session and self.retry:
             text, files = self.retry
             self.session_id = None
+            self.fresh = True
             self.emit("note", level="info", text="Claude Code no longer has the earlier conversation "
-                                                 "(it deletes old chats), so this starts a new one.")
+                      "(it deletes old chats), so this continues it from your last prompts.")
             self.launch(text, files)
             if self.proc:
                 return

@@ -61,7 +61,7 @@ header {
 .sheet h2 { font-size: 15px; margin: 0 0 8px; }
 .sheet p, .sheet li { font-size: 12.5px; color: var(--text); }
 .sheet p { margin: 0 0 10px; }
-.sheet ul { margin: 0 0 12px; padding-left: 18px; }
+.sheet ul { margin: 0 0 12px; padding-inline-start: 18px; }
 .sheet li { margin-bottom: 7px; }
 .sheet .muted, .sheet .small { color: var(--muted); font-size: 11.5px; }
 .sheet label, .sheet .label { display: block; font-size: 12px; font-weight: 600; margin: 10px 0 4px; }
@@ -119,7 +119,7 @@ header {
 .assistant p { margin: 0 0 8px; }
 .assistant p:last-child { margin-bottom: 0; }
 .assistant h1, .assistant h2, .assistant h3 { font-size: 13.5px; margin: 10px 0 4px; }
-.assistant ul, .assistant ol { margin: 0 0 8px; padding-left: 20px; }
+.assistant ul, .assistant ol { margin: 0 0 8px; padding-inline-start: 20px; }
 .assistant li { margin: 2px 0; }
 .assistant code {
   font-family: "Cascadia Code", Consolas, monospace; font-size: 12px;
@@ -132,10 +132,10 @@ header {
 .assistant a { color: var(--accent); }
 /* a place on the board: click to select it and zoom to it in KiCad */
 a.loc { color: var(--accent); cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
-a.loc::after { content: ' \2316'; font-size: .9em; text-decoration: none; display: inline-block; margin-left: 1px; }
+a.loc::after { content: ' \2316'; font-size: .9em; text-decoration: none; display: inline-block; margin-inline-start: 1px; }
 a.loc:hover { text-decoration-style: solid; }
 .assistant table { border-collapse: collapse; margin: 0 0 8px; font-size: 12px; display: block; overflow-x: auto; }
-.assistant th, .assistant td { border: 1px solid var(--border); padding: 3px 7px; text-align: left; }
+.assistant th, .assistant td { border: 1px solid var(--border); padding: 3px 7px; text-align: start; }
 .assistant th { background: var(--surface-2); }
 
 /* tool activity: one collapsed row per run of steps; opened, a small scrolling box with
@@ -172,7 +172,7 @@ details.steps .list .shot img { max-height: 170px; }
 .err-line:hover > span:last-child { text-decoration: underline; }
 .ti { width: 14px; height: 14px; flex: none; display: grid; place-items: center; }
 .ti.run { border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
-.ti.ok { color: var(--ok); } .ti.bad { color: var(--err); }
+.ti.ok { color: var(--ok); } .ti.bad { color: var(--err); } .ti.slip { color: var(--muted); }
 .ti svg { width: 14px; height: 14px; }
 
 /* answer buttons for Claude's questions */
@@ -185,7 +185,7 @@ details.steps .list .shot img { max-height: 170px; }
 .choices .opts { display: flex; flex-wrap: wrap; gap: 6px; }
 .opt {
   border: 1px solid var(--border); background: var(--bg); border-radius: 8px; padding: 4px 10px;
-  font-size: 12.5px; text-align: left; transition: border-color .15s, background .15s;
+  font-size: 12.5px; text-align: start; transition: border-color .15s, background .15s;
 }
 .opt:hover:not(:disabled) { border-color: var(--accent); }
 .opt.rec { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
@@ -195,7 +195,7 @@ details.steps .list .shot img { max-height: 170px; }
 .opt:disabled { cursor: default; }
 .choices.done .opt:not(.sel) { opacity: .45; }
 .choices .foot { display: flex; align-items: center; gap: 8px; margin-top: 9px; font-size: 11px; color: var(--muted); }
-.choices .foot .btn { margin-left: auto; padding: 2px 10px; font-size: 12px; }
+.choices .foot .btn { margin-inline-start: auto; padding: 2px 10px; font-size: 12px; }
 .choices.done .foot { display: none; }
 .choices .other-in {
   display: none; width: 100%; margin-top: 6px; padding: 5px 9px; font: inherit; font-size: 12.5px;
@@ -209,7 +209,7 @@ details.steps .list .shot img { max-height: 170px; }
 .note.warn { background: color-mix(in srgb, var(--warn) 14%, transparent); color: var(--warn); }
 .note.info { background: var(--surface-2); color: var(--muted); }
 .note button {
-  margin-left: auto; flex: none; border: 1px solid currentColor; background: transparent;
+  margin-inline-start: auto; flex: none; border: 1px solid currentColor; background: transparent;
   border-radius: 6px; padding: 1px 8px; font-size: 11.5px;
 }
 .meta { color: var(--muted); font-size: 11px; margin: -6px 0 14px; }
@@ -244,7 +244,7 @@ body.window .plan .plan-svg { max-height: 72vh; }
 .review .head { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
 .review .head .t { font-weight: 600; font-size: 13px; }
 .review .head .v { font-size: 12px; color: var(--muted); margin-top: 2px; }
-.review .head .btn { margin-left: auto; flex: none; padding: 2px 10px; font-size: 12px; }
+.review .head .btn { margin-inline-start: auto; flex: none; padding: 2px 10px; font-size: 12px; }
 .review .err { font-size: 11.5px; color: var(--warn); padding: 6px 10px 0; }
 .review > .body { padding: 4px 10px 10px; }
 .review .body h1 { display: none; }  /* the title is in the head */
@@ -265,7 +265,7 @@ body.window .plan .plan-svg { max-height: 72vh; }
 .plan .head { display: flex; align-items: center; gap: 8px; padding: 9px 10px 8px; }
 .plan .head .t { font-weight: 600; font-size: 13px; }
 .plan .head .v { font-size: 11.5px; color: var(--muted); }
-.plan .seg { margin-left: auto; display: flex; background: var(--surface-2); border-radius: 7px; padding: 2px; flex: none; }
+.plan .seg { margin-inline-start: auto; display: flex; background: var(--surface-2); border-radius: 7px; padding: 2px; flex: none; }
 .plan .seg button { border: 0; background: transparent; font-size: 11px; padding: 2px 8px; border-radius: 5px; color: var(--muted); }
 .plan .seg button.on { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.15); }
 .plan .canvas {
@@ -300,7 +300,7 @@ body.window .plan .plan-svg { max-height: 72vh; }
 .plan .row .s:hover { color: var(--text); border-color: var(--muted); }
 .plan .moves { margin: 6px 10px 0; padding: 8px 10px; border-radius: 9px; background: color-mix(in srgb, var(--accent) 8%, var(--surface-2)); }
 .plan .moves .mt { font-size: 12px; font-weight: 600; }
-.plan .moves ul { margin: 4px 0 6px; padding-left: 16px; font-size: 11.5px; color: var(--muted); }
+.plan .moves ul { margin: 4px 0 6px; padding-inline-start: 16px; font-size: 11.5px; color: var(--muted); }
 .plan .moves .mb { display: flex; gap: 6px; justify-content: flex-end; }
 .plan .moves .btn { padding: 2px 10px; font-size: 12px; }
 .plan .selbar { display: none; align-items: center; gap: 8px; margin: 6px 8px 0; padding: 6px 8px; border-radius: 9px; background: var(--surface-2); }
@@ -310,9 +310,9 @@ body.window .plan .plan-svg { max-height: 72vh; }
 .plan .selbar .n { font-size: 12.5px; font-weight: 600; }
 .plan .selbar .w { font-size: 11.5px; color: var(--muted); }
 .plan .selbar { flex-wrap: wrap; }
-.plan .selbar .w { margin-right: auto; }
+.plan .selbar .w { margin-inline-end: auto; }
 .plan .selbar .rot { flex-basis: 100%; display: flex; align-items: center; gap: 5px; padding-top: 4px; border-top: 1px solid var(--border); margin-top: 2px; }
-.plan .selbar .rot span { font-size: 11.5px; color: var(--muted); margin-right: 2px; }
+.plan .selbar .rot span { font-size: 11.5px; color: var(--muted); margin-inline-end: 2px; }
 .plan .selbar .rot input { width: 64px; font: inherit; font-size: 12px; padding: 1px 6px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); color: var(--text); }
 .plan .selbar .btn { padding: 2px 10px; font-size: 12px; flex: none; }
 .plan .pill { fill: #0a1222; fill-opacity: .92; stroke-width: .18; }
@@ -322,7 +322,7 @@ body.window .plan .plan-svg { max-height: 72vh; }
 .plan svg.dim .blk:not(.hot):not(.sel) { opacity: .35; }
 .plan svg.dim .link, .plan svg.dim .pill-g { opacity: .5; }
 .plan .legend { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 7px 12px 0; font-size: 11px; color: var(--muted); }
-.plan .legend i { display: inline-block; width: 14px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; border: 1.5px solid var(--muted); }
+.plan .legend i { display: inline-block; width: 14px; height: 9px; border-radius: 2px; margin-inline-end: 5px; vertical-align: -1px; border: 1.5px solid var(--muted); }
 .plan .legend i.b { border-style: dashed; background: repeating-linear-gradient(45deg, transparent 0 2px, color-mix(in srgb, var(--muted) 45%, transparent) 2px 3px); }
 .plan .legend i.g { border: 0; height: 3px; border-radius: 2px; background: #e0a800; width: 16px; vertical-align: 2px; }
 .plan .rows { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; padding: 8px 10px 4px; }
@@ -332,7 +332,7 @@ body.window .plan .plan-svg { max-height: 72vh; }
 .plan .row .dot { flex: none; width: 9px; height: 9px; border-radius: 3px; }
 .plan .row .dot.b { background: transparent !important; border: 1.5px dashed; }
 .plan .row .n { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.plan .row .c { margin-left: auto; flex: none; font-size: 10.5px; color: var(--muted); }
+.plan .row .c { margin-inline-start: auto; flex: none; font-size: 10.5px; color: var(--muted); }
 .plan .row .s { flex: none; font-size: 9.5px; letter-spacing: .04em; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
 .plan .notes { margin: 4px 10px 0; padding: 0 0 0 16px; font-size: 12px; color: var(--text); }
 .plan .notes li { margin: 2px 0; }
@@ -343,11 +343,11 @@ body.window .plan .plan-svg { max-height: 72vh; }
 .typing .row { display: flex; align-items: center; gap: 4px; }
 .typing span { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--muted); animation: blink 1.2s infinite; }
 .typing span:nth-child(2) { animation-delay: .2s; } .typing span:nth-child(3) { animation-delay: .4s; }
-.typing .status { margin-left: 6px; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.typing .status { margin-inline-start: 6px; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .typing.quiet .status { color: var(--warn); }
 /* Claude's thinking: live while it thinks, then kept as a collapsed row */
 .typing .thought-live {
-  margin: 6px 0 0 2px; padding-left: 9px; border-left: 2px solid var(--border);
+  margin: 6px 0 0 2px; padding-inline-start: 9px; border-inline-start: 2px solid var(--border);
   font-size: 12px; line-height: 1.45; color: var(--muted); font-style: italic;
   max-height: 5.8em; overflow: hidden; white-space: pre-wrap;
   display: flex; flex-direction: column; justify-content: flex-end;
@@ -357,16 +357,16 @@ details.thought { margin: 0 0 10px; font-size: 12px; color: var(--muted); }
 details.thought summary { cursor: pointer; list-style: none; user-select: none; }
 details.thought summary::before { content: '▸ '; }
 details.thought[open] summary::before { content: '▾ '; }
-details.thought .body { margin: 6px 0 0 2px; padding-left: 9px; border-left: 2px solid var(--border); font-style: italic; }
+details.thought .body { margin: 6px 0 0 2px; padding-inline-start: 9px; border-inline-start: 2px solid var(--border); font-style: italic; }
 details.thought .body p { margin: 0 0 6px; }
 
 /* empty state */
 #empty { margin: auto 0; padding: 24px 6px; text-align: center; color: var(--muted); }
 #empty .big { font-size: 15px; color: var(--text); font-weight: 600; margin: 10px 0 4px; }
-.chips { display: flex; flex-direction: column; gap: 6px; margin-top: 16px; text-align: left; }
+.chips { display: flex; flex-direction: column; gap: 6px; margin-top: 16px; text-align: start; }
 .chip {
   border: 1px solid var(--border); background: var(--surface); border-radius: 10px; padding: 8px 11px;
-  font-size: 12.5px; text-align: left; transition: border-color .15s, transform .15s;
+  font-size: 12.5px; text-align: start; transition: border-color .15s, transform .15s;
 }
 .chip:hover { border-color: var(--accent); transform: translateY(-1px); }
 
@@ -410,15 +410,18 @@ textarea::placeholder { color: var(--muted); }
 .file-chip button:hover { color: var(--err); }
 .user > div { max-width: 88%; display: flex; flex-direction: column; align-items: flex-end; }
 .user > div .bubble { max-width: 100%; }
-.user .att { font-size: 11px; color: var(--muted); text-align: right; margin-top: 3px; }
+.user .att { font-size: 11px; color: var(--muted); text-align: end; margin-top: 3px; }
 body.dragging .composer { border-color: var(--accent); border-style: dashed; }
 #send svg { width: 16px; height: 16px; }
 .hint {
-  font-size: 10.5px; color: var(--muted); min-width: 0; text-align: right;
+  font-size: 10.5px; color: var(--muted); min-width: 0; text-align: end;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .below { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 7px; }
+.pickers { display: flex; gap: 6px; flex: none; }
 .picker { position: relative; flex: none; }
+.lang-menu { min-width: 190px; max-height: 320px; overflow-y: auto; }
+.lang-menu .model-opt .d { font-size: 10.5px; }
 .model-btn {
   display: flex; align-items: center; gap: 4px; border: 1px solid var(--border); background: var(--surface);
   border-radius: 999px; padding: 2px 8px 2px 10px; font-size: 11.5px; color: var(--muted);
@@ -427,19 +430,23 @@ body.dragging .composer { border-color: var(--accent); border-style: dashed; }
 .model-btn:hover, .model-btn.open { color: var(--text); border-color: var(--accent); }
 .model-btn svg { width: 12px; height: 12px; }
 .model-menu {
-  position: absolute; bottom: calc(100% + 6px); left: 0; min-width: 220px; z-index: 10;
+  position: absolute; bottom: calc(100% + 6px); inset-inline-start: 0; min-width: 220px; z-index: 10;
   background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
   box-shadow: var(--shadow); padding: 4px; display: none; animation: rise .12s ease-out;
 }
 .model-menu.open { display: block; }
 .model-opt {
-  display: block; width: 100%; text-align: left; border: 0; background: transparent;
+  display: block; width: 100%; text-align: start; border: 0; background: transparent;
   border-radius: 8px; padding: 6px 10px;
 }
 .model-opt:hover { background: var(--surface-2); }
 .model-opt .n { display: flex; justify-content: space-between; font-size: 12.5px; font-weight: 500; }
 .model-opt .d { font-size: 11px; color: var(--muted); }
 .model-opt.sel .n::after { content: "✓"; color: var(--accent); }
+
+/* Right-to-left languages (i18n.RTL): code, paths and diagnostics still read left to right. */
+pre { direction: ltr; text-align: left; }
+code { unicode-bidi: isolate; }
 
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes pulse { 50% { opacity: .35; } }
@@ -452,12 +459,12 @@ body.dragging .composer { border-color: var(--accent); border-style: dashed; }
   <div class="brand"><svg xmlns="http://www.w3.org/2000/svg" viewBox="210 404 153 152" aria-label="METU Power Lab"><path fill="#ED1C24" d="M304.036,549.729c-5.554,1.367-11.355,2.107-17.321,2.107c-40.121,0-72.63-32.538-72.63-72.631 c0-31.335,19.839-58.044,47.616-68.224c10.208,21.84,24.329,61.138,24.329,61.138l-29.802,13.024L304.036,549.729z"/><path fill="currentColor" d="M301.876,408.163c32.839,6.979,57.468,36.124,57.468,71.043c0,31.937-20.608,59.059-49.26,68.773l-22.959-55.338 c0,0,32.619-10.507,32.619-12.915C319.744,477.893,307.759,430.987,301.876,408.163L301.876,408.163z"/></svg></div>
   <div>
     <div class="title">PowerLab Assistant</div>
-    <div class="status"><span class="dot"></span><span id="status">Ready</span><span class="org">· uses Claude Code</span></div>
+    <div class="status"><span class="dot"></span><span id="status">Ready</span><span class="org" data-t>· uses Claude Code</span></div>
   </div>
   <div class="spacer"></div>
-  <button class="icon-btn" title="Report a problem" onclick="post({type:'report'})"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2l1.9 1.9M16 2l-1.9 1.9M9 7.1V6a3 3 0 0 1 6 0v1.1"/><path d="M12 20c-3.3 0-6-2.7-6-6v-3a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v3c0 3.3-2.7 6-6 6z"/><path d="M12 20v-9M6.5 9C4.6 8.8 3 7.1 3 5M6 13H2M3 21c0-2.1 1.7-3.9 3.8-4M21 5c0 2.1-1.6 3.8-3.5 4M22 13h-4M17.2 17c2.1.1 3.8 1.9 3.8 4"/></svg></button>
-  <button class="icon-btn" title="New chat" onclick="post({type:'new'})"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg></button>
-  <button class="icon-btn" title="Open this chat in a terminal" onclick="post({type:'terminal'})"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M13 15h4"/></svg></button>
+  <button class="icon-btn" data-t-title title="Report a problem" onclick="post({type:'report'})"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2l1.9 1.9M16 2l-1.9 1.9M9 7.1V6a3 3 0 0 1 6 0v1.1"/><path d="M12 20c-3.3 0-6-2.7-6-6v-3a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v3c0 3.3-2.7 6-6 6z"/><path d="M12 20v-9M6.5 9C4.6 8.8 3 7.1 3 5M6 13H2M3 21c0-2.1 1.7-3.9 3.8-4M21 5c0 2.1-1.6 3.8-3.5 4M22 13h-4M17.2 17c2.1.1 3.8 1.9 3.8 4"/></svg></button>
+  <button class="icon-btn" data-t-title title="New chat" onclick="post({type:'new'})"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg></button>
+  <button class="icon-btn" data-t-title title="Open this chat in a terminal" onclick="post({type:'terminal'})"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M13 15h4"/></svg></button>
 </header>
 <div id="updbar" class="libbar"></div>
 <div id="libbar" class="libbar"></div>
@@ -465,8 +472,8 @@ body.dragging .composer { border-color: var(--accent); border-style: dashed; }
 <div id="log">
   <div id="empty">
     <div class="lockup"><div class="lab"><svg xmlns="http://www.w3.org/2000/svg" viewBox="210 404 153 152" aria-label="METU Power Lab"><path fill="#ED1C24" d="M304.036,549.729c-5.554,1.367-11.355,2.107-17.321,2.107c-40.121,0-72.63-32.538-72.63-72.631 c0-31.335,19.839-58.044,47.616-68.224c10.208,21.84,24.329,61.138,24.329,61.138l-29.802,13.024L304.036,549.729z"/><path fill="currentColor" d="M301.876,408.163c32.839,6.979,57.468,36.124,57.468,71.043c0,31.937-20.608,59.059-49.26,68.773l-22.959-55.338 c0,0,32.619-10.507,32.619-12.915C319.744,477.893,307.759,430.987,301.876,408.163L301.876,408.163z"/></svg></div></div>
-    <div class="big">What should we build?</div>
-    <div>Short commands work best. Claude can use the KiCad tools on this project.</div>
+    <div class="big" data-t>What should we build?</div>
+    <div data-t>Short commands work best. Claude can use the KiCad tools on this project.</div>
     <div class="chips"></div>
   </div>
 </div>
@@ -475,18 +482,24 @@ body.dragging .composer { border-color: var(--accent); border-style: dashed; }
   <div class="context" id="context"></div>
   <div class="files-row" id="files"></div>
   <div class="composer">
-    <button id="attach" class="attach-btn" title="Attach files (you can also paste or drop them here)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></button>
-    <textarea id="input" rows="1" placeholder="Ask Claude to do something…"></textarea>
+    <button id="attach" class="attach-btn" data-t-title title="Attach files (you can also paste or drop them here)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></button>
+    <textarea id="input" rows="1" data-t-ph placeholder="Ask Claude to do something…"></textarea>
     <button id="send" title="Send (Enter)" disabled></button>
   </div>
   <div class="below">
+    <div class="pickers">
     <div class="picker">
-      <button id="model-btn" class="model-btn" title="Choose the Claude model"></button>
+      <button id="model-btn" class="model-btn" data-t-title title="Choose the Claude model"></button>
       <div id="model-menu" class="model-menu"></div>
     </div>
-    <div class="hint" id="hint" title="Enter to send · Shift+Enter for a new line">Enter to send · Shift+Enter new line</div>
+    <div class="picker">
+      <button id="lang-btn" class="model-btn" data-t-title title="Language of the panel and of Claude's replies"></button>
+      <div id="lang-menu" class="model-menu lang-menu"></div>
+    </div>
+    </div>
+    <div class="hint" id="hint" data-t data-t-title title="Enter to send · Shift+Enter for a new line">Enter to send · Shift+Enter new line</div>
   </div>
-  <div class="disclaimer">AI can make mistakes. Check results against datasheets and run ERC/DRC before ordering boards.</div>
+  <div class="disclaimer" data-t>AI can make mistakes. Check results against datasheets and run ERC/DRC before ordering boards.</div>
 </footer>
 
 <div id="overlay" class="overlay"><div class="sheet" id="sheet"></div></div>
@@ -508,6 +521,51 @@ let busy = false, toolGroup = null, typing = null;
 
 function post(msg) { window.wx && window.wx.postMessage(JSON.stringify(msg)); }
 
+// The panel's language (i18n.py): its text from lang/<code>.json, English where a text has
+// none. Keys are the English text with {name} for the parts filled in; a text the panel (or
+// panel.py) has already filled in is matched against those keys too.
+let STRINGS = {}, PATTERNS = [];
+function t(s, vals) {
+  let out = STRINGS[s];
+  if (out == null) {
+    out = s;
+    for (const [re, names, to] of PATTERNS) {
+      const m = re.exec(s);
+      if (!m) continue;
+      out = to;
+      vals = Object.assign(Object.fromEntries(names.map((n, i) => [n, m[i + 1]])), vals);
+      break;
+    }
+  }
+  return vals ? out.replace(/\{(\w+)\}/g, (all, k) => (k in vals ? vals[k] : all)) : out;
+}
+function setStrings(table, dir) {
+  STRINGS = table || {};
+  PATTERNS = Object.keys(STRINGS).filter(k => /\{\w+\}/.test(k)).map(k => {
+    const names = [];
+    const src = k.split(/(\{\w+\})/).map(p => {
+      const name = /^\{(\w+)\}$/.exec(p);
+      if (name) { names.push(name[1]); return '([^]+?)'; }
+      return p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }).join('');
+    return [new RegExp('^' + src + '$'), names, STRINGS[k]];
+  });
+  document.documentElement.dir = dir || 'ltr';
+  // The page's own text, kept in English in data-en so a switch can translate it again.
+  document.querySelectorAll('[data-t]').forEach(el => {
+    if (el.dataset.en == null) el.dataset.en = el.textContent;
+    el.textContent = t(el.dataset.en);
+  });
+  document.querySelectorAll('[data-t-title]').forEach(el => {
+    if (el.dataset.enTitle == null) el.dataset.enTitle = el.title;
+    el.title = t(el.dataset.enTitle);
+  });
+  document.querySelectorAll('[data-t-ph]').forEach(el => {
+    if (el.dataset.enPh == null) el.dataset.enPh = el.placeholder;
+    el.placeholder = t(el.dataset.enPh);
+  });
+}
+
 function esc(s) { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
 
 function inline(s) {
@@ -515,7 +573,7 @@ function inline(s) {
     .replace(/`([^`]+)`/g, '<code>$1</code>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/(^|[^*])\*([^*\s][^*]*)\*/g, '$1<em>$2</em>')
-    .replace(/\[([^\]]+)\]\(kicad:([^)\s]+)\)/g, '<a class="loc" data-loc="$2" title="Show in KiCad">$1</a>')
+    .replace(/\[([^\]]+)\]\(kicad:([^)\s]+)\)/g, '<a class="loc" data-loc="$2" title="' + esc(t('Show in KiCad')) + '">$1</a>')
     .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2">$1</a>');
 }
 
@@ -574,9 +632,9 @@ function planCard(e, state) {
   card._state = state;
   const head = div('head');
   const words = div('');
-  words.append(div('t', esc(e.title || 'Block plan')));
+  words.append(div('t', esc(e.title || t('Block plan'))));
   const sides = new Set((e.blocks || []).map(b => b.side));
-  words.append(div('v', `${(e.blocks || []).length} blocks · click to select in KiCad · drag to move`));
+  words.append(div('v', esc(t('{n} blocks · click to select in KiCad · drag to move', { n: (e.blocks || []).length }))));
   head.append(words);
   card.append(head);
   if (e.error) { card.append(div('err', esc(e.error))); return card; }
@@ -591,7 +649,7 @@ function planCard(e, state) {
   };
   if (sides.size > 1 && svg) {
     const seg = div('seg');
-    [['both', 'Both'], ['top', 'Top'], ['bottom', 'Bottom']].forEach(([k, label]) => {
+    [['both', t('Both')], ['top', t('Top')], ['bottom', t('Bottom')]].forEach(([k, label]) => {
       const b = document.createElement('button');
       b.textContent = label; b.className = k === state.view ? 'on' : '';
       b.onclick = () => { seg.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); setView(k); };
@@ -605,8 +663,8 @@ function planCard(e, state) {
     post({ type: 'plan_move', path: e.path, moves: [move], undo: !!undo });
   };
   const legend = div('legend');
-  legend.innerHTML = '<span><i></i>top side</span><span><i class="b"></i>bottom side</span>' +
-    ((e.links || []).some(l => l.kind === 'gate') ? '<span><i class="g"></i>gate drive</span>' : '');
+  legend.innerHTML = `<span><i></i>${esc(t('top side'))}</span><span><i class="b"></i>${esc(t('bottom side'))}</span>` +
+    ((e.links || []).some(l => l.kind === 'gate') ? `<span><i class="g"></i>${esc(t('gate drive'))}</span>` : '');
   card.append(legend);
   const rows = div('rows');
   const parts = {};  // block id -> [svg group, list row]
@@ -618,13 +676,13 @@ function planCard(e, state) {
     const n = div('n'); n.textContent = b.name; n.title = b.detail || b.name;
     const s = document.createElement('button');
     s.className = 's'; s.textContent = b.side === 'bottom' ? 'BOT' : 'TOP';
-    s.title = `Move ${b.name} to the ${b.side === 'bottom' ? 'top' : 'bottom'} side`;
+    s.title = t(b.side === 'bottom' ? 'Move {name} to the top side' : 'Move {name} to the bottom side', { name: b.name });
     s.onclick = ev => {
       ev.stopPropagation();
       sendMove({ id: b.id, side: b.side === 'bottom' ? 'top' : 'bottom', prev: b.side });
     };
     const silk = b.kind === 'text' || b.kind === 'logo';  // board text and logos, not parts
-    const c = div('c'); c.textContent = b.count && !silk ? `${b.count} part${b.count > 1 ? 's' : ''}` : silk ? 'silkscreen' : '';
+    const c = div('c'); c.textContent = b.count && !silk ? t(b.count > 1 ? '{n} parts' : '{n} part', { n: b.count }) : silk ? t('silkscreen') : '';
     r.append(dot, n, s, c);
     rows.append(r);
     (parts[b.id] = parts[b.id] || [null, null])[1] = r;
@@ -652,29 +710,29 @@ function planCard(e, state) {
     const dot = div('dot' + (b.side === 'bottom' ? ' b' : ''));
     dot.style.background = b.colour; dot.style.borderColor = b.colour;
     const n = div('n'); n.textContent = b.name;
-    const where = div('w'); where.textContent = `${b.side} side` + (b.count ? ` · ${b.count} parts` : '');
+    const where = div('w'); where.textContent = t(b.side === 'bottom' ? 'bottom side' : 'top side') + (b.count ? ' · ' + t(b.count > 1 ? '{n} parts' : '{n} part', { n: b.count }) : '');
     const flip = document.createElement('button');
-    flip.className = 'btn'; flip.textContent = other === 'bottom' ? 'Move to bottom side ↓' : 'Move to top side ↑';
+    flip.className = 'btn'; flip.textContent = t(other === 'bottom' ? 'Move to bottom side ↓' : 'Move to top side ↑');
     flip.onclick = () => sendMove({ id: b.id, side: other, prev: b.side });
     selbar.append(dot, n, where, flip);
     const g = parts[id] && parts[id][0];
     if (g && g.dataset.turn) {
       // Boxes and polygons turn: 90° and 45° first (§3.2), then any angle typed in.
       const rot = div('rot');
-      const lab = document.createElement('span'); lab.textContent = 'Rotate';
+      const lab = document.createElement('span'); lab.textContent = t('Rotate');
       rot.append(lab);
       [[90, '↻ 90°'], [45, '↻ 45°'], [-45, '↺ 45°']].forEach(([a, label]) => {
         const bt = document.createElement('button');
         bt.className = 'btn'; bt.textContent = label;
-        bt.title = `Turn ${b.name} ${Math.abs(a)}° ${a > 0 ? 'clockwise' : 'counter-clockwise'}`;
+        bt.title = t(a > 0 ? 'Turn {name} {a}° clockwise' : 'Turn {name} {a}° counter-clockwise', { name: b.name, a: Math.abs(a) });
         bt.onclick = () => sendMove({ id: b.id, rot: a });
         rot.append(bt);
       });
       const inp = document.createElement('input');
-      inp.type = 'number'; inp.min = '-360'; inp.max = '360'; inp.step = '0.5'; inp.placeholder = 'any °';
-      inp.title = 'Any angle in degrees: positive turns clockwise, negative counter-clockwise';
+      inp.type = 'number'; inp.min = '-360'; inp.max = '360'; inp.step = '0.5'; inp.placeholder = t('any °');
+      inp.title = t('Any angle in degrees: positive turns clockwise, negative counter-clockwise');
       const go = document.createElement('button');
-      go.className = 'btn'; go.textContent = 'Turn';
+      go.className = 'btn'; go.textContent = t('Turn');
       go.onclick = () => {
         const a = parseFloat(inp.value);
         if (isFinite(a) && a && Math.abs(a) <= 360) sendMove({ id: b.id, rot: a });
@@ -839,13 +897,13 @@ function planCard(e, state) {
   card.append(rows);
   if (state.moves.length) {
     const bar = div('moves');
-    bar.append(div('mt', `Your moves (${state.moves.length})`));
+    bar.append(div('mt', esc(t('Your moves ({n})', { n: state.moves.length }))));
     const ul = document.createElement('ul');
     state.moves.forEach(m => m.lines.forEach(t => { const li = document.createElement('li'); li.textContent = t; ul.append(li); }));
     bar.append(ul);
     const btns = div('mb');
     const undo = document.createElement('button');
-    undo.className = 'btn'; undo.textContent = 'Undo';
+    undo.className = 'btn'; undo.textContent = t('Undo');
     undo.onclick = () => {
       const last = state.moves.pop();
       if (!last) return;
@@ -855,8 +913,8 @@ function planCard(e, state) {
       sendMove(back, true);
     };
     const go = document.createElement('button');
-    go.className = 'btn primary'; go.textContent = 'Send moves to Claude';
-    go.disabled = busy; go.title = busy ? 'Claude is still working' : '';
+    go.className = 'btn primary'; go.textContent = t('Send moves to Claude');
+    go.disabled = busy; go.title = busy ? t('Claude is still working') : '';
     go.onclick = () => {
       if (busy) return;
       const lines = state.moves.flatMap(m => m.lines);
@@ -875,9 +933,8 @@ function planCard(e, state) {
     e.notes.forEach(t => { const li = document.createElement('li'); li.innerHTML = inline(t); ul.append(li); });
     card.append(ul);
   }
-  card.append(div('hint', 'Hover a block to see it, click to select its parts in KiCad, drag to move it ' +
-    '(it snaps to the board\'s edges, their middles and the centre; hold Alt to drag freely), ' +
-    'or click TOP/BOT to switch its side.'));
+  card.append(div('hint', esc(t("Hover a block to see it, click to select its parts in KiCad, drag to move it " +
+    "(it snaps to the board's edges, their middles and the centre; hold Alt to drag freely), or click TOP/BOT to switch its side."))));
   return card;
 }
 
@@ -888,12 +945,12 @@ function reviewCard(e) {
   const card = div('review');
   const head = div('head');
   const words = div('');
-  words.append(div('t', esc(e.title || 'Design review')));
+  words.append(div('t', esc(e.title || t('Design review'))));
   if (e.verdict) words.append(div('v', esc(e.verdict)));
   head.append(words);
   const file = e.pdf || e.html;
   if (file) {
-    const b = button(e.pdf ? 'Open PDF' : 'Open in browser', 'primary', () => post({ type: 'open', path: file }));
+    const b = button(t(e.pdf ? 'Open PDF' : 'Open in browser'), 'primary', () => post({ type: 'open', path: file }));
     b.title = file;
     head.append(b);
   }
@@ -914,16 +971,16 @@ function docCard(e, kind) {
   card.dataset.path = e.path || '';
   card.append(div('ic', kind === 'plan' ? ICON_PLAN : ICON_REVIEW));
   const words = div('words');
-  words.append(div('t', esc(e.title || (kind === 'plan' ? 'Block plan' : 'Design review'))));
+  words.append(div('t', esc(e.title || t(kind === 'plan' ? 'Block plan' : 'Design review'))));
   const sub = kind === 'plan'
-    ? e.error || `${(e.blocks || []).length} blocks · open it to see them and drag them`
-    : e.verdict || 'The full review, with its views';
+    ? e.error || t('{n} blocks · open it to see them and drag them', { n: (e.blocks || []).length })
+    : e.verdict || t('The full review, with its views');
   const v = words.appendChild(div('v', esc(sub)));
   v.title = sub;
   card.append(words);
   const file = kind === 'review' && (e.pdf || e.html);
   if (file) card.append(button(e.pdf ? 'PDF' : 'HTML', '', () => post({ type: 'open', path: file })));
-  card.append(button('Open', 'primary', () => post({ type: 'open_card', card: kind, path: e.path })));
+  card.append(button(t('Open'), 'primary', () => post({ type: 'open_card', card: kind, path: e.path })));
   return card;
 }
 
@@ -948,12 +1005,12 @@ function refreshSteps(box) {
   const ti = box.querySelector('summary .ti');
   const icon = running.length ? 'run' : rows.length ? state(rows[rows.length - 1]) : 'ok';
   ti.className = 'ti ' + icon;
-  ti.innerHTML = icon === 'ok' ? ICON_OK : icon === 'bad' ? ICON_BAD : icon ? '' : '·';
+  ti.innerHTML = icon === 'ok' ? ICON_OK : icon === 'bad' || icon === 'slip' ? ICON_BAD : icon ? '' : '·';
   const counts = [];
-  if (rows.length) counts.push(`${rows.length} step${rows.length > 1 ? 's' : ''}`);
-  if (views) counts.push(`${views} view${views > 1 ? 's' : ''}`);
+  if (rows.length) counts.push(t(rows.length > 1 ? '{n} steps' : '{n} step', { n: rows.length }));
+  if (views) counts.push(t(views > 1 ? '{n} views' : '{n} view', { n: views }));
   const n = box.querySelector('summary .n');
-  n.innerHTML = esc(counts.join(' · ')) + (failed.length ? ` · <span class="bad">${failed.length} failed</span>` : '');
+  n.innerHTML = esc(counts.join(' · ')) + (failed.length ? ` · <span class="bad">${esc(t('{n} failed', { n: failed.length }))}</span>` : '');
   const name = r => r.querySelector('.name').textContent;
   const last = running[running.length - 1];
   const sum = last ? `${name(last)} ${last.querySelector('.detail').textContent}`.trim() + '…'
@@ -976,9 +1033,9 @@ function setBusy(v) {
   busy = v;
   document.body.classList.toggle('busy', v);
   $('header').classList.toggle('busy', v);
-  $('status').textContent = v ? 'Working…' : 'Ready';
+  $('status').textContent = t(v ? 'Working…' : 'Ready');
   send.innerHTML = v ? ICON_STOP : ICON_SEND;
-  send.title = v ? 'Stop' : 'Send (Enter)';
+  send.title = t(v ? 'Stop' : 'Send (Enter)');
   updateSend();
   if (v && !typing && !WINDOW) {
     typing = div('typing', '<div class="row"><span></span><span></span><span></span><div class="status"></div></div>'
@@ -1017,9 +1074,9 @@ function showActivity() {
   const quiet = activity.phase !== 'tool' && quietMs >= QUIET_MS;
   typing.classList.toggle('quiet', quiet);
   typing.querySelector('.status').textContent = quiet
-    ? `Nothing from Claude for ${Math.floor(quietMs / 60000)} min. If it stays quiet, press Stop, then send “continue”.`
-    : `${ACTIVITY[activity.phase] || 'Working'}${activity.name ? ' ' + activity.name : ''} · ${clock(now - activity.since)}`
-      + (activity.tokens ? ` · ${activity.tokens.toLocaleString('en-US')} tokens` : '');
+    ? t('Nothing from Claude for {n} min. If it stays quiet, press Stop, then send “continue”.', { n: Math.floor(quietMs / 60000) })
+    : `${t(ACTIVITY[activity.phase] || 'Working')}${activity.name ? ' ' + activity.name : ''} · ${clock(now - activity.since)}`
+      + (activity.tokens ? ' · ' + t('{n} tokens', { n: activity.tokens.toLocaleString('en-US') }) : '');
 }
 setInterval(showActivity, 1000);
 
@@ -1032,7 +1089,7 @@ function renderFiles(names) {
   names.forEach((name, index) => {
     const chip = div('file-chip');
     const label = document.createElement('span'); label.textContent = '📎 ' + name; label.title = name;
-    const x = document.createElement('button'); x.textContent = '×'; x.title = 'Remove';
+    const x = document.createElement('button'); x.textContent = '×'; x.title = t('Remove');
     x.onclick = () => post({ type: 'attach_remove', index });
     chip.append(label, x); row.appendChild(chip);
   });
@@ -1042,7 +1099,7 @@ function renderFiles(names) {
 const MAX_ATTACH = 20 * 1024 * 1024;
 function attachFile(file) {
   if (file.size > MAX_ATTACH) {
-    app.event({ kind: 'note', level: 'warn', text: `${file.name} is larger than 20 MB, so it wasn't attached.` });
+    app.event({ kind: 'note', level: 'warn', text: t('{name} is larger than 20 MB, so it wasn\'t attached.', { name: file.name }) });
     return;
   }
   const reader = new FileReader();
@@ -1057,7 +1114,7 @@ const app = {
         toolGroup = null;
         closeChoices();
         const files = (e.files || []).length ? `<div class="att">📎 ${esc(e.files.join(', '))}</div>` : '';
-        add(div('msg user', `<div><div class="bubble">${esc(e.text)}</div>${files}</div>`)); break;
+        add(div('msg user', `<div><div class="bubble" dir="auto">${esc(e.text)}</div>${files}</div>`)); break;
       }
       case 'attachments': renderFiles(e.items || []); break;
       case 'usage': {
@@ -1067,7 +1124,7 @@ const app = {
       }
       case 'text':
         toolGroup = null;
-        if (e.text) add(div('msg assistant', markdown(e.text)));
+        if (e.text) add(div('msg assistant', markdown(e.text))).dir = 'auto';
         if ((e.choices || []).length) add(choicesCard(e.choices));
         break;
       case 'tool': {
@@ -1079,17 +1136,20 @@ const app = {
         const row = document.getElementById('tool-' + e.id);
         if (!row) break;
         const ti = row.querySelector('.ti');
-        ti.className = 'ti ' + (e.error ? 'bad' : 'ok');
-        ti.innerHTML = e.error ? ICON_BAD : ICON_OK;
+        // A slip (Claude's own file or search tool refused, e.g. Edit before Read) is
+        // retried in the next step: grey, not a failure, its error on hover.
+        ti.className = 'ti ' + (e.error ? 'bad' : e.slip ? 'slip' : 'ok');
+        ti.innerHTML = e.error || e.slip ? ICON_BAD : ICON_OK;
         if (e.error) row.dataset.error = e.text || 'failed';
+        if (e.slip) row.title = t('Retried: {error}', { error: e.text || 'refused' });
         refreshSteps(row.closest('details.steps'));
         break;
       }
       case 'note': {
-        const n = add(div('note ' + (e.level || 'info'), `<span>${esc(e.text)}</span>`));
+        const n = add(div('note ' + (e.level || 'info'), `<span>${esc(t(e.text))}</span>`));
         if (e.action) {
           const b = document.createElement('button');
-          b.textContent = e.action.label; b.onclick = () => post({ type: e.action.type, id: e.action.id });
+          b.textContent = t(e.action.label); b.onclick = () => post({ type: e.action.type, id: e.action.id });
           n.appendChild(b);
         }
         toolGroup = null; break;
@@ -1098,7 +1158,7 @@ const app = {
       case 'image': {
         const fig = div('shot');
         const img = document.createElement('img');
-        img.src = e.src; img.alt = e.name; img.title = 'Open ' + e.name;
+        img.src = e.src; img.alt = e.name; img.title = t('Open {name}', { name: e.name });
         img.onclick = () => post({ type: 'open', path: e.path });
         const cap = div('cap'); cap.textContent = e.name;
         fig.append(img, cap);
@@ -1149,7 +1209,7 @@ const app = {
         const d = document.createElement('details');
         d.className = 'thought';
         const s = document.createElement('summary');
-        s.textContent = e.secs >= 1 ? `Thought for ${clock(e.secs * 1000)}` : 'Thought';
+        s.textContent = e.secs >= 1 ? t('Thought for {time}', { time: clock(e.secs * 1000) }) : t('Thought');
         d.append(s, div('body', markdown(e.text)));
         add(d); toolGroup = null; break;
       }
@@ -1167,6 +1227,11 @@ const app = {
       case 'share_sheet': showShare(e); break;
       case 'library': renderLibrary(e); break;
       case 'update': renderUpdate(e); break;
+      case 'lang':
+        langs = e.items || langs; currentLang = e.current;
+        setStrings(e.strings, e.dir);
+        renderLangs(); renderModels(); setBusy(busy);
+        break;
       case 'models': models = e.items; currentModel = e.current; renderModels(); break;
       case 'model': currentModel = e.current; renderModels(); break;
       case 'suggestions': {
@@ -1175,7 +1240,7 @@ const app = {
         box.innerHTML = '';
         for (const s of e.items) {
           const b = document.createElement('button');
-          b.className = 'chip'; b.dataset.text = s.text; b.textContent = s.label;
+          b.className = 'chip'; b.dataset.text = t(s.text); b.textContent = t(s.label);
           wireChip(b); box.appendChild(b);
         }
         break;
@@ -1199,7 +1264,7 @@ function closeChoices() {
 function choicesCard(questions) {
   const card = div('choices'), answers = questions.map(() => () => null);
   const single = questions.length === 1;
-  const sendBtn = button(single ? 'Send' : 'Send answers', 'primary', () => answer());
+  const sendBtn = button(t(single ? 'Send' : 'Send answers'), 'primary', () => answer());
   const ready = () => answers.every(a => a());
   const refresh = () => { sendBtn.disabled = !ready(); };
   function answer() {
@@ -1211,17 +1276,17 @@ function choicesCard(questions) {
     closeChoices();
   }
   questions.forEach((q, qi) => {
-    card.appendChild(div('q')).textContent = q.question;
+    const qd = card.appendChild(div('q')); qd.textContent = q.question; qd.dir = 'auto';
     const opts = card.appendChild(div('opts'));
     const other = document.createElement('input');
-    other.className = 'other-in'; other.placeholder = 'Your answer…';
+    other.className = 'other-in'; other.placeholder = t('Your answer…'); other.dir = 'auto';
     const select = b => opts.querySelectorAll('.opt').forEach(x => x.classList.toggle('sel', x === b));
     q.options.filter(o => !OTHER.test(o)).forEach(o => {
       const label = o.replace(RECOMMENDED, ''), rec = RECOMMENDED.test(o);
       const b = document.createElement('button');
       b.className = 'opt' + (rec ? ' rec' : '');
       b.textContent = label;
-      if (rec) b.appendChild(div('tag')).textContent = ' · Recommended';
+      if (rec) b.appendChild(div('tag')).textContent = ' · ' + t('Recommended');
       b.onclick = () => {
         if (busy) return;
         select(b); other.classList.remove('open');
@@ -1231,7 +1296,7 @@ function choicesCard(questions) {
       opts.appendChild(b);
     });
     const ob = document.createElement('button');
-    ob.className = 'opt other'; ob.textContent = 'Other…';
+    ob.className = 'opt other'; ob.textContent = t('Other…');
     ob.onclick = () => {
       if (busy) return;
       select(ob); other.classList.add('open'); other.focus();
@@ -1245,7 +1310,7 @@ function choicesCard(questions) {
     card.appendChild(other);
   });
   const foot = card.appendChild(div('foot'));
-  foot.appendChild(document.createElement('span')).textContent = 'Other… lets you write your own answer.';
+  foot.appendChild(document.createElement('span')).textContent = t('Other… lets you write your own answer.');
   sendBtn.disabled = true;
   sendBtn.hidden = single;  // a single question sends on click, or here after Other…
   foot.appendChild(sendBtn);
@@ -1302,26 +1367,26 @@ overlay.addEventListener('click', e => { if (e.target === overlay && !sheetLocke
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && !sheetLocked && overlay.classList.contains('open')) closeSheet(); });
 
 function showNotice() {
-  openSheet(`<h2>Before you start</h2>
+  openSheet(`<h2>${t('Before you start')}</h2>
     <ul>
-      <li><b>AI makes mistakes.</b> Claude can get pinouts, footprints, ratings or connections wrong and still sound sure. Check its work against datasheets and run ERC/DRC before you order a board.</li>
-      <li><b>It edits your files.</b> Claude changes schematic, board and library files directly. Keep your projects in git or keep backups.</li>
-      <li><b>Your data goes to Anthropic.</b> Your messages and the project files Claude reads are processed by Anthropic under your own Claude account and its terms.</li>
-      <li><b>Nothing goes to METU Power Lab</b> unless you send it: library pull requests and problem reports, which you review before submitting. The panel has no analytics.</li>
-      <li><b>Confidential work:</b> don't use it on designs your NDA or employer doesn't allow you to share with an AI service.</li>
+      <li>${t('<b>AI makes mistakes.</b> Claude can get pinouts, footprints, ratings or connections wrong and still sound sure. Check its work against datasheets and run ERC/DRC before you order a board.')}</li>
+      <li>${t('<b>It edits your files.</b> Claude changes schematic, board and library files directly. Keep your projects in git or keep backups.')}</li>
+      <li>${t('<b>Your data goes to Anthropic.</b> Your messages and the project files Claude reads are processed by Anthropic under your own Claude account and its terms.')}</li>
+      <li>${t('<b>Nothing goes to METU Power Lab</b> unless you send it: library pull requests and problem reports, which you review before submitting. The panel has no analytics.')}</li>
+      <li>${t("<b>Confidential work:</b> don't use it on designs your NDA or employer doesn't allow you to share with an AI service.")}</li>
     </ul>
-    <div class="actions"><button class="btn primary" id="notice-ok">I understand</button></div>`, true);
+    <div class="actions"><button class="btn primary" id="notice-ok">${t('I understand')}</button></div>`, true);
   $('notice-ok').onclick = () => { post({ type: 'notice_ok' }); closeSheet(); };
 }
 
 function showReport(e) {
   reportState = e;
-  openSheet(`<h2>Report a problem</h2>
-    <p>Reports become <b>public</b> issues on GitHub (odtu/PowerLabKiCadAssistant) so they can be fixed. Only what you see here is sent.</p>
-    <label>Title<input type="text" id="r-title"></label>
-    <label>What happened? <span class="muted">— don't include confidential project details</span>
-      <textarea id="r-what" rows="4" placeholder="What you asked, what you expected, what happened instead"></textarea></label>
-    <div class="label">Diagnostics <span class="muted">— sent as shown; no project data</span></div>
+  openSheet(`<h2>${t('Report a problem')}</h2>
+    <p>${t('Reports become <b>public</b> issues on GitHub (odtu/PowerLabKiCadAssistant) so they can be fixed. Only what you see here is sent.')}</p>
+    <label>${t('Title')}<input type="text" id="r-title"></label>
+    <label>${t('What happened?')} <span class="muted">${t("— don't include confidential project details")}</span>
+      <textarea id="r-what" rows="4" placeholder="${esc(t('What you asked, what you expected, what happened instead'))}"></textarea></label>
+    <div class="label">${t('Diagnostics')} <span class="muted">${t('— sent as shown; no project data')}</span></div>
     <pre id="r-diag"></pre>
     <div id="r-gh"></div>
     <div class="actions" id="r-actions"></div>`);
@@ -1335,8 +1400,8 @@ function renderReportGh() {
   if (!reportState) return;
   const gh = reportState.gh;
   $('r-gh').innerHTML = gh
-    ? '<p class="ok">✓ GitHub is connected: the issue is filed with your account.</p>'
-    : '<p class="tip">Recommended: connect your GitHub account once, so reports are filed directly and you get notified about fixes. <button class="link" id="r-connect">Connect GitHub</button> · <button class="link" id="r-check">Check again</button></p>';
+    ? '<p class="ok">' + t('✓ GitHub is connected: the issue is filed with your account.') + '</p>'
+    : '<p class="tip">' + t('Recommended: connect your GitHub account once, so reports are filed directly and you get notified about fixes.') + ' <button class="link" id="r-connect">' + t('Connect GitHub') + '</button> · <button class="link" id="r-check">' + t('Check again') + '</button></p>';
   if (!gh) {
     $('r-connect').onclick = () => post({ type: 'gh_connect' });
     $('r-check').onclick = () => post({ type: 'gh_check' });
@@ -1346,61 +1411,61 @@ function renderReportGh() {
     closeSheet();
   };
   const acts = $('r-actions'); acts.innerHTML = '';
-  acts.append(button('Cancel', '', closeSheet));
-  acts.append(button('Open in browser', gh ? '' : 'primary', () => send('browser')));
-  if (gh) acts.append(button('Submit', 'primary', () => send('gh')));
+  acts.append(button(t('Cancel'), '', closeSheet));
+  acts.append(button(t('Open in browser'), gh ? '' : 'primary', () => send('browser')));
+  if (gh) acts.append(button(t('Submit'), 'primary', () => send('gh')));
 }
 
 function showShare(e) {
   const files = e.files || [];
   if (!files.length) {
-    openSheet(`<h2>Share with the PowerLab library</h2><p>You have no library changes to share.</p>
-      <div class="actions"><button class="btn primary" id="s-close">OK</button></div>`);
+    openSheet(`<h2>${t('Share with the PowerLab library')}</h2><p>${t('You have no library changes to share.')}</p>
+      <div class="actions"><button class="btn primary" id="s-close">${t('OK')}</button></div>`);
     $('s-close').onclick = closeSheet;
     return;
   }
-  const status = s => ({ '??': 'new', A: 'new', M: 'edit', D: 'del', R: 'move' }[s] || s);
+  const status = s => t({ '??': 'new', A: 'new', M: 'edit', D: 'del', R: 'move' }[s] || s);
   const libs = [...new Set(files.map(f => (f.path.split('/')[1] || '').replace(/\.(kicad_sym|pretty)$/, '')).filter(Boolean))];
   const check = e.check;
   const checkHtml = !check
-    ? '<p class="small">Your library copy has no standards check yet; the pull request is checked on GitHub.</p>'
+    ? '<p class="small">' + t('Your library copy has no standards check yet; the pull request is checked on GitHub.') + '</p>'
     : check.passed
-      ? '<p class="ok">✓ Lab standards check passed.</p>'
-      : `<p class="bad">✗ The lab standards check found problems. Fix them first; you can ask Claude to "fix the library check errors".</p><pre>${esc(check.output)}</pre>`;
-  openSheet(`<h2>Share with the PowerLab library</h2>
-    <p>This opens a pull request to <b>odtu/PowerLabKiCadLibraries</b> from your GitHub account. Only the files you tick are sent, never project files. For lab members it <b>merges automatically once the library checks pass</b>, so check pinouts and pads against the datasheet first.</p>
-    <div class="label">Files</div>
+      ? '<p class="ok">' + t('✓ Lab standards check passed.') + '</p>'
+      : `<p class="bad">${t('✗ The lab standards check found problems. Fix them first; you can ask Claude to "fix the library check errors".')}</p><pre>${esc(check.output)}</pre>`;
+  openSheet(`<h2>${t('Share with the PowerLab library')}</h2>
+    <p>${t('This opens a pull request to <b>odtu/PowerLabKiCadLibraries</b> from your GitHub account. Only the files you tick are sent, never project files. For lab members it <b>merges automatically once the library checks pass</b>, so check pinouts and pads against the datasheet first.')}</p>
+    <div class="label">${t('Files')}</div>
     <div class="files">${files.map((f, i) => `<label><input type="checkbox" data-i="${i}" checked><span class="st">${status(f.status)}</span><code>${esc(f.path)}</code></label>`).join('')}</div>
     ${checkHtml}
-    <label>Title<input type="text" id="s-title"></label>
-    <label>Description <span class="muted">— parts, datasheets, anything reviewers should know</span><textarea id="s-desc" rows="3"></textarea></label>
-    ${e.login ? `<p class="small">Signed in to GitHub as <b>${esc(e.login)}</b>.</p>`
-              : '<p class="tip">Connect your GitHub account to open pull requests. <button class="link" id="s-connect">Connect GitHub</button> · <button class="link" id="s-check">Check again</button></p>'}
+    <label>${t('Title')}<input type="text" id="s-title"></label>
+    <label>${t('Description')} <span class="muted">${t('— parts, datasheets, anything reviewers should know')}</span><textarea id="s-desc" rows="3"></textarea></label>
+    ${e.login ? `<p class="small">${t('Signed in to GitHub as {login}.', { login: '<b>' + esc(e.login) + '</b>' })}</p>`
+              : '<p class="tip">' + t('Connect your GitHub account to open pull requests.') + ' <button class="link" id="s-connect">' + t('Connect GitHub') + '</button> · <button class="link" id="s-check">' + t('Check again') + '</button></p>'}
     <div class="actions" id="s-actions"></div>`);
-  $('s-title').value = 'Add ' + (libs.length ? libs.slice(0, 3).join(', ') : 'library parts');
+  $('s-title').value = 'Add ' + (libs.length ? libs.slice(0, 3).join(', ') : 'library parts');  // a PR title: English
   if (!e.login) {
     $('s-connect').onclick = () => post({ type: 'gh_connect' });
     $('s-check').onclick = () => post({ type: 'lib_share' });
   }
   const acts = $('s-actions');
-  const submit = button('Open pull request', 'primary', () => {
+  const submit = button(t('Open pull request'), 'primary', () => {
     const paths = [...sheet.querySelectorAll('.files input:checked')].map(c => files[+c.dataset.i].path);
     post({ type: 'share_submit', paths, login: e.login, title: $('s-title').value, description: $('s-desc').value });
     closeSheet();
   });
   submit.disabled = !e.login || (check && !check.passed);
-  acts.append(button('Cancel', '', closeSheet), submit);
+  acts.append(button(t('Cancel'), '', closeSheet), submit);
 }
 
 function renderUpdate(e) {
   const bar = $('updbar');
   bar.innerHTML = '';
   const span = document.createElement('span'); span.className = 'msg';
-  span.textContent = `PowerLab Assistant ${e.version} is available` + (e.summary ? `: ${e.summary}` : '.');
-  span.title = `${span.textContent} (you have ${e.current})`;
+  span.textContent = t(e.summary ? 'PowerLab Assistant {version} is available: {summary}' : 'PowerLab Assistant {version} is available.', { version: e.version, summary: e.summary });
+  span.title = t('{text} (you have {current})', { text: span.textContent, current: e.current });
   bar.append(span,
-    button('What\'s new', '', () => post({ type: 'whats_new', url: e.url })),
-    button('Update', '', () => { post({ type: 'plugin_update', url: e.url }); span.textContent = 'Updating… restart KiCad when the console says done.'; }));
+    button(t('What\'s new'), '', () => post({ type: 'whats_new', url: e.url })),
+    button(t('Update'), '', () => { post({ type: 'plugin_update', url: e.url }); span.textContent = t('Updating… restart KiCad when the console says done.'); }));
   bar.classList.add('show');
 }
 
@@ -1409,16 +1474,16 @@ function renderLibrary(e) {
   bar.className = 'libbar'; bar.innerHTML = '';
   if (!e.configured) return;
   const parts = [];
-  if (!e.vars_ok) parts.push(['KiCad\'s METUPOWERLAB paths don\'t point to your library copy. Run install.ps1 again.', null, true]);
-  if (e.behind) parts.push([`Library update available (${e.behind} new change${e.behind > 1 ? 's' : ''}).`, ['Update', 'lib_update']]);
-  else if (!e.ok && e.error) parts.push([`Library: ${e.error}.`, null]);
-  if (e.changes && e.changes.length) parts.push([`${e.changes.length} library change${e.changes.length > 1 ? 's' : ''} not shared yet.`, ['Share', 'lib_share']]);
+  if (!e.vars_ok) parts.push([t('KiCad\'s METUPOWERLAB paths don\'t point to your library copy. Run install.ps1 again.'), null, true]);
+  if (e.behind) parts.push([t(e.behind > 1 ? 'Library update available ({n} new changes).' : 'Library update available ({n} new change).', { n: e.behind }), [t('Update'), 'lib_update']]);
+  else if (!e.ok && e.error) parts.push([t('Library: {error}.', { error: e.error }), null]);
+  if (e.changes && e.changes.length) parts.push([t(e.changes.length > 1 ? '{n} library changes not shared yet.' : '{n} library change not shared yet.', { n: e.changes.length }), [t('Share'), 'lib_share']]);
   if (!parts.length) return;
   const [msg, action, warn] = parts[0];
   const span = document.createElement('span'); span.className = 'msg'; span.textContent = msg; span.title = parts.map(p => p[0]).join(' ');
   bar.append(span);
   for (const [, act] of parts) {
-    if (act) bar.append(button(act[0], '', b => { post({ type: act[1] }); if (act[1] === 'lib_update') { span.textContent = 'Updating the library…'; } }));
+    if (act) bar.append(button(act[0], '', b => { post({ type: act[1] }); if (act[1] === 'lib_update') { span.textContent = t('Updating the library…'); } }));
   }
   bar.classList.add('show'); if (warn) bar.classList.add('warn');
 }
@@ -1431,25 +1496,47 @@ function renderModels() {
   if (!models.length) { modelBtn.style.display = 'none'; return; }
   const cur = models.find(m => m.id === currentModel) || models[0];
   modelBtn.style.display = '';
-  modelBtn.innerHTML = esc(cur.short || cur.label) + CHEVRON;
+  modelBtn.innerHTML = esc(t(cur.short || cur.label)) + CHEVRON;
   modelMenu.innerHTML = '';
   for (const m of models) {
     const b = document.createElement('button');
     b.className = 'model-opt' + (m.id === cur.id ? ' sel' : '');
-    b.innerHTML = `<div class="n">${esc(m.label)}</div>` + (m.hint ? `<div class="d">${esc(m.hint)}</div>` : '');
+    b.innerHTML = `<div class="n">${esc(t(m.label))}</div>` + (m.hint ? `<div class="d">${esc(t(m.hint))}</div>` : '');
     b.onclick = () => { post({ type: 'model', id: m.id }); closeModels(); input.focus(); };
     modelMenu.appendChild(b);
   }
 }
-function closeModels() { modelMenu.classList.remove('open'); modelBtn.classList.remove('open'); }
-modelBtn.addEventListener('click', e => {
+// The language picker: the panel's text and the language Claude writes in.
+let langs = [], currentLang = 'en';
+const langBtn = $('lang-btn'), langMenu = $('lang-menu');
+function closeModels() {
+  [modelMenu, modelBtn, langMenu, langBtn].forEach(el => el.classList.remove('open'));
+}
+[[modelBtn, modelMenu], [langBtn, langMenu]].forEach(([btn, menu]) => btn.addEventListener('click', e => {
   e.stopPropagation();
-  const open = !modelMenu.classList.contains('open');
-  modelMenu.classList.toggle('open', open); modelBtn.classList.toggle('open', open);
-});
-document.addEventListener('click', e => { if (!modelMenu.contains(e.target)) closeModels(); });
+  const open = !menu.classList.contains('open');
+  closeModels();
+  menu.classList.toggle('open', open); btn.classList.toggle('open', open);
+}));
+document.addEventListener('click', e => { if (!modelMenu.contains(e.target) && !langMenu.contains(e.target)) closeModels(); });
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModels(); });
+
+function renderLangs() {
+  if (!langs.length) { langBtn.style.display = 'none'; return; }
+  const cur = langs.find(l => l.code === currentLang) || langs[0];
+  langBtn.style.display = '';
+  langBtn.innerHTML = esc(cur.code.toUpperCase()) + CHEVRON;
+  langMenu.innerHTML = '';
+  for (const l of langs) {
+    const b = document.createElement('button');
+    b.className = 'model-opt' + (l.code === cur.code ? ' sel' : '');
+    b.innerHTML = `<div class="n">${esc(l.name)}</div>` + (l.english !== l.name ? `<div class="d">${esc(l.english)}</div>` : '');
+    b.onclick = () => { post({ type: 'language', code: l.code }); closeModels(); input.focus(); };
+    langMenu.appendChild(b);
+  }
+}
 renderModels();
+renderLangs();
 
 function wireChip(c) {
   c.addEventListener('click', () => {

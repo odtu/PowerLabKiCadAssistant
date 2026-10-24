@@ -18,7 +18,7 @@ It runs [Claude Code](https://docs.claude.com/claude-code) on your computer with
 
 <p align="center"><img src="docs/images/block-plan.png" width="70%" alt="The block plan card in the panel: the round board with its blocks, top side solid and bottom side hatched, the gate-drive links with their lengths, and the block list"></p>
 
-**Routing, by hand or with the PowerLab router.** The router applies the lab rules while it routes: power rails first, GND pours kept whole, few corners and vias, pads entered at their centres.
+**Routing, by hand or with the PowerLab router.** The router applies the lab rules while it routes: power rails first, GND pours kept whole, few corners and vias, pads entered at their centres. *The router is switched off for now while it gets more testing; Claude routes by hand until it's back.*
 
 ![The PowerLab router's result on a 2-layer ESP32 test board, drawn net by net from the ratsnest, power first, then the GND pours](docs/images/powerlab-router.gif)
 
@@ -127,6 +127,8 @@ Click the **PowerLab Assistant** button on the toolbar of the PCB Editor or the 
 The panel shows each step Claude takes, plus any images it renders.
 
 - **Models:** the model picker under the input box switches between Claude models. The default is **Opus 5.5 at high effort**. To change the effort, set `"effort"` (`low`, `medium`, `high`, `xhigh` or `max`) in `%APPDATA%\PowerLabKiCadAssistant\settings.json`.
+- **Languages:** the language picker beside it sets the panel's language and the language Claude replies in: English, Türkçe, 简体中文, 繁體中文, Deutsch, Français, Español, Português (Brasil), Italiano, Polski, Русский, Українська, العربية, فارسی, हिन्दी, 日本語, 한국어, Tiếng Việt and Bahasa Indonesia. It starts in Windows' display language (English if that isn't one of them). The translations are machine-made; corrections are welcome as issues or pull requests to `plugin/powerlab_assistant/lang/`.
+- **Continuing a chat:** the chat is kept per project. When you come back to it later, Claude gets your last three prompts and looks at the project again, instead of reading the whole earlier conversation, which saves a lot of tokens. It reads the earlier chat only if it can't tell how to continue. The same happens once a chat gets very long.
 - **Attachments:** attach screenshots, datasheets (PDF) or other files with the 📎 button, or paste or drop them into the input box. Pasted and dropped files are kept for a week in `%TEMP%\PowerLabAssistant\attachments`.
 - **Usage:** the corner under the input box shows how much of your Claude plan's limit is used (e.g. *5h 49%*) and how full this chat's context is. Hover for the reset time. Start a new chat (**+**) when the context gets full.
 - **One panel for both editors:** the button in the PCB Editor and the one in the Schematic Editor show or hide the same panel, with one chat per project. Ask about either side from wherever you are: Claude sees the board and the schematic, which editor you're working in, and what is selected in each.
