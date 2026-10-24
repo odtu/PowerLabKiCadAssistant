@@ -80,8 +80,14 @@ class RoutingStyleTests(unittest.TestCase):
         self.assertEqual(self.kinds(square, vias=[{"net": "TDI", "at": (5, 0)}]), [])
 
     def test_a_jog_is_a_kink_a_chamfer_isnt(self):
-        jog = [seg("SDI", (0, 0), (5, 0)), seg("SDI", (5, 0), (5.3, 0.3)), seg("SDI", (5.3, 0.3), (10, 0.3))]
-        self.assertEqual(self.kinds(jog), ["kink"])
+        # the maintainer's DRV_SDI: a short piece at another angle before the run goes on
+        jog = [seg("SDI", (0, 0), (5, 0)), seg("SDI", (5, 0), (5.2, 0.4)), seg("SDI", (5.2, 0.4), (10, 0.4))]
+        self.assertIn("kink", self.kinds(jog))  # its bends are sharp corners too
+        sliver = [seg("SDI", (0, 0), (5, 0)), seg("SDI", (5, 0), (5.03, 0.03)), seg("SDI", (5.03, 0.03), (10, 0.03))]
+        self.assertEqual(self.kinds(sliver), ["kink"])
+        # a clean 45/45 dog-leg shifting a run into a fine-pitch pin is drawn on purpose
+        dogleg = [seg("SDI", (0, 0), (5, 0)), seg("SDI", (5, 0), (5.3, 0.3)), seg("SDI", (5.3, 0.3), (10, 0.3))]
+        self.assertEqual(self.kinds(dogleg), [])
         chamfer = [seg("SDI", (0, 0), (5, 0)), seg("SDI", (5, 0), (5.4, 0.4)), seg("SDI", (5.4, 0.4), (5.4, 5))]
         self.assertEqual(self.kinds(chamfer), [])
 
@@ -130,6 +136,9 @@ class RoutingStyleTests(unittest.TestCase):
         size = {"U4.36": (0.75, 0.15)}
         self.assertEqual(self.kinds([seg("TCK", (-0.7, 0), (-3, 0))], qfp, size=size), [])
         self.assertEqual(self.kinds([seg("TCK", (-0.7, 0.1), (-0.7, 3))], qfp, size=size), ["pad_entry"])
+        # a joint between two pieces of a track that starts at the centre isn't where it ends
+        out = [seg("TCK", (0, 0), (-0.6, 0)), seg("TCK", (-0.6, 0), (-1.6, 1.0))]
+        self.assertEqual(self.kinds(out, qfp, size=size), [])
 
     def test_gnd_pours_use_thermal_reliefs(self):
         zones = [{"net": "GND", "layer": "B.Cu", "solid": True, "rule_area": False, "at": (1, 2)},

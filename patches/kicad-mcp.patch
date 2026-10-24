@@ -9155,10 +9155,10 @@ index be3cf94..a5289a5 100644
                  zone.SetFillMode(pcbnew.ZONE_FILL_MODE_HATCH_PATTERN)
 diff --git a/python/commands/routing_check.py b/python/commands/routing_check.py
 new file mode 100644
-index 0000000..94a17bb
+index 0000000..ce02c3b
 --- /dev/null
 +++ b/python/commands/routing_check.py
-@@ -0,0 +1,409 @@
+@@ -0,0 +1,415 @@
 +"""
 +check_routing (PowerLab patch): routing style, measured the way a reviewer looks at tracks.
 +
@@ -9186,6 +9186,7 @@ index 0000000..94a17bb
 +MIN_SEGMENT = 0.1  # mm; shorter pieces (neck-downs inside pad fields) aren't judged
 +CORNER_TOL = 3.0  # degrees above 45 before a bend counts as a corner
 +KINK_LEN = 0.6  # mm; a segment shorter than max(this, 3 x width) between two bends
++TINY = 0.1  # mm; a jog piece this short is an artefact even at clean 45-degree bends
 +DETOUR_RATIO = 1.5  # path / straight line ...
 +DETOUR_EXTRA = 1.0  # ... and at least this many mm longer
 +NEAR_PADS = 5.0  # mm; pads this close on a branched net (a rail) are judged too
@@ -9338,7 +9339,10 @@ index 0000000..94a17bb
 +        pb = nxt["b"] if _key(s["layer"], nxt["a"]) + (s["net"],) == kb else nxt["a"]
 +        t1, t2 = signed_turn(pa, s["a"], s["b"]), signed_turn(s["a"], s["b"], pb)
 +        # A jog bends one way and straight back (an S); a 45-degree chamfer bends the same way twice.
-+        if abs(t1) > 5 and abs(t2) > 5 and (t1 > 0) != (t2 > 0):
++        # A clean 45/45 dog-leg that shifts a run sideways (into a fine-pitch pin) is drawn on
++        # purpose; a jog with other angles, or a sliver of a piece, is a kink.
++        clean = abs(abs(t1) - 45.0) <= CORNER_TOL and abs(abs(t2) - 45.0) <= CORNER_TOL and L >= TINY
++        if abs(t1) > 5 and abs(t2) > 5 and (t1 > 0) != (t2 > 0) and not clean:
 +            mid = ((s["a"][0] + s["b"][0]) / 2, (s["a"][1] + s["b"][1]) / 2)
 +            findings.append(_finding("kink", s["net"], s["layer"], mid,
 +                                     f"{L:.2f} mm jog between two bends; run it straight",
@@ -9354,6 +9358,8 @@ index 0000000..94a17bb
 +            pid = pad_of(s, p)
 +            if not pid or (pid, round(p[0], 3), round(p[1], 3)) in seen_entry:
 +                continue
++            if len(ends.get(_key(s["layer"], p) + (s["net"],), ())) > 1:
++                continue  # a joint between two pieces of the track, not where it ends
 +            seen_entry.add((pid, round(p[0], 3), round(p[1], 3)))
 +            pad = pad_by_id[pid]
 +            off = _dist(p, pad["at"])
