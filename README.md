@@ -1,6 +1,6 @@
 # PowerLab KiCad Assistant
 
-A side panel for **KiCad 10** that lets you ask Claude to do things in your design: create symbol and footprint libraries to the METU Power Lab standard, run ERC/DRC and explain the results, render 3D views, export fabrication files, and edit schematics and boards.
+A side panel for **KiCad 10** that lets you ask Claude to do things in your design: create symbol and footprint libraries to the METU Power Lab standard, place and route boards by the lab's rules and review them, run ERC/DRC and explain the results, render 3D views, export fabrication files, and edit schematics and boards.
 
 It runs [Claude Code](https://docs.claude.com/claude-code) on your computer with your own Claude account, and gives it KiCad tools through [KiCAD-MCP-Server](https://github.com/mixelpixx/KiCAD-MCP-Server).
 
@@ -12,19 +12,32 @@ It runs [Claude Code](https://docs.claude.com/claude-code) on your computer with
 
 ## What it looks like
 
-**Placement starts with a block plan.** Claude draws the board's functional blocks on its outline and asks before it places anything. You can drag blocks, turn them or move them to the other side; then it places the parts block by block.
+**1. Placement starts with a block plan.** Claude draws the board's functional blocks on its outline and asks before it places anything. You can drag blocks, turn them or move them to the other side; then it places the parts block by block.
 
 ![Placement of a round 4-layer motor-drive test board: parts piled beside the board, the block plan fades in, then each block's parts move into place](docs/images/placement.gif)
 
 <p align="center"><img src="docs/images/block-plan.png" width="70%" alt="The block plan card in the panel: the round board with its blocks, top side solid and bottom side hatched, the gate-drive links with their lengths, and the block list"></p>
 
-**Routing, by hand or with the PowerLab router.** The router applies the lab rules while it routes: power rails first, GND pours kept whole, few corners and vias, pads entered at their centres. *The router is switched off for now while it gets more testing; Claude routes by hand until it's back.*
+**2. Routing by hand, by the lab rules.** Claude routes in KiCad itself: power and gate drive first, 45° tracks, pads entered at their centres, GND pours kept whole and GND stitching vias last. `check_routing` and DRC check each step.
+
+![A 2-layer ESP32 test board routed by Claude by hand, drawn connection by connection from the ratsnest, then the GND pours: 43 nets, 60 vias](docs/images/routing-by-hand.gif)
+
+**3. Then it reviews its own work.** DRC, the lab rules and a 233-rule review handbook. Claude fixes what it can, checks again, and writes a review with what's left for you, saved as a PDF in your project.
+
+<sub>The animations draw each board's finished parts and tracks in order; they show the result, not the time it took.</sub>
+
+<details>
+<summary><b>The PowerLab router</b> (switched off for now)</summary>
+
+The lab's own router applies the lab rules while it routes: power rails first, GND pours kept whole, few corners and vias, pads entered at their centres. It is switched off in the panel while it gets more testing; Claude routes by hand until it's back.
 
 ![The PowerLab router's result on a 2-layer ESP32 test board, drawn net by net from the ratsnest, power first, then the GND pours](docs/images/powerlab-router.gif)
 
 ![The same ESP32 board routed by Claude by hand and by the PowerLab router. By hand: 60 vias, 6 sharp corners, 15 off-centre pad entries, GND pours in 9 + 3 pieces. Router: 30 vias, 0 sharp corners, 3 off-centre pad entries, GND pours in 3 + 2 pieces](docs/images/hand-vs-router.png)
 
-<sub>The animations draw each board's finished parts and tracks in order; they show the result, not the time it took. The numbers come from `tools/route_quality.py` (signal nets).</sub>
+<sub>The numbers come from `tools/route_quality.py` (signal nets).</sub>
+
+</details>
 
 ---
 
@@ -156,9 +169,9 @@ Skills teach Claude how the lab does specific jobs. The installer copies them to
 | `powerlab-placement` | Before placing any part, Claude shows a block plan in the panel: the board, in its real shape from Edge.Cuts (round, rectangular or any other), with each functional block where it would go, top side solid and bottom side hatched, and how long the important connections will be. Board texts (board info, company text) and logos are on the plan too, so you can place them the same way. Hover a block to light it up; click it and KiCad selects its parts in the PCB editor and the schematic. Drag blocks to where you want them (the important connections, like the gate lines, follow and show the gap as you drag), turn a block (90° and 45° buttons, or type any angle), or move one to the other side with **Move to bottom side** / **Move to top side**, then press **Send moves to Claude**: Claude checks your plan and updates it. Gate drive and hot loops get the shortest distances: the gate driver sits in the middle of the MOSFETs it drives, and the MCU moves to the free space near it. It shows you the plan and asks whether to move anything; only then does it place the parts, block by block, and run the design review. | *Do the placement* |
 | `powerlab-visual-review` | Claude renders the board (2D layer views in colour, plus 3D) after every placement or routing step. It looks at each view against the design rules, fixes what it sees, and shows you the views in the panel. Renders go to `%TEMP%\PowerLabAssistant\views` and are cleaned after a week. | *Show me the routing* |
 | `powerlab-design-review` | When Claude finishes placing or routing a board, it reviews its own work: DRC (zones refilled, every track error, schematic parity), rendered views, the lab rules and the review handbook. It fixes what it can on its own, checks again, and repeats until nothing it can fix is left (at most 5 rounds). What needs your decision or information (a connector to move, a current it doesn't know, a track only you can delete in KiCad) goes on a *Needs you* list. The final review shows in the panel: the verdict, open findings by severity, what was fixed, and the board views. Click any place in it (marked ⌖) and KiCad selects those parts or that net in the PCB editor and zooms there; the schematic editor follows, on the right sheet. It is also saved as `design-review\design-review.pdf` in your project (**Open PDF**). | *Review the board* |
-| `powerlab-autoroute` | Routes the board. Claude first asks how: with the **PowerLab router** (recommended), or by hand. Either way it first sets the lab design rules and net classes (power tracks sized for their current) and keeps hand-routed, locked copper. The PowerLab router runs on your computer in KiCad's Python and applies the lab rules while it routes: power rails first, then a copper pour round each rail; GND pours kept whole, with thermal reliefs; no tracks under inductors; escape room at fine-pitch pins; buses as parallel runs; few corners and vias; pads entered at their centres; a net's later tracks join its earlier ones instead of running beside them; and GND stitching vias at the end. With the board open in KiCad, you watch the tracks appear while it routes. Claude then routes whatever the router left by hand, fixes the DRC errors, and runs the design review without asking. | *Route the board* |
+| `powerlab-autoroute` | Routes the board by hand, in KiCad. Claude first sets the lab design rules and net classes (power tracks sized for their current) and keeps hand-routed, locked copper. Then it routes power and gate drive first, with short hot loops and gate loops; then the rest, with 45° tracks, pads entered at their centres, few corners and vias, and copper pours round power rails; GND pours kept whole, with thermal reliefs; and GND stitching vias at the end. It checks the tracks with `check_routing` and DRC, fixes what they find, and runs the design review without asking. (The **PowerLab router**, which applies the same rules automatically, is switched off for now while it gets more testing.) | *Route the board* |
 
-A run takes about 10–15 minutes on a 2-layer board with ~50 connections; it runs in the background and the panel stays usable. Each run keeps the board from before it, so Claude can undo it. Routed power-electronics boards always need a human review: loop areas, return paths, and track widths on high-current nets.
+Routed power-electronics boards always need a human review: loop areas, return paths, and track widths on high-current nets.
 
 ## The METU Power Lab library
 
