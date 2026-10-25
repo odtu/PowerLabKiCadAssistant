@@ -40,7 +40,7 @@ A maintainer still reviews and merges the PR, tests it on `test`, then releases 
 
 Users only learn about fixes through releases. Every panel reads `VERSION` from `main` every 5 minutes (`updates.py`), and offers an update when it is newer than its own. The bar's text comes from the GitHub release of that version.
 
-1. On `test`, bump `VERSION` in `plugin/powerlab_assistant/config.py` (semantic: patch for fixes, minor for features).
+1. On `test`, bump `VERSION` in `plugin/powerlab_assistant/config.py` (semantic: patch for fixes, minor for features), and the version badge at the top of `README.md` (a test checks they match).
 2. Merge `test` into `main` with a merge commit, not a squash, so the two branches stay in step:
 
    ```powershell

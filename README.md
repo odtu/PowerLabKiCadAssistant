@@ -1,4 +1,25 @@
+<div align="center">
+
+<img src="docs/images/logo.png" alt="METU Power Lab logo" width="96">
+
 # PowerLab KiCad Assistant
+
+**Claude in a KiCad side panel: libraries, placement, routing and design reviews, the METU Power Lab way.**
+
+[![KiCad 10](https://img.shields.io/badge/KiCad-10.0%2B-314CB0?logo=kicad&logoColor=white)](https://www.kicad.org/)
+[![Windows](https://img.shields.io/badge/platform-Windows-0078D4)](#requirements)
+[![Version](https://img.shields.io/badge/version-1.2.0-2ea44f)](plugin/powerlab_assistant/config.py)
+[![Tests](https://github.com/odtu/PowerLabKiCadAssistant/actions/workflows/tests.yml/badge.svg)](https://github.com/odtu/PowerLabKiCadAssistant/actions/workflows/tests.yml)
+[![License: CERN-OHL-S-2.0](https://img.shields.io/badge/license-CERN--OHL--S--2.0-blue)](LICENSE)
+
+[Install](#install) · [Use](#use) · [Privacy](#privacy-what-goes-where) · [Report a problem](#reporting-problems)
+
+🌐 **19 languages** for the panel and Claude's replies:<br>
+English · Türkçe · 简体中文 · 繁體中文 · Deutsch · Français · Español · Português (Brasil) · Italiano · Polski · Русский · Українська · العربية · فارسی · हिन्दी · 日本語 · 한국어 · Tiếng Việt · Bahasa Indonesia
+
+</div>
+
+---
 
 A side panel for **KiCad 10** that lets you ask Claude to do things in your design: create symbol and footprint libraries to the METU Power Lab standard, place and route boards by the lab's rules and review them, run ERC/DRC and explain the results, render 3D views, export fabrication files, and edit schematics and boards.
 

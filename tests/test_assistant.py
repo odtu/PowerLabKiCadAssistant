@@ -428,6 +428,9 @@ class ChatHistoryTests(unittest.TestCase):
         panel_mod.threading.Thread = lambda **kw: types.SimpleNamespace(start=lambda: None)
         self.addCleanup(setattr, panel_mod.subprocess, "Popen", saved[0])
         self.addCleanup(setattr, panel_mod.threading, "Thread", saved[1])
+        if not hasattr(panel_mod.subprocess, "CREATE_NO_WINDOW"):  # Windows only; CI runs Linux too
+            panel_mod.subprocess.CREATE_NO_WINDOW = 0
+            self.addCleanup(delattr, panel_mod.subprocess, "CREATE_NO_WINDOW")
 
         second.launch("Carry on")
         args = runs[0][0]
@@ -2690,6 +2693,13 @@ class LanguageTests(unittest.TestCase):
         self.assertEqual(self.i18n.current({"language": "uk"}), "uk")
         self.assertIn(self.i18n.current({"language": "xx"}), codes)  # unknown: Windows' or English
 
+    def test_readme_header_lists_every_language(self):
+        with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as f:
+            header = f.read().split("</div>")[0]
+        self.assertIn(f"**{len(self.i18n.LANGUAGES)} languages**", header)
+        for _, _, name in self.i18n.LANGUAGES:
+            self.assertIn(name, header)
+
     def test_claude_writes_in_the_chosen_language(self):
         self.assertEqual(self.i18n.reply_note("en"), "")
         note = self.i18n.reply_note("tr")
@@ -3002,6 +3012,10 @@ class UpdateCheckTests(unittest.TestCase):
             self.assertEqual(updates.version_in(f.read()), config.VERSION)
         self.assertEqual(updates.version_in('NOTICE_VERSION = 1\nVERSION = "1.2.3"  # bump\n'), "1.2.3")
         self.assertEqual(updates.version_in("nothing here"), "")
+
+    def test_readme_badge_shows_the_version(self):
+        with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as f:
+            self.assertIn(f"badge/version-{config.VERSION}-", f.read())
 
     def test_notes_wait_until_the_release_is_published(self):
         settings = {}
