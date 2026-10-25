@@ -729,7 +729,7 @@ class ChatHistoryTests(unittest.TestCase):
         # red, and reported as faults; Claude fixes both in its next step. kicad tools stay red.
         from powerlab_assistant import report
         panel = self.fake_panel()
-        path = os.path.join(self.project, "placement", "placementlock-plan.json")
+        path = os.path.join(self.project, "placement", "block-plan.json")
         panel.show_plan = lambda p: self.fail("a refused write isn't a written plan")
         steps = [("Edit", {"file_path": path}, "<tool_use_error>File has not been read yet. "
                   "Read it first before writing to it.</tool_use_error>", "slip"),
