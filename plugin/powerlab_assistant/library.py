@@ -9,6 +9,7 @@ under symbols/, footprints/ and 3dmodels/ are ever included.
 import json
 import os
 import re
+import shutil
 import tempfile
 import time
 
@@ -60,10 +61,11 @@ class Status:
         return {"ok": self.ok, "behind": self.behind, "changes": self.changes, "error": self.error}
 
 
-def changed_files(path):
-    """Library files that differ from the last synced version (added, modified, deleted)."""
+def changed_files(path, dirs=LIBRARY_DIRS):
+    """Library files that differ from the last synced version (added, modified, deleted).
+    `dirs=()`: every file in the clone, not only the library folders."""
     # -z: NUL-separated and never quoted; a rename is "R  new\0old\0".
-    code, out = git(path, "status", "--porcelain=v1", "-z", "-uall", "--", *LIBRARY_DIRS)
+    code, out = git(path, "status", "--porcelain=v1", "-z", "-uall", "--", *dirs)
     if code != 0:
         return []
     files, entries = [], out.split("\0")
@@ -108,24 +110,86 @@ def same_as_upstream(path, rel):
     return code == 0 and local.strip() == upstream.strip()
 
 
-def update():
-    """Fast-forward the clone to GitHub's main. Local edits that GitHub already has
-    (e.g. your own merged contribution) are dropped first; other local edits block it."""
-    path = config.library_path()
-    git(path, "fetch", "--quiet", "origin")  # compare against GitHub as it is now
+def _drop_merged(path):
+    """Local edits that GitHub already has (e.g. your own share, now merged) are dropped."""
     for item in changed_files(path):
-        if same_as_upstream(path, item["path"]):  # e.g. your own share, now merged
+        if same_as_upstream(path, item["path"]):
             full = os.path.join(path, item["path"])
             if item["status"] == "??":
                 os.remove(full)  # untracked: the pull brings the identical file back
             else:
                 git(path, "checkout", "--", item["path"])
+
+
+def _own_commits(path):
+    """True if the clone has commits GitHub's main doesn't (no fast-forward possible)."""
+    return git(path, "merge-base", "--is-ancestor", "HEAD", "origin/main")[0] == 1
+
+
+def blocking_files(path):
+    """Files edited (or new) in the clone that the update changes too, anywhere in the
+    clone. These stop the fast-forward; other local edits are simply kept."""
+    code, out = git(path, "diff", "--name-only", "-z", "HEAD", "origin/main")
+    if code != 0:
+        return []
+    upstream = set(filter(None, out.split("\0")))
+    return sorted(f["path"] for f in changed_files(path, ()) if f["path"] in upstream)
+
+
+def update():
+    """Fast-forward the clone to GitHub's main. Local edits that GitHub already has
+    (e.g. your own merged contribution) are dropped first. Returns (True, new libraries),
+    (False, {"blocked": paths}) when local edits to files the update changes stop it
+    (the panel offers set_aside), or (False, message)."""
+    path = config.library_path()
+    code, out = git(path, "fetch", "--quiet", "origin")  # compare against GitHub as it is now
+    if code != 0:
+        return False, f"Couldn't update the library: GitHub couldn't be reached ({error_line(out)})."
+    _drop_merged(path)
+    if _own_commits(path):
+        return False, ("Couldn't update: your library copy has commits that aren't on GitHub's "
+                       "main. Ask Claude to help resolve it.")
+    blocked = blocking_files(path)
+    if blocked:
+        return False, {"blocked": blocked}
     code, out = git(path, "pull", "--ff-only", "--quiet", "origin", "main")
     if code != 0:
-        return False, ("Couldn't update: you have library changes that aren't on GitHub yet. "
-                       "Share them first, or ask Claude to help resolve it.")
+        return False, f"Couldn't update the library: {error_line(out)}"
     added = register_new_libraries(path)
     return True, added
+
+
+def set_aside():
+    """Issue #87: edits that block the update can't always be shared. Copy them to a
+    backup folder beside the clone, then put those files back as last synced, so update()
+    can go ahead. Nothing is put back unless every copy succeeded. Returns the folder
+    ("" when nothing was in the way)."""
+    path = config.library_path()
+    git(path, "fetch", "--quiet", "origin")
+    _drop_merged(path)
+    if _own_commits(path):
+        return ""
+    files = blocking_files(path)
+    if not files:
+        return ""
+    root = os.path.normpath(path)
+    backup = os.path.join(root + "-backup", time.strftime("%Y%m%d-%H%M%S"))
+    for rel in files:
+        src = os.path.join(root, rel)
+        if os.path.isfile(src):  # a local deletion has nothing to keep
+            dst = os.path.join(backup, rel)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copy2(src, dst)
+    for rel in files:
+        if git(path, "cat-file", "-e", f"HEAD:{rel}")[0] == 0:
+            code, out = git(path, "checkout", "HEAD", "--", rel)
+            if code != 0:
+                raise RuntimeError(f"Couldn't restore {rel}: {error_line(out)}")
+        else:  # new here (untracked or only staged); the update brings GitHub's copy
+            git(path, "rm", "-q", "--cached", "--ignore-unmatch", "--", rel)
+            if os.path.isfile(os.path.join(root, rel)):
+                os.remove(os.path.join(root, rel))
+    return backup
 
 
 def _table_names(table):
