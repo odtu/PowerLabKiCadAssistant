@@ -143,18 +143,23 @@ class SkillToolsEnvTests(unittest.TestCase):
         self.assertIn("never offer it", panel.PANEL_NOTE)
 
     def test_powerlab_router_switch(self):
-        # The router is off until it has had more local testing: its tools are blocked and
-        # Claude routes by hand. undo_autoroute still undoes an earlier run.
+        # With the router off, its tools are blocked and Claude routes by hand; the panel note
+        # and the skill must say the same as the flag. undo_autoroute works either way.
         from powerlab_assistant import panel
         route = ("mcp__kicad__powerlab_route", "mcp__kicad__powerlab_route_status")
         for tool in route:
             self.assertEqual(tool in panel.DISALLOWED_TOOLS, not panel.POWERLAB_ROUTER)
         self.assertNotIn("mcp__kicad__undo_autoroute", panel.DISALLOWED_TOOLS)
+        with open(os.path.join(ROOT, "skills", "powerlab-autoroute", "SKILL.md"), encoding="utf-8") as f:
+            skill = f.read()
         if not panel.POWERLAB_ROUTER:
             self.assertIn("route by hand", panel.PANEL_NOTE)
             self.assertIn("switched off", panel.PANEL_NOTE)
-            with open(os.path.join(ROOT, "skills", "powerlab-autoroute", "SKILL.md"), encoding="utf-8") as f:
-                self.assertIn("The PowerLab router is switched off for now", f.read())
+            self.assertIn("The PowerLab router is switched off for now", skill)
+        else:
+            self.assertIn("PowerLab router (recommended", panel.PANEL_NOTE)
+            self.assertNotIn("switched off", panel.PANEL_NOTE)
+            self.assertNotIn("switched off", skill)
 
     def test_mcp_server_is_not_edited(self):
         # Issue #73: a kicad tool misbehaved, so Claude edited the installed MCP server and
@@ -226,13 +231,15 @@ class SkillToolsEnvTests(unittest.TestCase):
             route = f.read()
         # the first question, then the review without asking; no Freerouting
         self.assertIn("## 0. Ask first: by hand or the PowerLab router", route)
-        self.assertIn("PowerLab router, then I fix its DRC errors by hand (Recommended)", route)
+        self.assertIn("PowerLab router, then I finish what it leaves by hand (Recommended)", route)
+        # router 2: the routing plan goes to the user before the run
+        self.assertIn("planOnly: true", route)
         self.assertIn("Always run the design review next, without asking", route)
         self.assertIn("Never offer it.", route)
         self.assertNotIn("autoroute`", route.replace("undo_autoroute`", ""))
         # GND pours with thermal reliefs; solid only for high-current pours; power rails as pours
         self.assertIn("GND pours connect pads with thermal reliefs", route)
-        self.assertIn("powerPours", route)
+        self.assertIn("Afterwards give each rail a pour round its tracks", route)
         self.assertIn("No duplicate tracks", rules)
         # No GND fan-out vias up front: pads reach the pour, vias only after routing
         self.assertIn("No GND fan-out before routing", route)

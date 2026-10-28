@@ -95,6 +95,13 @@ Keep to this structure. The panel and the PDF understand headings, `-` lists, nu
 |---|---|---|---|
 | 1 | PWR-006 | [U2, right side](kicad:refs=U2,C5) | C5 moved from 4.2 mm to 1.1 mm of U2 pin 7. |
 
+## Placement changes during routing
+| Part | Change | Why |
+|---|---|---|
+| [R12](kicad:refs=R12) | moved 1.5 mm left | freed U3 pin 14's way out (EN) |
+
+(Only when routing moved or turned parts; leave the section out otherwise.)
+
 ## Checked and fine
 - In1.Cu is a continuous GND plane under all signals (STK-002, GND-001).
 - Antenna at the board edge, no copper under it (RF-001, RF-002).
