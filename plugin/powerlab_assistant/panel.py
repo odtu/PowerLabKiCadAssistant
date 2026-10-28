@@ -853,11 +853,26 @@ class ClaudePanel(wx.Frame):
         self.in_background(library.status, done)
 
     def msg_lib_update(self, msg):
-        report.note_event("library update")
+        aside = msg.get("id") == "aside"  # the blocked note's button: back up the edits first
+        report.note_event("library update", "set aside" if aside else "")
+
+        def work():
+            backup = library.set_aside() if aside else ""
+            return library.update() + (backup,)
 
         def done(result):
-            ok, info = result if not isinstance(result, Exception) else (False, str(result))
-            if ok and info:
+            ok, info, backup = result if not isinstance(result, Exception) else (False, str(result), "")
+            if backup:
+                self.emit("note", level="info", text=f"Your edited library files are kept in {backup}.")
+            if not ok and isinstance(info, dict):  # issue #87: not everyone can share them
+                files = info["blocked"]
+                names = ", ".join(os.path.basename(f) for f in files[:3]) + (" …" if len(files) > 3 else "")
+                self.emit("note", level="warn",
+                          text=f"The library update changes files you've edited here ({names}). "
+                               "Share your edits first, or set them aside: they're copied to a backup "
+                               "folder next to the library and the update goes ahead.",
+                          action={"label": "Set aside and update", "type": "lib_update", "id": "aside"})
+            elif ok and info:
                 self.emit("note", level="info", text="Library updated. New libraries: "
                           + ", ".join(info[:8]) + (" …" if len(info) > 8 else "")
                           + ". Restart KiCad to see them.")
@@ -868,7 +883,7 @@ class ClaudePanel(wx.Frame):
                 self.problem("warn", info, "library update failed")
             self.check_library(force=True)
 
-        self.in_background(library.update, done)
+        self.in_background(work, done)
 
     def msg_lib_share(self, msg):
         if self.sharing:
