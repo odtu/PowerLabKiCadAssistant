@@ -737,6 +737,7 @@ class ChatHistoryTests(unittest.TestCase):
     def test_own_tool_slips_are_not_shown_as_failures(self):
         # #74, #78: an Edit before its Read and a Grep regex ripgrep can't parse were shown in
         # red, and reported as faults; Claude fixes both in its next step. kicad tools stay red.
+        # #84: a Grep call with a parameter the tool doesn't have (`n` for `-n`) is one too.
         from powerlab_assistant import report
         panel = self.fake_panel()
         path = os.path.join(self.project, "placement", "block-plan.json")
@@ -744,6 +745,8 @@ class ChatHistoryTests(unittest.TestCase):
         steps = [("Edit", {"file_path": path}, "<tool_use_error>File has not been read yet. "
                   "Read it first before writing to it.</tool_use_error>", "slip"),
                  ("Grep", {"pattern": "(?!x)"}, "rg: regex parse error: look-around is not supported", "slip"),
+                 ("Grep", {"pattern": "x", "n": True}, "<tool_use_error>InputValidationError: Grep failed "
+                  "due to the following issue: An unexpected parameter `n` was provided</tool_use_error>", "slip"),
                  ("mcp__kicad__add_via", {}, "No board is loaded", "error")]
         for i, (tool, args, text, word) in enumerate(steps):
             panel.handle({"type": "assistant", "message": {"content": [

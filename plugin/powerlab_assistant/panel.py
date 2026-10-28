@@ -17,7 +17,7 @@ import wx
 import wx.html2
 
 from . import attachments, config, history, i18n, library, plan, report, review, updates, usage
-from .common import find_gh, open_console, open_terminal, clean_env
+from .common import CREATE_NO_WINDOW, find_gh, open_console, open_terminal, clean_env
 
 # Tools Claude may use without asking. Headless runs can't show permission
 # prompts, so anything else (including shell rm/del/mkdir) is denied.
@@ -1062,7 +1062,7 @@ class ClaudePanel(wx.Frame):
                 args, cwd=snap.cwd, env=env,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 encoding="utf-8", errors="replace",
-                creationflags=subprocess.CREATE_NO_WINDOW,
+                creationflags=CREATE_NO_WINDOW,
             )
         except OSError as exc:
             self.attached = files + self.attached
