@@ -3501,10 +3501,10 @@ index 0000000..052abc5
 +
 diff --git a/python/commands/powerlab_route.py b/python/commands/powerlab_route.py
 new file mode 100644
-index 0000000..49a174f
+index 0000000..17c886d
 --- /dev/null
 +++ b/python/commands/powerlab_route.py
-@@ -0,0 +1,804 @@
+@@ -0,0 +1,818 @@
 +"""
 +The PowerLab router as a background job (PowerLab patch).
 +
@@ -3677,7 +3677,8 @@ index 0000000..49a174f
 +        "input": board_copy,
 +        "input_sha1": _sha1(board_copy),
 +        "nets": [str(n) for n in nets] if nets else None,
-+        "pour_nets": [str(n) for n in (params.get("pourNets") or ["GND"])],
++        # None: every ground net with a pour (pour_nets_of), found when the board is loaded
++        "pour_nets": [str(n) for n in params["pourNets"]] if params.get("pourNets") else None,
 +        "kicad_cli": kicad_cli,
 +        "live": live,
 +        # live display while routing (default on with KiCad open; live: false turns it off)
@@ -3730,13 +3731,14 @@ index 0000000..49a174f
 +    built = plan is None
 +    if built:
 +        board = pcbnew.LoadBoard(board_path)
-+        nets, _skipped = pick_nets(board, params.get("nets"), [str(n) for n in (params.get("pourNets") or ["GND"])])
++        pours = [str(n) for n in params["pourNets"]] if params.get("pourNets") else pour_nets_of(board)
++        nets, _skipped = pick_nets(board, params.get("nets"), pours)
 +        pads: Dict[str, int] = {}
 +        for fp in board.GetFootprints():
 +            for p in fp.Pads():
 +                pads[p.GetNetname()] = pads.get(p.GetNetname(), 0) + 1
 +        nets = [n for n in nets if pads.get(n, 0) >= 2]  # nothing to join on a one-pad net
-+        plan = make_plan(board, board_path, None, [str(n) for n in (params.get("pourNets") or ["GND"])], nets)
++        plan = make_plan(board, board_path, None, pours, nets)
 +        P.save(board_path, plan)
 +    by_priority: Dict[str, List[Dict[str, Any]]] = {}
 +    for net, e in sorted((plan.get("nets") or {}).items()):
@@ -4004,6 +4006,15 @@ index 0000000..49a174f
 +        self.last = time.time()
 +
 +
++def pour_nets_of(board: Any) -> List[str]:
++    """The nets that connect through their pours: every ground net (GND, GNDA, AGND, PGND...)
++    with a zone. With only GND, an analog ground's pour was fixed copper to the router, so no
++    via or track of another net could cross where it refills (sf-motion's GNDA)."""
++    nets = sorted({z.GetNetname() for z in board.Zones()
++                   if not z.GetIsRuleArea() and z.GetNetname() and "GND" in z.GetNetname().upper()})
++    return nets or ["GND"]
++
++
 +def pick_nets(board: Any, wanted: Optional[List[str]], pour_nets: List[str]):
 +    """Nets to route, and the ones left out with why.
 +
@@ -4183,6 +4194,7 @@ index 0000000..49a174f
 +    rep.update(
 +        nets=len(nets),
 +        nets_left_out=skipped,
++        pour_nets=job.get("pour_nets"),
 +        old_tracks_removed=removed,
 +        track_mm=round(sum(pcbnew.ToMM(t.GetLength()) for t in tracks if t.Type() == pcbnew.PCB_TRACE_T), 1),
 +        vias=sum(1 for t in tracks if t.Type() == pcbnew.PCB_VIA_T),
@@ -4214,6 +4226,8 @@ index 0000000..49a174f
 +
 +        st.write(phase="loading the board")
 +        board = pcbnew.LoadBoard(job["input"])
++        if not job.get("pour_nets"):
++            job["pour_nets"] = pour_nets_of(board)
 +        nets, skipped = pick_nets(board, job.get("nets"), job["pour_nets"])
 +        if not nets:
 +            raise ValueError(f"No nets to route; left out: {skipped}")
@@ -8388,10 +8402,10 @@ index 0000000..737f268
 +"""PowerLab router 2: negotiated routing, block by block (see router.py)."""
 diff --git a/python/commands/powerlab_router2/board.py b/python/commands/powerlab_router2/board.py
 new file mode 100644
-index 0000000..56ef6fb
+index 0000000..2d03d6a
 --- /dev/null
 +++ b/python/commands/powerlab_router2/board.py
-@@ -0,0 +1,637 @@
+@@ -0,0 +1,672 @@
 +"""The board side of PowerLab router 2 (pcbnew): what is fixed, what is to be joined, the
 +ways into the pads, and the exact check.
 +
@@ -8420,10 +8434,26 @@ index 0000000..56ef6fb
 +ERR = MM(0.005)
 +FINE_PITCH = 0.8  # mm between pad centres: a fine-pitch pin leaves straight out of its row
 +VIA_TO_PAD = 0.25  # a via's ring keeps this far from pad edges, its own net's too (§3.5)
++# §3.5's 0.25 mm keeps solder from wicking off a pad into a via joined to it: a via of another
++# net isn't joined, and the board's clearance is enough there. Applied to every pad, it kept
++# the escape vias a person puts beside a fine-pitch pin (sf-motion: 10 of the hand vias, most
++# round the MCU) off the board
++VIA_TO_PAD_OWN_ONLY = True
++# vias are blocked by fixed copper where the cell's centre lies in the obstacle grown by the
++# clearance (Grid.centres_in), not wherever its outline touches the cell: Pillow's fill took up
++# to a cell more, and 15 of sf-motion's hand vias, legal by 0-0.09 mm, had no cell. The exact
++# check after shaping still catches what the grid misses
++VIA_EXACT = True
++TRACK_EXACT = True  # the same for tracks (a cell is a track's centre line passing through it)
 +# a fine-pitch pin may also leave inwards, under its part (an LQFP has no copper under its
 +# body): by hand sf-motion's U1.2, .17 and .62 leave that way, the outside being taken by GND
 +# and +3V3 escapes; an exposed pad there blocks the lane like any copper
 +FINE_INWARD = True
++# the end pin of a fine-pitch row may also leave sideways, away from the row, where no pin of
++# its part lies that way (sf-motion: a 0402 beside a TSSOP's last pin was joined up, across
++# and back down, 3.8 mm for 1.4; by hand one straight track)
++END_SIDEWAYS = True
++END_SIDEWAYS_COST = 0.3  # mm on such a lane
 +INWARD_COST = 1.5  # mm on such a lane
 +SHORT_NECK = False  # a pad with no lane at all may take a neck-down stub shorter than the preferred exit
 +NECK_MAX = 1.6  # mm beyond the preferred exit a neck-down stub may run
@@ -8714,7 +8744,7 @@ index 0000000..56ef6fb
 +                        continue  # cut by the tracks there; it refills round them
 +                    ct = self.clearance(it, key, "Track", L)
 +                    cv = self.clearance(it, key, "Via", L)
-+                    if it.Type() == pcbnew.PCB_PAD_T:
++                    if it.Type() == pcbnew.PCB_PAD_T and not VIA_TO_PAD_OWN_ONLY:
 +                        cv = max(cv, VIA_TO_PAD)
 +                    if is_zone:
 +                        for by, dst in ((ct + w / 2, tl[i]), (cv + vd / 2, vl)):
@@ -8743,8 +8773,8 @@ index 0000000..56ef6fb
 +                    for L in self.via_only:
 +                        if it.IsOnLayer(L) and not any(it.IsOnLayer(M) for M in self.layers):
 +                            vl += polys(grown(it, L, self.clearance(it, key, "Via", L) + vd / 2))
-+            pt = [self._patch(tl[i]) for i in range(len(self.layers))]
-+            pv = self._patch(vl)
++            pt = [self._patch(tl[i], exact=TRACK_EXACT) for i in range(len(self.layers))]
++            pv = self._patch(vl, exact=VIA_EXACT)
 +            fixed_t[net], fixed_v[net] = pt, pv
 +            for i, p in enumerate(pt):
 +                if p is not None:
@@ -8760,11 +8790,11 @@ index 0000000..56ef6fb
 +                for L in self.layers:
 +                    if p.IsOnLayer(L):
 +                        vl += polys(grown(p, L, VIA_TO_PAD + vd / 2))
-+            own_pad[net] = self._patch(vl)
++            own_pad[net] = self._patch(vl, exact=VIA_EXACT)
 +        self._static[key] = (base_t, base_v, cnt_t, cnt_v, fixed_t, fixed_v, own_pad)
 +        return self._static[key]
 +
-+    def _patch(self, plist):
++    def _patch(self, plist, exact=False):
 +        plist = [p for p in plist if len(p[0]) >= 3]
 +        if not plist:
 +            return None
@@ -8774,7 +8804,10 @@ index 0000000..56ef6fb
 +        if i1 <= i0 or j1 <= j0:
 +            return None
 +        a = np.zeros((g.ny, g.nx), bool)  # drawn full size, then cut down
-+        g.polygons(plist, a)
++        if exact:
++            g.centres_in(plist, a)
++        else:
++            g.polygons(plist, a)
 +        return Patch(i0, j0, a[j0:j1, i0:i1].copy())
 +
 +    # --- what is to be joined -------------------------------------------------------------------
@@ -8811,6 +8844,20 @@ index 0000000..56ef6fb
 +            self._fine[u] = any(uuid(q) != u and 1e-3 < math.dist(c, xy(q.GetPosition())) < FINE_PITCH
 +                                for q in pad.GetParentFootprint().Pads())
 +        return self._fine[u]
++
++    @staticmethod
++    def _row_end(pad, fp, c, ux, uy):
++        """No other pin of the part lies in direction (ux, uy) from the pad, within the row's
++        reach: the pad is the end of its row on that side."""
++        u = uuid(pad)
++        for q in fp.Pads():
++            if uuid(q) == u:
++                continue
++            v = (xy(q.GetPosition())[0] - c[0], xy(q.GetPosition())[1] - c[1])
++            along = v[0] * ux + v[1] * uy
++            if along > 1e-3 and abs(v[0] * uy - v[1] * ux) < 0.8:
++                return False
++        return True
 +
 +    def axis(self, pad, L):
 +        """The pad's axis angle in degrees (mod 90) from its outline's longest edge, or None
@@ -8879,7 +8926,9 @@ index 0000000..56ef6fb
 +                if out_n > 0.05:
 +                    dot = (ux * out_v[0] + uy * out_v[1]) / out_n
 +                    if fine and dot < 0.7 and not (FINE_INWARD and dot < -0.7):
-+                        continue
++                        if not (END_SIDEWAYS and self._row_end(pad, fp, c, ux, uy)):
++                            continue
++                        cost += END_SIDEWAYS_COST
 +                    if dot < -0.3:
 +                        cost += INWARD_COST  # under its part: a module's edge pads, an LQFP's pins
 +                extent = max((px - c[0]) * ux + (py - c[1]) * uy for px, py in pts)
@@ -9147,10 +9196,10 @@ index 0000000..1dc4a88
 +        return out
 diff --git a/python/commands/powerlab_router2/geom.py b/python/commands/powerlab_router2/geom.py
 new file mode 100644
-index 0000000..958cca2
+index 0000000..9e35c93
 --- /dev/null
 +++ b/python/commands/powerlab_router2/geom.py
-@@ -0,0 +1,222 @@
+@@ -0,0 +1,256 @@
 +"""Geometry for PowerLab router 2: the grid, rasterising, octilinear polylines. No pcbnew.
 +
 +The grid has one cell per `pitch` mm; cell (i, j) is the point (x0 + i * pitch, y0 + j * pitch).
@@ -9220,6 +9269,26 @@ index 0000000..958cca2
 +                    d.polygon([self._px(p, i0, j0) for p in h], fill=0, outline=1)
 +            out[j0:j1, i0:i1] |= np.array(im, dtype=bool)
 +        return out
++
++    def centres_in(self, polys, into):
++        """[(outline, holes)] in mm -> the cells whose centre lies inside, drawn into `into`.
++        polygons() fills every cell an outline touches, up to a cell more than the shape; for
++        outlines already grown by the clearance a cell is blocked exactly when its centre is in."""
++        for outline, holes in polys:
++            if len(outline) < 3:
++                continue
++            i0, j0, i1, j1 = self.box(outline)
++            if i1 <= i0 or j1 <= j0:
++                continue
++            xs = self.x0 + np.arange(i0, i1) * self.pitch
++            ys = self.y0 + np.arange(j0, j1) * self.pitch
++            X, Y = np.meshgrid(xs, ys)
++            m = _inside(outline, X, Y)
++            for h in holes:
++                if len(h) >= 3:
++                    m &= ~_inside(h, X, Y)
++            into[j0:j1, i0:i1] |= m
++        return into
 +
 +    def patch(self, strokes, discs):
 +        """A Patch of round-ended strokes [(points mm, radius mm)] and discs [((x, y), radius)],
@@ -9373,6 +9442,20 @@ index 0000000..958cca2
 +                seen.add(c)
 +                out.append(c)
 +    return out
++
++
++def _inside(poly, X, Y):
++    """Even-odd point in polygon for arrays of points."""
++    m = np.zeros(X.shape, bool)
++    n = len(poly)
++    for k in range(n):
++        (xa, ya), (xb, yb) = poly[k], poly[(k + 1) % n]
++        if ya == yb:
++            continue
++        c = (ya > Y) != (yb > Y)
++        xc = xa + (Y - ya) * (xb - xa) / (yb - ya)
++        m ^= c & (X < xc)
++    return m
 diff --git a/python/commands/powerlab_router2/plan.py b/python/commands/powerlab_router2/plan.py
 new file mode 100644
 index 0000000..32ef387
@@ -9701,10 +9784,10 @@ index 0000000..32ef387
 +    return p
 diff --git a/python/commands/powerlab_router2/router.py b/python/commands/powerlab_router2/router.py
 new file mode 100644
-index 0000000..1e592b3
+index 0000000..3a1b46f
 --- /dev/null
 +++ b/python/commands/powerlab_router2/router.py
-@@ -0,0 +1,2118 @@
+@@ -0,0 +1,2176 @@
 +"""PowerLab router 2: route like a person plans, then negotiate.
 +
 +The first router (commands/powerlab_router/) routes one connection after another and rips
@@ -9766,8 +9849,16 @@ index 0000000..1e592b3
 +                 present=0.6, present_growth=1.7, history=0.5, rounds=40, nodes=200_000,
 +                 margins=(3.0, 10.0, None), magnetics=2.0, escape=1.0, weight=1.3, fast=True, spokes=1.0,
 +                 force=False, door=0.0, spoke_corridor=0.0, escalated=3.0, bus_pull=0.6, levels=True,
-+                 loop_pairs=False, escape_vias=False, escape_via_cost=0.0):
++                 loop_pairs=False, escape_vias=False, escape_via_cost=0.0, against=1.0, top_axis="v",
++                 pour_layer=2.0):
 +        self.turn, self.via, self.diagonal, self.weight, self.fast = turn, via, diagonal, weight, fast
++        # preferred directions, as by hand on two layers: the top runs one way (top_axis, "v" or
++        # "h"), the bottom the other, inner layers alternate. A step across a layer's direction
++        # costs `against` times its length, a diagonal half that much more (1.0: off). Without
++        # them both layers fill with tracks every way, so crossings find walls on both
++        # (detours) and the bottom pour is cut into pieces (sf-motion's GND: 12 against 3)
++        self.against, self.top_axis = against, top_axis
++        self.pour_layer = pour_layer  # factor on an outer layer mostly covered by a pour net (pour_layers)
 +        # force: a late round's failed search tries again at the first round's price (strict
 +        # PathFinder). On TestPCB2 the overlaps then didn't settle within the time (41 nets
 +        # after 8 rounds against 2 after 11) and the same 120 joins were made: off until the
@@ -9889,6 +9980,25 @@ index 0000000..1e592b3
 +    return {k: v for k, v in out.items() if len(v) >= BUS_MIN}
 +
 +
++def pour_layers(board, pour_nets, layers, share=0.5):
++    """Copper layers whose pour-net zones cover more than `share` of the board's outline."""
++    ol = pcbnew.SHAPE_POLY_SET()
++    try:
++        board.GetBoardPolygonOutlines(ol, False)
++    except TypeError:
++        board.GetBoardPolygonOutlines(ol)
++    total = ol.Area()
++    if total <= 0:
++        return set()
++    out = set()
++    for L in layers:
++        area = sum(z.Outline().Area() for z in board.Zones()
++                   if not z.GetIsRuleArea() and z.GetNetname() in pour_nets and z.IsOnLayer(L))
++        if area > share * total:
++            out.add(L)
++    return out
++
++
 +def inner_layers(board, pour_nets):
 +    """The plane layers a join may go down to: inner layers mostly covered by zones whose
 +    copper isn't mostly a pour net's (the GND plane stays whole; a power plane takes a short
@@ -9987,6 +10097,7 @@ index 0000000..1e592b3
 +                regions.setdefault(name, [(x0, y0), (x1, y0), (x1, y1), (x0, y1)])
 +        self.rb = RouterBoard(board, pitch, pour_nets, layers, regions)
 +        self.esc = {Li for Li, L in enumerate(self.rb.layers) if self.rb.layer_names[L] in set(esc)}
++        self.dirf = self._direction_factors()
 +        self.time_budget = time_budget
 +        self.region = region  # (x0, y0, x1, y1) mm: only connections inside
 +        g = self.rb.grid
@@ -10001,6 +10112,13 @@ index 0000000..1e592b3
 +                self.lf.append(self.costs.layers[0])
 +            else:
 +                self.lf.append(self.costs.layers[-1])
++        # an outer layer that is mostly a pour net's copper (a 2-layer board's GND side) is the
++        # return plane: its tracks cost more, so long runs go on the other side and the plane
++        # isn't cut into pieces (sf-motion's bottom GND: 9.7 pieces -> 6 at 2.0; by hand 3)
++        self.pour_layers = pour_layers(board, set(pour_nets), self.rb.layers)
++        for Li, L in enumerate(self.rb.layers):
++            if L in self.pour_layers and L in (self.rb.all_layers[0], self.rb.all_layers[-1]):
++                self.lf[Li] *= self.costs.pour_layer
 +        for Li in self.esc:
 +            self.lf[Li] = self.costs.escalated
 +        self.occ = {}
@@ -10021,6 +10139,29 @@ index 0000000..1e592b3
 +        self.trials = {}  # take_out(trial=...) -> the joins it took out, for untake()
 +
 +    # --- setup -------------------------------------------------------------------------------
++    def _direction_factors(self):
++        """Per routed layer, the 8 step factors of Costs.against (None when off)."""
++        a = self.costs.against
++        if a <= 1.0:
++            return None
++        diag = 1.0 + (a - 1.0) / 2
++        axes = []
++        for k, L in enumerate(self.rb.all_layers):
++            first = self.costs.top_axis
++            axes.append(first if k % 2 == 0 else ("h" if first == "v" else "v"))
++        if len(self.rb.all_layers) > 1:  # the bottom always crosses the top
++            axes[-1] = "h" if axes[0] == "v" else "v"
++        out = []
++        for Li, L in enumerate(self.rb.layers):
++            if Li in self.esc:
++                out.append([1.0] * 8)  # short escalated runs: any way
++                continue
++            ax = axes[self.rb.all_layers.index(L)]
++            along = (0, 4) if ax == "h" else (2, 6)
++            out.append([1.0 if k in along else (diag if k % 2 else a) for k in range(8)])
++        return out
++
++
 +    def occupancy(self, key):
 +        if key not in self.occ:
 +            o = Occupancy(self.rb, key)
@@ -10457,7 +10598,7 @@ index 0000000..1e592b3
 +                try:
 +                    for margin in c.margins:
 +                        win0 = self._win(nr, self._window(nr, cells, margin), 0.0)
-+                        f0, _c0, n0 = S.search(win0, starts, goals, g.pitch, c.turn, c.diagonal,
++                        f0, _c0, n0 = S.search(win0, starts, goals, g.pitch, c.turn, c.diagonal, dirf=self.dirf,
 +                                               max_nodes=max(budget, c.nodes * k), weight=c.weight, max_cost=limit)
 +                        self.nodes += n0
 +                        self.searches += 1
@@ -10479,7 +10620,7 @@ index 0000000..1e592b3
 +            for margin in c.margins:
 +                box = self._window(nr, cells, margin)
 +                win = self._win(nr, box, pf)
-+                found, cost, nodes = S.search(win, starts, goals, g.pitch, c.turn, c.diagonal, max_nodes=budget,
++                found, cost, nodes = S.search(win, starts, goals, g.pitch, c.turn, c.diagonal, dirf=self.dirf, max_nodes=budget,
 +                                              deadline=deadline, weight=weight or c.weight, max_cost=limit)
 +                self.nodes += nodes
 +                self.searches += 1
@@ -10504,7 +10645,7 @@ index 0000000..1e592b3
 +                # price: the overlap it leaves raises the history there and the others move
 +                box = self._window(nr, cells, c.margins[1])
 +                win = self._win(nr, box, self.costs.present)
-+                found, cost, nodes = S.search(win, starts, goals, g.pitch, c.turn, c.diagonal, max_nodes=c.nodes,
++                found, cost, nodes = S.search(win, starts, goals, g.pitch, c.turn, c.diagonal, dirf=self.dirf, max_nodes=c.nodes,
 +                                              deadline=deadline, weight=weight or c.weight)
 +                self.nodes += nodes
 +                self.searches += 1
@@ -10714,7 +10855,7 @@ index 0000000..1e592b3
 +        g, c = self.rb.grid, self.costs
 +        box = self._window(nr, cells, c.margins[1])
 +        win = self._win(nr, box, self.costs.present)
-+        found, _cost, _n = S.search(win, starts, goals, g.pitch, c.turn, c.diagonal, max_nodes=c.nodes,
++        found, _cost, _n = S.search(win, starts, goals, g.pitch, c.turn, c.diagonal, dirf=self.dirf, max_nodes=c.nodes,
 +                                    weight=weight or c.weight)
 +        rec = {"net": nr.net, "pin": _name(isl[0]), "round_price": None}
 +        if not found:
@@ -11825,10 +11966,10 @@ index 0000000..1e592b3
 +    return bp
 diff --git a/python/commands/powerlab_router2/search.py b/python/commands/powerlab_router2/search.py
 new file mode 100644
-index 0000000..133d973
+index 0000000..56671ef
 --- /dev/null
 +++ b/python/commands/powerlab_router2/search.py
-@@ -0,0 +1,468 @@
+@@ -0,0 +1,471 @@
 +"""Octilinear A* for PowerLab router 2. No pcbnew, so it can be tested anywhere.
 +
 +A state is (cell, layer, direction): the direction it was entered in, 0-7 (45 degrees apart)
@@ -11898,7 +12039,7 @@ index 0000000..133d973
 +
 +
 +def search(win, starts, goals, pitch, turn=1.0, diagonal=1.1, max_nodes=400_000, deadline=None, weight=1.0,
-+           max_cost=None):
++           max_cost=None, dirf=None):
 +    """Cheapest way from a start to a goal.
 +
 +    starts: [(i, j, L, d, cost)] global cells, d the direction the track leaves in;
@@ -11906,10 +12047,13 @@ index 0000000..133d973
 +    weight > 1: a greedier search (at most that much dearer than the best way), far fewer
 +    nodes; the shaping pass redraws the corridor anyway.
 +    max_cost: give up once every way left would cost more (a detour nobody would draw).
++    dirf: per window layer, 8 factors on a step's length by its direction (a layer's preferred
++    direction at 1, the others dearer), or None.
 +    Returns (path [(i, j, L, d)], cost mm, nodes) or (None, None, nodes)."""
 +    w, h, NL = win.w, win.h, win.layers
 +    i0, j0 = win.i0, win.j0
-+    step = [pitch * (diagonal * SQ2 if k % 2 else 1.0) for k in range(8)]
++    step = [[pitch * (diagonal * SQ2 if k % 2 else 1.0) * (dirf[L][k] if dirf else 1.0) for k in range(8)]
++            for L in range(NL)]
 +    lgoal = {}
 +    for (gi, gj, gl), v in goals.items():
 +        if win.contains(gi, gj):
@@ -11974,7 +12118,7 @@ index 0000000..133d973
 +                continue
 +            if k & 1 and (blk[jj * w + ni] or blk[nj * w + ii]):
 +                continue  # a diagonal past a blocked cell would cut its corner
-+            ng = g + step[k] * cst[nxy]
++            ng = g + step[L][k] * cst[nxy]
 +            if d != FREE and k != d:
 +                ng += turn
 +            ns = (L * wh + nxy) * 9 + k
@@ -12055,7 +12199,7 @@ index 0000000..133d973
 +        w, h, NL, np.ascontiguousarray(win.block_a).ravel(), np.ascontiguousarray(win.cost_a, np.float64).ravel(),
 +        np.ascontiguousarray(win.via_ok_a).ravel(), np.ascontiguousarray(win.via_cost_a, np.float64).ravel(),
 +        hla.ravel(), gmask, gcost, np.array(ss, np.int64), np.array(sc, np.float64),
-+        np.array(step, np.float64), _DX, _DY, float(turn), int(max_nodes),
++        np.array(step, np.float64).ravel(), _DX, _DY, float(turn), int(max_nodes),
 +        float(max_cost * weight) if max_cost is not None else 1e300)
 +    if found < 0:
 +        return None, None, int(nodes)
@@ -12299,10 +12443,10 @@ index 0000000..133d973
 +    return False
 diff --git a/python/commands/powerlab_router2/search_nb.py b/python/commands/powerlab_router2/search_nb.py
 new file mode 100644
-index 0000000..6eb49c1
+index 0000000..9b08bd0
 --- /dev/null
 +++ b/python/commands/powerlab_router2/search_nb.py
-@@ -0,0 +1,204 @@
+@@ -0,0 +1,205 @@
 +"""The A* of search.search() compiled with numba, when numba is there (PowerLab router 2).
 +
 +The same states, moves, costs and tie-breaks as the Python loop, so it returns the same way;
@@ -12404,6 +12548,7 @@ index 0000000..6eb49c1
 +               turn, max_nodes, max_cost):
 +        """block/cost/hl/gmask/gcost: flat per (layer, cell); via_ok/via_cost: flat per cell.
 +        gmask: bit k = the goal may be reached moving in direction k (0: not a goal).
++        step: flat per (layer, direction), a layer's preferred direction cheaper.
 +        Returns (found state or -1, its cost, nodes, path states)."""
 +        FREE = 8
 +        wh = w * h
@@ -12470,7 +12615,7 @@ index 0000000..6eb49c1
 +                    continue
 +                if k & 1 and (block[base + jj * w + ni] or block[base + nj * w + ii]):
 +                    continue  # a diagonal past a blocked cell would cut its corner
-+                ng = g + step[k] * cost[base + nxy]
++                ng = g + step[L * 8 + k] * cost[base + nxy]
 +                if d != FREE and k != d:
 +                    ng += turn
 +                ncell = base + nxy
@@ -19229,7 +19374,7 @@ index 41895ce..b5f5375 100644
    logger.info("Design rule tools registered");
  }
 diff --git a/src/tools/freerouting.ts b/src/tools/freerouting.ts
-index d9942f7..2b6925e 100644
+index d9942f7..392ad7d 100644
 --- a/src/tools/freerouting.ts
 +++ b/src/tools/freerouting.ts
 @@ -19,7 +19,7 @@ export function registerFreeroutingTools(server: McpServer, callKicadScript: Fun
@@ -19354,7 +19499,7 @@ index d9942f7..2b6925e 100644
 +      pourNets: z
 +        .array(z.string())
 +        .optional()
-+        .describe("Nets that connect through their copper pours and are never routed (default: ['GND']). The router keeps these pours whole."),
++        .describe("Nets that connect through their copper pours and are never routed (default: every ground net with a zone, e.g. GND, GNDA, AGND). Their pours refill round the new copper; other nets' zones are fixed copper."),
 +      live: z.boolean().optional().describe("Show the copper in KiCad while routing (engine 1) or when routed (router 2), when KiCad has the board open (default true)"),
 +      powerPours: z
 +        .boolean()

@@ -143,3 +143,35 @@ class Loops(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CentreRaster(unittest.TestCase):
+    """Router 2's grid blocks a cell for fixed copper when the cell's centre lies in the
+    obstacle grown by the clearance (geom.Grid.centres_in). Pillow's fill also took the cells an
+    outline only touches, up to a cell more, and on sf-motion 26 of 74 hand-placed vias, legal
+    by DRC, had no cell left."""
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            cls.geom = load("python/commands/powerlab_router2/geom.py")
+        except ImportError as e:  # numpy / Pillow: KiCad's Python has both
+            raise unittest.SkipTest(str(e))
+
+    def test_square_by_centres(self):
+        g = self.geom.Grid(0.0, 0.0, 2.0, 2.0, 0.1)
+        sq = [(0.52, 0.52), (1.08, 0.52), (1.08, 1.08), (0.52, 1.08)]
+        a = g.centres_in([(sq, [])], g.zeros())
+        cells = {(i, j) for j, i in zip(*a.nonzero())}
+        # centres 0.6 .. 1.0 lie inside (0.52-1.08); 0.5 and 1.1 don't
+        self.assertEqual(cells, {(i, j) for i in range(6, 11) for j in range(6, 11)})
+        b = g.polygons([(sq, [])], g.zeros())
+        self.assertGreater(int(b.sum()), int(a.sum()))  # the touch fill takes more
+
+    def test_hole_left_free(self):
+        g = self.geom.Grid(0.0, 0.0, 2.0, 2.0, 0.1)
+        outer = [(0.25, 0.25), (1.75, 0.25), (1.75, 1.75), (0.25, 1.75)]
+        hole = [(0.75, 0.75), (1.25, 0.75), (1.25, 1.25), (0.75, 1.25)]
+        a = g.centres_in([(outer, [hole])], g.zeros())
+        self.assertTrue(a[3, 3])
+        self.assertFalse(a[10, 10])
