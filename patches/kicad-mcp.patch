@@ -9784,10 +9784,10 @@ index 0000000..32ef387
 +    return p
 diff --git a/python/commands/powerlab_router2/router.py b/python/commands/powerlab_router2/router.py
 new file mode 100644
-index 0000000..3a1b46f
+index 0000000..1924db4
 --- /dev/null
 +++ b/python/commands/powerlab_router2/router.py
-@@ -0,0 +1,2176 @@
+@@ -0,0 +1,2194 @@
 +"""PowerLab router 2: route like a person plans, then negotiate.
 +
 +The first router (commands/powerlab_router/) routes one connection after another and rips
@@ -9850,7 +9850,7 @@ index 0000000..3a1b46f
 +                 margins=(3.0, 10.0, None), magnetics=2.0, escape=1.0, weight=1.3, fast=True, spokes=1.0,
 +                 force=False, door=0.0, spoke_corridor=0.0, escalated=3.0, bus_pull=0.6, levels=True,
 +                 loop_pairs=False, escape_vias=False, escape_via_cost=0.0, against=1.0, top_axis="v",
-+                 pour_layer=2.0):
++                 pour_layer=2.0, fan_all=False, fan_straight=1.0):
 +        self.turn, self.via, self.diagonal, self.weight, self.fast = turn, via, diagonal, weight, fast
 +        # preferred directions, as by hand on two layers: the top runs one way (top_axis, "v" or
 +        # "h"), the bottom the other, inner layers alternate. A step across a layer's direction
@@ -9858,6 +9858,11 @@ index 0000000..3a1b46f
 +        # them both layers fill with tracks every way, so crossings find walls on both
 +        # (detours) and the bottom pour is cut into pieces (sf-motion's GND: 12 against 3)
 +        self.against, self.top_axis = against, top_axis
++        self.fan_straight = fan_straight  # mm on going straight on instead of the fan's 45 degrees
++        # Router.lanes: every fine-pitch pin fans toward its other pads. Off: on sf-motion (fan_straight
++        # 0.3) 111.7 -> 113.3 joins and 8.3 -> 6.7 important ones open, but the shaping leaves
++        # 0.1-0.2 mm jogs at the fan's turn (22.5 degree pieces, 67 degree corners): fix that first
++        self.fan_all = fan_all
 +        self.pour_layer = pour_layer  # factor on an outer layer mostly covered by a pour net (pour_layers)
 +        # force: a late round's failed search tries again at the first round's price (strict
 +        # PathFinder). On TestPCB2 the overlaps then didn't settle within the time (41 nets
@@ -10461,9 +10466,19 @@ index 0000000..3a1b46f
 +            out = [l for l in out if l.layer not in self.esc]
 +        if nr.bus and self.costs.bus_pull < 1.0 and self.rb.is_fine(pad):
 +            out = self._fan(nr, pad, out)
++        elif self.costs.fan_all and self.rb.is_fine(pad):
++            # any net at a fine-pitch row fans the same way, toward its other pads: neighbours
++            # heading one way leave in order and run on parallel. Each choosing its own turn,
++            # the middle one of three (SHA between GHA and GLA at sf-motion's driver) was shut in
++            others = [xy(q.GetPosition()) for isl in nr.islands for q in isl if uuid(q) != uuid(pad)
++                      and q.GetParentFootprint().GetReference() != pad.GetParentFootprint().GetReference()]
++            if others:
++                tx = sum(q[0] for q in others) / len(others)
++                ty = sum(q[1] for q in others) / len(others)
++                out = self._fan(nr, pad, out, target=(tx, ty), straight=self.costs.fan_straight)
 +        return out
 +
-+    def _fan(self, nr, pad, lanes):
++    def _fan(self, nr, pad, lanes, target=None, straight=1.0):
 +        """A bus member's lanes at a fine-pitch pin row: straight out of the row to the lane's
 +        exit, then 45 degrees towards the bus's other IC (straight on costs a little more).
 +        Every pin of the row leaves the same way and turns at the same distance, so the tracks
@@ -10471,12 +10486,15 @@ index 0000000..3a1b46f
 +        each where it pleased, they left no gap for the next pin (PWM_BH at U3 on TestPCB2)."""
 +        from commands.powerlab_router2.board import Lane
 +        from commands.powerlab_router2.geom import DIRS
-+        ref = pad.GetParentFootprint().GetReference()
-+        other = [r for r in nr.bus_ics if r != ref]
-+        if ref not in nr.bus_ics or not other:
-+            return lanes
-+        fp = self.board.FindFootprintByReference(other[0])
-+        tx, ty = xy(fp.GetPosition())
++        if target is not None:
++            tx, ty = target
++        else:
++            ref = pad.GetParentFootprint().GetReference()
++            other = [r for r in nr.bus_ics if r != ref]
++            if ref not in nr.bus_ics or not other:
++                return lanes
++            fp = self.board.FindFootprintByReference(other[0])
++            tx, ty = xy(fp.GetPosition())
 +        out = []
 +        for l in lanes:
 +            if len(l.dirs) != 1:
@@ -10489,7 +10507,7 @@ index 0000000..3a1b46f
 +                dx, dy = DIRS[k]
 +                return (dx * vx + dy * vy) / math.hypot(dx, dy)
 +            diag = max(((d + 1) % 8, (d - 1) % 8), key=toward)
-+            nl = Lane(l.pad, l.layer, l.centre, l.exit, l.cell, {diag: 0.0, d: 1.0}, l.cost, l.stub, l.width)
++            nl = Lane(l.pad, l.layer, l.centre, l.exit, l.cell, {diag: 0.0, d: straight}, l.cost, l.stub, l.width)
 +            nl.anchor = l.anchor
 +            out.append(nl)
 +        return out
