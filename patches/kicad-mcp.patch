@@ -3501,10 +3501,10 @@ index 0000000..052abc5
 +
 diff --git a/python/commands/powerlab_route.py b/python/commands/powerlab_route.py
 new file mode 100644
-index 0000000..1973a2f
+index 0000000..49a174f
 --- /dev/null
 +++ b/python/commands/powerlab_route.py
-@@ -0,0 +1,788 @@
+@@ -0,0 +1,804 @@
 +"""
 +The PowerLab router as a background job (PowerLab patch).
 +
@@ -4074,7 +4074,8 @@ index 0000000..1973a2f
 +    new_drc = None
 +    if drc:
 +        pads = {p.m_Uuid.AsString(): p for fp in board.GetFootprints() for p in fp.Pads()}
-+        for rnd in range(4):
++        seen: Dict[str, int] = {}  # starved pad -> rounds it has been starved
++        for rnd in range(5):
 +            st.write(phase="DRC after routing" + (f", round {rnd + 1}" if rnd else ""))
 +            new = drc.errors(board) - base
 +            new_drc = {}
@@ -4083,18 +4084,33 @@ index 0000000..1973a2f
 +                new_drc[kind] = new_drc.get(kind, 0) + 1
 +                if kind != "unconnected_items":
 +                    by_kind.setdefault(kind, set()).update(ids)
-+            if not by_kind or rnd == 3:
++            if not by_kind or rnd == 4:
 +                break
 +            out = []
 +            for kind, ids in sorted(by_kind.items()):
 +                if kind == "starved_thermal":
-+                    out += router.take_out(starved=[pads[u] for u in ids if u in pads],
-+                                           why="left a pour pad's thermal spokes no room (starved_thermal)")
++                    why = "left a pour pad's thermal spokes no room (starved_thermal)"
++                    first = [pads[u] for u in ids if u in pads and u not in seen]
++                    if first:
++                        out += router.take_out(starved=first, why=why)
++                    # still starved: the pour round it was cut further off. Try the nearest join
++                    # (wider each round); one that didn't help goes back, and after two tries
++                    # the pad is left for hand fixing (a long track can slice the pour from afar)
++                    for u in ids:
++                        if u not in pads:
++                            continue
++                        if u in router.trials:
++                            back = router.untake(u)
++                            taken = [e for e in taken if not any(e is b for b in back)]
++                            out += [None] * len(back)  # the board changed: check again
++                        if u in seen and seen[u] <= 2:
++                            out += router.take_out(starved=[pads[u]], why=why, reach=1.3 + 1.5 * seen[u], trial=u)
++                        seen[u] = seen.get(u, 0) + 1
 +                else:
 +                    out += router.take_out(uuids=ids, why=f"in a new DRC error ({kind})")
 +            if not out:
 +                break
-+            taken += out
++            taken += [e for e in out if e is not None]
 +    rep["routed"] -= len(taken)
 +    rep["left"] = rep.get("left", []) + taken
 +    if taken:  # the joins per priority after the take-outs
@@ -9685,10 +9701,10 @@ index 0000000..32ef387
 +    return p
 diff --git a/python/commands/powerlab_router2/router.py b/python/commands/powerlab_router2/router.py
 new file mode 100644
-index 0000000..8d525ff
+index 0000000..1e592b3
 --- /dev/null
 +++ b/python/commands/powerlab_router2/router.py
-@@ -0,0 +1,2075 @@
+@@ -0,0 +1,2118 @@
 +"""PowerLab router 2: route like a person plans, then negotiate.
 +
 +The first router (commands/powerlab_router/) routes one connection after another and rips
@@ -10002,6 +10018,7 @@ index 0000000..8d525ff
 +        self.bus_groups = []
 +        self.loop_pairs = []  # [gate leg, return] (_loop_pairs)
 +        self._direct_ok = {}  # (net, layer, points) -> clear of the fixed copper
++        self.trials = {}  # take_out(trial=...) -> the joins it took out, for untake()
 +
 +    # --- setup -------------------------------------------------------------------------------
 +    def occupancy(self, key):
@@ -11544,14 +11561,18 @@ index 0000000..8d525ff
 +        return n
 +
 +    # --- after DRC -------------------------------------------------------------------------------
-+    def take_out(self, uuids=(), starved=(), why="a new DRC error"):
++    def take_out(self, uuids=(), starved=(), why="a new DRC error", reach=None, trial=None):
 +        """kicad-cli DRC has the last word: joins whose copper is in a new DRC error go, with
 +        the joins hanging on them, from the board too.
 +
 +        uuids: items named in new violations (only the router's own count). starved: pads
 +        (pcbnew) whose thermal spokes found no room; the other nets' new copper across a spoke's
 +        line goes (the exact check can't see spokes: KiCad draws them when it fills), or, when
-+        nothing new crosses one, the new copper within a spoke's reach of the pad. Returns the
++        nothing new crosses one, the new copper within a spoke's reach of the pad. `reach` (mm):
++        the new copper within that much of the pad goes, for a pad still starved after a round
++        (a track a few mm off can cut the pour round the pad into an island KiCad drops, and
++        the spoke then has nothing to reach). `trial`: a key under which the joins taken out are
++        kept, so untake() can put them back when the pad stays starved anyway. Returns the
 +        report's `left` entries for the joins taken out."""
 +        uuids = set(uuids)
 +        rb = self.rb
@@ -11572,7 +11593,7 @@ index 0000000..8d525ff
 +                    lines.append((pad.GetNetname(), L, c, (c[0] + u[0] * (ext + SPOKE_REACH),
 +                                                           c[1] + u[1] * (ext + SPOKE_REACH))))
 +            bb = pad.GetBoundingBox()
-+            r = SPOKE_REACH + 0.5
++            r = reach if reach is not None else SPOKE_REACH + 0.5
 +            boxes.append((pad.GetNetname(), (T(bb.GetLeft()) - r, T(bb.GetTop()) - r,
 +                                             T(bb.GetRight()) + r, T(bb.GetBottom()) + r)))
 +
@@ -11592,15 +11613,37 @@ index 0000000..8d525ff
 +
 +        nrs = getattr(self, "nrs", [])
 +        test = across
-+        if starved and not any(across(nr.net, it) for nr in nrs for b in nr.branches for it in getattr(b, "items", [])):
++        if reach is not None or starved and not any(across(nr.net, it) for nr in nrs for b in nr.branches for it in getattr(b, "items", [])):
 +            test = near
 +
 +        def hits(nr, it):
 +            return uuid(it) in uuids or (bool(starved) and test(nr.net, it))
 +
++        only = None
++        if reach is not None and starved:
++            # still starved: only the join nearest the pad within `reach` goes (with what hangs
++            # on it; at the same distance the one with fewer joins on it): the whole box cost
++            # +1V2_MCU's tree of five on TestPCB2
++            centres = [(pad.GetNetname(), xy(pad.GetPosition())) for pad in starved]
++            best = None
++            for nr in nrs:
++                for b in nr.branches:
++                    its = [it for it in getattr(b, "items", None) or [] if near(nr.net, it)]
++                    if not its:
++                        continue
++                    d = min(_seg_dist(xy(it.GetStart()), xy(it.GetEnd()), c, c) if it.Type() != pcbnew.PCB_VIA_T
++                            else math.dist(xy(it.GetPosition()), c) for it in its for n, c in centres if n != nr.net)
++                    rank = (round(d * 2) / 2, len(self._with_dependents(nr, [b])))
++                    if best is None or rank < best[0]:
++                        best = (rank, b)
++            only = {best[1]} if best else set()
++
 +        left = []
 +        for nr in nrs:
-+            mine = [b for b in nr.branches if any(hits(nr, it) for it in getattr(b, "items", None) or [])]
++            if only is not None:
++                mine = [b for b in nr.branches if b in only]
++            else:
++                mine = [b for b in nr.branches if any(hits(nr, it) for it in getattr(b, "items", None) or [])]
 +            if not mine:
 +                continue
 +            gone = self._with_dependents(nr, mine)
@@ -11608,11 +11651,27 @@ index 0000000..8d525ff
 +                for it in b.items:
 +                    self.board.Remove(it)
 +                reason = why if b in mine else "a join it hangs on was taken out"
-+                nr.failed.append((b.island, reason))
++                failed = (b.island, reason)
++                nr.failed.append(failed)
 +                p = b.island[0]
-+                left.append({"net": nr.net, "pin": _name(p), "reason": reason, "at": _at(xy(p.GetPosition()))})
++                entry = {"net": nr.net, "pin": _name(p), "reason": reason, "at": _at(xy(p.GetPosition()))}
++                left.append(entry)
++                if trial is not None:
++                    self.trials.setdefault(trial, []).append((nr, b, failed, entry))
 +            nr.branches = [b for b in nr.branches if b not in gone]
 +        return left
++
++    def untake(self, trial):
++        """Put back the joins take_out(trial=...) took out; returns their `left` entries."""
++        back = []
++        for nr, b, failed, entry in self.trials.pop(trial, []):
++            for it in b.items:
++                self.board.Add(it)
++            nr.branches.append(b)
++            if failed in nr.failed:
++                nr.failed.remove(failed)
++            back.append(entry)
++        return back
 +
 +    # --- report ----------------------------------------------------------------------------------
 +    def _report(self, nrs, blocked_pins, rounds, history, dropped, bad, timings, items):
