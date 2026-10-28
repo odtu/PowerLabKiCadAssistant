@@ -187,5 +187,8 @@
  "Route the board": "توجيه مسارات اللوحة",
  "Route this board": "وجّه مسارات هذه اللوحة",
  "Export Gerbers for PCBWay": "تصدير Gerber لـ PCBWay",
- "Export Gerbers and drill files for PCBWay": "صدّر ملفات Gerber والثقب لـ PCBWay"
+ "Export Gerbers and drill files for PCBWay": "صدّر ملفات Gerber والثقب لـ PCBWay",
+ "Your edited library files are kept in {backup}.": "ملفات المكتبة التي عدّلتها محفوظة في {backup}.",
+ "The library update changes files you've edited here ({names}). Share your edits first, or set them aside: they're copied to a backup folder next to the library and the update goes ahead.": "تحديث المكتبة يغيّر ملفات عدّلتها هنا ({names}). شارك تعديلاتك أولًا، أو ضعها جانبًا: تُنسخ إلى مجلد نسخ احتياطي بجوار المكتبة ويتابع التحديث.",
+ "Set aside and update": "ضعها جانبًا وحدّث"
 }

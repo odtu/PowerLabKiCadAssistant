@@ -187,5 +187,8 @@
  "Route the board": "기판 라우팅",
  "Route this board": "이 기판을 라우팅해 줘",
  "Export Gerbers for PCBWay": "PCBWay용 Gerber 내보내기",
- "Export Gerbers and drill files for PCBWay": "PCBWay용 Gerber와 드릴 파일을 내보내 줘"
+ "Export Gerbers and drill files for PCBWay": "PCBWay용 Gerber와 드릴 파일을 내보내 줘",
+ "Your edited library files are kept in {backup}.": "편집한 라이브러리 파일은 {backup}에 보관되어 있습니다.",
+ "The library update changes files you've edited here ({names}). Share your edits first, or set them aside: they're copied to a backup folder next to the library and the update goes ahead.": "라이브러리 업데이트가 여기서 편집한 파일({names})을 변경합니다. 먼저 편집 내용을 공유하거나 따로 보관하세요. 보관하면 라이브러리 옆의 백업 폴더에 복사되고 업데이트가 계속됩니다.",
+ "Set aside and update": "따로 보관하고 업데이트"
 }

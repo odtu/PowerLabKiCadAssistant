@@ -187,5 +187,8 @@
  "Route the board": "Трассировать плату",
  "Route this board": "Протрасируй эту плату",
  "Export Gerbers for PCBWay": "Экспорт Gerber для PCBWay",
- "Export Gerbers and drill files for PCBWay": "Экспортируй Gerber и файлы сверловки для PCBWay"
+ "Export Gerbers and drill files for PCBWay": "Экспортируй Gerber и файлы сверловки для PCBWay",
+ "Your edited library files are kept in {backup}.": "Ваши изменённые файлы библиотеки сохранены в {backup}.",
+ "The library update changes files you've edited here ({names}). Share your edits first, or set them aside: they're copied to a backup folder next to the library and the update goes ahead.": "Обновление библиотеки меняет файлы, которые вы здесь изменили ({names}). Сначала поделитесь изменениями или отложите их: они копируются в папку резервной копии рядом с библиотекой, и обновление продолжается.",
+ "Set aside and update": "Отложить и обновить"
 }

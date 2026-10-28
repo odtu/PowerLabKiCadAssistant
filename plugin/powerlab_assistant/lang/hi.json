@@ -187,5 +187,8 @@
  "Route the board": "बोर्ड रूट करें",
  "Route this board": "इस बोर्ड को रूट करो",
  "Export Gerbers for PCBWay": "PCBWay के लिए Gerber एक्सपोर्ट करें",
- "Export Gerbers and drill files for PCBWay": "PCBWay के लिए Gerber और ड्रिल फ़ाइलें एक्सपोर्ट करो"
+ "Export Gerbers and drill files for PCBWay": "PCBWay के लिए Gerber और ड्रिल फ़ाइलें एक्सपोर्ट करो",
+ "Your edited library files are kept in {backup}.": "आपकी संपादित लाइब्रेरी फ़ाइलें {backup} में रखी गई हैं।",
+ "The library update changes files you've edited here ({names}). Share your edits first, or set them aside: they're copied to a backup folder next to the library and the update goes ahead.": "लाइब्रेरी अपडेट उन फ़ाइलों को बदलता है जिन्हें आपने यहाँ संपादित किया है ({names})। पहले अपने बदलाव साझा करें, या उन्हें अलग रखें: वे लाइब्रेरी के पास एक बैकअप फ़ोल्डर में कॉपी हो जाते हैं और अपडेट आगे बढ़ता है।",
+ "Set aside and update": "अलग रखें और अपडेट करें"
 }

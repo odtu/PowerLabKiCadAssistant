@@ -187,5 +187,8 @@
  "Route the board": "Rotear a placa",
  "Route this board": "Roteie esta placa",
  "Export Gerbers for PCBWay": "Exportar Gerbers para PCBWay",
- "Export Gerbers and drill files for PCBWay": "Exporte Gerbers e arquivos de furação para PCBWay"
+ "Export Gerbers and drill files for PCBWay": "Exporte Gerbers e arquivos de furação para PCBWay",
+ "Your edited library files are kept in {backup}.": "Os arquivos de biblioteca que você editou estão guardados em {backup}.",
+ "The library update changes files you've edited here ({names}). Share your edits first, or set them aside: they're copied to a backup folder next to the library and the update goes ahead.": "A atualização da biblioteca altera arquivos que você editou aqui ({names}). Compartilhe suas alterações primeiro ou deixe-as de lado: elas são copiadas para uma pasta de backup ao lado da biblioteca e a atualização continua.",
+ "Set aside and update": "Deixar de lado e atualizar"
 }

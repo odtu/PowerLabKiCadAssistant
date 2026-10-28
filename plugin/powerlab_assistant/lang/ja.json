@@ -187,5 +187,8 @@
  "Route the board": "基板を配線",
  "Route this board": "この基板を配線してください",
  "Export Gerbers for PCBWay": "PCBWay 用に Gerber を出力",
- "Export Gerbers and drill files for PCBWay": "PCBWay 用に Gerber とドリルファイルを出力してください"
+ "Export Gerbers and drill files for PCBWay": "PCBWay 用に Gerber とドリルファイルを出力してください",
+ "Your edited library files are kept in {backup}.": "編集したライブラリファイルは {backup} に保存されています。",
+ "The library update changes files you've edited here ({names}). Share your edits first, or set them aside: they're copied to a backup folder next to the library and the update goes ahead.": "ライブラリの更新は、ここで編集したファイル（{names}）を変更します。先に編集を共有するか、退避してください。退避するとライブラリの隣のバックアップフォルダーにコピーされ、更新が続行されます。",
+ "Set aside and update": "退避して更新"
 }

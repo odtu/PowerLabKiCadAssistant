@@ -187,5 +187,8 @@
  "Route the board": "Platine routen",
  "Route this board": "Route diese Platine",
  "Export Gerbers for PCBWay": "Gerber für PCBWay exportieren",
- "Export Gerbers and drill files for PCBWay": "Exportiere Gerber- und Bohrdateien für PCBWay"
+ "Export Gerbers and drill files for PCBWay": "Exportiere Gerber- und Bohrdateien für PCBWay",
+ "Your edited library files are kept in {backup}.": "Deine bearbeiteten Bibliotheksdateien liegen in {backup}.",
+ "The library update changes files you've edited here ({names}). Share your edits first, or set them aside: they're copied to a backup folder next to the library and the update goes ahead.": "Das Bibliotheks-Update ändert Dateien, die du hier bearbeitet hast ({names}). Teile deine Änderungen zuerst oder lege sie beiseite: Sie werden in einen Sicherungsordner neben der Bibliothek kopiert, und das Update läuft weiter.",
+ "Set aside and update": "Beiseitelegen und aktualisieren"
 }
