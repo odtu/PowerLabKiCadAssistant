@@ -9790,10 +9790,10 @@ index 0000000..32ef387
 +    return p
 diff --git a/python/commands/powerlab_router2/router.py b/python/commands/powerlab_router2/router.py
 new file mode 100644
-index 0000000..9cb3407
+index 0000000..827906b
 --- /dev/null
 +++ b/python/commands/powerlab_router2/router.py
-@@ -0,0 +1,2422 @@
+@@ -0,0 +1,2437 @@
 +"""PowerLab router 2: route like a person plans, then negotiate.
 +
 +The first router (commands/powerlab_router/) routes one connection after another and rips
@@ -11885,9 +11885,15 @@ index 0000000..9cb3407
 +
 +        def note(k):
 +            why[k] = why.get(k, 0) + 1
++        def per_layer(ps):
++            d = {}
++            for L, x, _o in ps:
++                d[L] = d.get(L, 0.0) + x
++            return d
 +        pieces = self._pour_pieces()
 +        cut = sum(a for _L, a, _o in pieces)
-+        why["cut_off_mm2_before"] = round(cut, 1)
++        layers_cut = per_layer(pieces)
++        why["cut_off_mm2_before"] = {self.rb.layer_names[L]: round(x, 1) for L, x in layers_cut.items()}
 +        tried = set()
 +        while time.time() < deadline:
 +            todo = [(L, a, o) for L, a, o in sorted(pieces, key=lambda p: -p[1])
@@ -11901,20 +11907,29 @@ index 0000000..9cb3407
 +                note("no join of the router's bounds it")
 +                continue
 +            ok, undo = self._reroute_group(group, L, factor, deadline)
++            if ok is False and undo == "overlaps" and len({id(nr) for nr, _b in group}) > 1:
++                # the first net routed again took the room the next one needed: the other order
++                note("overlaps, tried the other order")
++                ok, undo = self._reroute_group(group[::-1], L, factor, deadline)
 +            if not ok:
 +                note(ok is None and "out of time" or undo)
 +                continue
 +            after = self._pour_pieces()
 +            cut_after = sum(x for _L, x, _o in after)
-+            if cut_after < cut - 0.5:
-+                pieces, cut = after, cut_after
++            layers_after = per_layer(after)
++            # no pour is traded for another: on TestPCB2 the moved tracks went to the top,
++            # also a GND pour, and cut it there (7 -> 10 pieces) while the total fell
++            worse = [M for M in set(layers_after) | set(layers_cut)
++                     if layers_after.get(M, 0.0) > layers_cut.get(M, 0.0) + 0.5]
++            if cut_after < cut - 0.5 and not worse:
++                pieces, cut, layers_cut = after, cut_after, layers_after
 +                moved += len(group)
 +                tried = set()  # the pieces moved: look again
 +                continue
-+            note("no less cut off")
++            note("cuts another pour" if worse else "no less cut off")
 +            undo()
 +            pieces = self._pour_pieces()
-+        why["cut_off_mm2_after"] = round(cut, 1)
++        why["cut_off_mm2_after"] = {self.rb.layer_names[L]: round(x, 1) for L, x in layers_cut.items()}
 +        return moved
 +
 +    def _reroute_group(self, group, L, factor, deadline):
