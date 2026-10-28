@@ -3501,10 +3501,10 @@ index 0000000..052abc5
 +
 diff --git a/python/commands/powerlab_route.py b/python/commands/powerlab_route.py
 new file mode 100644
-index 0000000..2b00cf5
+index 0000000..c78a30b
 --- /dev/null
 +++ b/python/commands/powerlab_route.py
-@@ -0,0 +1,823 @@
+@@ -0,0 +1,824 @@
 +"""
 +The PowerLab router as a background job (PowerLab patch).
 +
@@ -4083,7 +4083,8 @@ index 0000000..2b00cf5
 +    if REPAIR_POURS:
 +        # joins whose tracks cut a pour into pieces go round on a dearer layer (Router.repair_pours)
 +        st.write(phase="mending the pours")
-+        rep["pour_repair"] = {"joins_moved": router.repair_pours(time.time() + 120)}
++        rep["pour_repair"] = {"joins_moved": router.repair_pours(time.time() + 180),
++                              **getattr(router, "repair_why", {})}
 +    if live:
 +        live.push(board, force=True)
 +    taken: List[Dict[str, Any]] = []
@@ -9789,10 +9790,10 @@ index 0000000..32ef387
 +    return p
 diff --git a/python/commands/powerlab_router2/router.py b/python/commands/powerlab_router2/router.py
 new file mode 100644
-index 0000000..8fa38bc
+index 0000000..9cb3407
 --- /dev/null
 +++ b/python/commands/powerlab_router2/router.py
-@@ -0,0 +1,2361 @@
+@@ -0,0 +1,2422 @@
 +"""PowerLab router 2: route like a person plans, then negotiate.
 +
 +The first router (commands/powerlab_router/) routes one connection after another and rips
@@ -11840,10 +11841,11 @@ index 0000000..8fa38bc
 +        return left
 +
 +    # --- pours after routing ---------------------------------------------------------------------
-+    def _pour_pieces(self, min_area=0.3):
++    def _pour_pieces(self, min_area=1.0):
 +        """Fill the zones; the pour nets' filled pieces on the routed layers beyond the largest
-+        of each zone: [(layer, area mm2, box)]. A track that closes a ring with others or the
-+        edge cuts the plane into pieces; the costs only see length, not the cut."""
++        of each zone, at least `min_area` mm2 (slivers between parallel tracks don't count):
++        [(layer, area mm2, outline)]. A track that closes a ring with others or the edge cuts
++        the plane into pieces; the search's costs only see length, not the cut."""
 +        pcbnew.ZONE_FILLER(self.board).Fill(self.board.Zones())
 +        out = []
 +        for z in self.board.Zones():
@@ -11853,96 +11855,156 @@ index 0000000..8fa38bc
 +                if not z.IsOnLayer(L):
 +                    continue
 +                f = z.GetFilledPolysList(L)
-+                pieces = []
-+                for i in range(f.OutlineCount()):
-+                    o = f.Outline(i)
-+                    a = abs(o.Area()) / 1e12
-+                    bb = o.BBox()
-+                    pieces.append((a, (T(bb.GetLeft()), T(bb.GetTop()), T(bb.GetRight()), T(bb.GetBottom()))))
-+                pieces.sort(reverse=True)
-+                out += [(L, a, box) for a, box in pieces[1:] if a >= min_area]
++                pieces = sorted(((abs(f.Outline(i).Area()) / 1e12, f.Outline(i).Clone())
++                                 for i in range(f.OutlineCount())), key=lambda p: -p[0])
++                out += [(L, a, o) for a, o in pieces[1:] if a >= min_area]
 +        return out
 +
-+    def repair_pours(self, deadline, factor=6.0, tries=12):
-+        """Joins whose tracks bound a cut-off piece of a pour are routed again with that layer
-+        `factor` times dearer per mm and the other nets as walls (least important first). A new
-+        way stays only if it is clear (exact check), no join is lost and the pour has fewer
-+        pieces; else the old copper goes back. Returns how many joins moved."""
-+        nrs = getattr(self, "nrs", [])
-+        moved, tried = 0, set()
++    def _bounding(self, L, outline, reach=0.4):
++        """The router's joins with a track on L within `reach` mm of a piece's outline."""
++        r = int(pcbnew.FromMM(reach))
++        found = []
++        for nr in getattr(self, "nrs", []):
++            for b in nr.branches:
++                for it in getattr(b, "items", None) or []:
++                    if it.Type() == pcbnew.PCB_VIA_T or it.GetLayer() != L:
++                        continue
++                    if outline.Collide(pcbnew.SEG(it.GetStart(), it.GetEnd()), r):
++                        found.append((nr, b))
++                        break
++        return found
++
++    def repair_pours(self, deadline, factor=6.0):
++        """Joins whose tracks bound a cut-off piece of a pour are routed again, all of that
++        piece's at once (a piece is mostly closed by several nets: moving one of them never
++        joined it back), with that layer `factor` times dearer per mm and the other nets as
++        walls. Kept only if every new way is clear (exact check), no join is lost and less of
++        the pour is cut off; else the old copper goes back. Returns how many joins moved."""
++        moved = 0
++        why = self.repair_why = {}
++
++        def note(k):
++            why[k] = why.get(k, 0) + 1
 +        pieces = self._pour_pieces()
-+        while pieces and tries > 0 and time.time() < deadline:
-+            cands = []
-+            for L, _a, (x0, y0, x1, y1) in sorted(pieces, key=lambda p: -p[1]):
-+                for nr in nrs:
-+                    for b in nr.branches:
-+                        if (nr.net, id(b)) in tried:
-+                            continue
-+                        for it in getattr(b, "items", None) or []:
-+                            if it.Type() == pcbnew.PCB_VIA_T or it.GetLayer() != L:
-+                                continue
-+                            ib = it.GetBoundingBox()
-+                            if T(ib.GetRight()) >= x0 - 0.3 and T(ib.GetLeft()) <= x1 + 0.3 and \
-+                                    T(ib.GetBottom()) >= y0 - 0.3 and T(ib.GetTop()) <= y1 + 0.3:
-+                                cands.append((nr.priority, self._length(b), nr, b, L))
-+                                break
-+            if not cands:
++        cut = sum(a for _L, a, _o in pieces)
++        why["cut_off_mm2_before"] = round(cut, 1)
++        tried = set()
++        while time.time() < deadline:
++            todo = [(L, a, o) for L, a, o in sorted(pieces, key=lambda p: -p[1])
++                    if (L, round(a, 1)) not in tried]
++            if not todo:
 +                break
-+            _p, _l, nr, b, L = min(cands, key=lambda c: (c[0], c[1]))
-+            tried.add((nr.net, id(b)))
-+            tries -= 1
-+            Li = self.rb.layers.index(L)
-+            old = (list(nr.branches), list(nr.failed), nr.grid_geo, nr.final_geo,
-+                   {id(x): x.items for x in nr.branches})
-+            gone = self._with_dependents(nr, [b])
++            L, a, o = todo[0]
++            tried.add((L, round(a, 1)))
++            group = self._bounding(L, o)
++            if not group:
++                note("no join of the router's bounds it")
++                continue
++            ok, undo = self._reroute_group(group, L, factor, deadline)
++            if not ok:
++                note(ok is None and "out of time" or undo)
++                continue
++            after = self._pour_pieces()
++            cut_after = sum(x for _L, x, _o in after)
++            if cut_after < cut - 0.5:
++                pieces, cut = after, cut_after
++                moved += len(group)
++                tried = set()  # the pieces moved: look again
++                continue
++            note("no less cut off")
++            undo()
++            pieces = self._pour_pieces()
++        why["cut_off_mm2_after"] = round(cut, 1)
++        return moved
++
++    def _reroute_group(self, group, L, factor, deadline):
++        """Route the joins of `group` again with layer L `factor` times dearer, the rest as
++        walls, and put them on the board. Returns (True, undo) or (False, why)."""
++        Li = self.rb.layers.index(L)
++        nets = {}
++        for nr, b in group:
++            nets.setdefault(id(nr), (nr, []))[1].append(b)
++        saved = []
++        for nr, bs in nets.values():
++            saved.append((nr, list(nr.branches), list(nr.failed), nr.grid_geo, nr.final_geo,
++                          {id(x): x.items for x in nr.branches}, self._with_dependents(nr, bs)))
++
++        added = []  # the new copper put on the board (only once everything is clear)
++
++        def undo():
++            for it in added:
++                self.board.Remove(it)
++            added.clear()
++            for nr, br, fl, gg, fg, items, gone in saved:
++                self.unstamp(nr)
++                nr.branches, nr.failed, nr.grid_geo, nr.final_geo = br, fl, gg, fg
++                for x in nr.branches:
++                    x.items = items[id(x)]
++                for x in gone:
++                    for it in x.items:
++                        self.board.Add(it)
++                self.stamp(nr, nr.final_geo or nr.grid_geo)
++
++        # take the old copper off first, so the joins of the group can use each other's room
++        for nr, br, fl, gg, fg, items, gone in saved:
 +            for x in gone:
 +                for it in x.items:
 +                    self.board.Remove(it)
-+            open_before = len(nr.failed)
 +            self.unstamp(nr)
-+            nr.nodes_used.clear()
-+            lf = self.lf[Li]
-+            self.lf[Li] = lf * factor
-+            try:
-+                self.route_net(nr, 1e4, deadline, keep=[x for x in nr.branches if x not in gone], weight=1.0)
-+            finally:
-+                self.lf[Li] = lf
-+            new = [x for x in nr.branches if id(x) not in old[4]]
-+            ok = not self.cut and len(nr.failed) <= open_before and not self._bad_branches(nr)[0]
-+            if ok:
++            nr.branches = [x for x in nr.branches if x not in gone]
++            nr.grid_geo = self._grid_geo(nr)
++            self.stamp(nr, nr.grid_geo)
++        lf = self.lf[Li]
++        self.lf[Li] = lf * factor
++        why = ""
++        try:
++            for nr, br, fl, gg, fg, items, gone in saved:
++                open_before = len(fl)
++                self.unstamp(nr)
++                nr.nodes_used.clear()
++                self.route_net(nr, 1e4, deadline, keep=list(nr.branches), weight=1.0)
 +                self.stamp(nr, nr.grid_geo)
-+                self._shape_net(nr)
-+                for x in new:
-+                    x.items = self._items(nr, x)
-+                others = [(it, n.net) for n in nrs if n is not nr for x in n.branches for it in x.items]
-+                idx = self.rb.index(others + [(it, it.GetNetname()) for it in self.rb.fixed])
-+                for x in new:
-+                    for it in x.items:
-+                        kind = "Via" if it.Type() == pcbnew.PCB_VIA_T else "Track"
-+                        if [h for h in self.rb.hits(nr.net, self._item_key(nr, it), it, kind, idx) if h is not None]:
-+                            ok = False
-+                if ok:
-+                    for x in new:
-+                        for it in x.items:
-+                            self.board.Add(it)
-+                    after = self._pour_pieces()
-+                    if len(after) < len(pieces):
-+                        pieces = after
-+                        moved += 1
-+                        continue
-+                    for x in new:
-+                        for it in x.items:
-+                            self.board.Remove(it)
-+            # back as it was
-+            self.unstamp(nr)
-+            nr.branches, nr.failed, nr.grid_geo, nr.final_geo = old[0], old[1], old[2], old[3]
-+            for x in nr.branches:
-+                x.items = old[4][id(x)]
-+            for x in gone:
++                if self.cut:
++                    why = None
++                    break
++                if len(nr.failed) > open_before:
++                    why = "a join found no other way"
++                    break
++                if self._bad_branches(nr)[0]:
++                    why = "overlaps"
++                    break
++        finally:
++            self.lf[Li] = lf
++        if why != "":
++            undo()
++            return (None if why is None else False), why
++        nrs = getattr(self, "nrs", [])
++        new = {}
++        for nr, br, fl, gg, fg, items, gone in saved:
++            self._shape_net(nr)
++            new[id(nr)] = [x for x in nr.branches if id(x) not in items]
++            for x in new[id(nr)]:
++                x.items = self._items(nr, x)
++        moving = {id(nr) for nr, *_ in saved}
++        others = [(it, n.net) for n in nrs if id(n) not in moving for x in n.branches for it in x.items]
++        mine = [(it, nr.net) for nr, *_ in saved for x in nr.branches if id(x) in {id(y) for y in new[id(nr)]}
++                for it in x.items]
++        kept = [(it, nr.net) for nr, br, fl, gg, fg, items, gone in saved for x in nr.branches
++                if id(x) in items for it in x.items]
++        idx = self.rb.index(others + kept + mine + [(it, it.GetNetname()) for it in self.rb.fixed])
++        for nr, *_ in saved:
++            for x in new[id(nr)]:
++                for it in x.items:
++                    kind = "Via" if it.Type() == pcbnew.PCB_VIA_T else "Track"
++                    if [h for h in self.rb.hits(nr.net, self._item_key(nr, it), it, kind, idx) if h is not None]:
++                        undo()
++                        return False, "too close (exact check)"
++        for nr, *_ in saved:
++            for x in new[id(nr)]:
 +                for it in x.items:
 +                    self.board.Add(it)
-+            self.stamp(nr, nr.final_geo or nr.grid_geo)
-+        return moved
++                    added.append(it)
++        return True, undo
 +
 +    def untake(self, trial):
 +        """Put back the joins take_out(trial=...) took out; returns their `left` entries."""
