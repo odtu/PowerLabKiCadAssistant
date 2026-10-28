@@ -24,7 +24,7 @@ How should I route the board?
   - it routes all nets at once and negotiates the overlaps, instead of one after another (so the first tracks don't box in the later ones);
   - decaps are joined to their IC pins first; buses between two ICs are drawn as a bundle; a net's later tracks join its earlier ones (T-junctions away from the pads);
   - 45° tracks with exact pad entries, no tracks under inductors and transformers (§3.4), room at fine-pitch pins, rule areas and the `.kicad_dru` clearances; an inner plane layer only when the outer layers are full, never under switch nodes;
-  - kicad-cli DRC has the last word: a join that causes a new DRC error (a starved thermal relief too) is taken out and left for you, so the run adds **no** DRC errors.
+  - kicad-cli DRC has the last word: a join that causes a new DRC error (a starved thermal relief too) is taken out and left for you, so a run normally adds no DRC errors; the few it can't trace to its own copper (a pour narrowed elsewhere) are in `new_drc_errors` for you to fix.
 
   It routes and nothing else: power pours and GND stitching vias stay your steps. It never moves parts. It takes about 5 minutes on a 2-layer board with ~130 connections (up to `timeLimit`, 15 minutes) and runs in the background. Expect it to make about 80–85 % of the joins on a crowded power board; you route the rest.
 - **By hand:** you draw every track and via with the kicad tools (`route_pad_to_pad`, `route_trace`, `add_via`), net by net in the §3.4 order. Slower, and costs many tool calls, but every decision is yours. Use it for small boards or when the user wants it.
@@ -87,7 +87,7 @@ Ask for whatever you can't read from the board, and don't guess currents or volt
 - **The result:** when the run is done, `powerlab_route_status` puts it on the board. With KiCad open, the copper goes into KiCad's board, the zones are refilled and the board is saved there (no File → Revert). Without KiCad, the routed board is written to the file. Its report:
   - `routed` of `connections`, and `left`: each join it didn't make, with the reason and its place (`kicad:at=`). "no free entry lane" / "pins_without_a_way_out": a pad boxed in, by placement or by copper you drew; "no way within 2.5× its direct length": placement, or another layer; "crowded": it lost the room to more important nets; "in a new DRC error" / "starved_thermal": taken out at the end.
   - `by_priority`: joins made per priority. If priority-3 nets were left while 0/1 nets were routed, the plan is wrong: fix it and run again rather than finishing by hand.
-  - `new_drc_errors` (normally none), `vias`, `track_mm`, `plan`, `buses`, `inner`.
+  - `new_drc_errors` (normally none; fix any by hand, e.g. a starved thermal: move the track that blocks its spokes or give the pad a via), `vias`, `track_mm`, `plan`, `buses`, `inner`.
 - **Undo:** each run keeps the saved board from before it in `autoroute-backup\`; `undo_autoroute` puts it back (once, the last run only; everything done after the run is lost too). With KiCad open it puts the old copper back in KiCad and saves there.
 
 ## 4. Finish by hand

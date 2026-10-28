@@ -3501,10 +3501,10 @@ index 0000000..052abc5
 +
 diff --git a/python/commands/powerlab_route.py b/python/commands/powerlab_route.py
 new file mode 100644
-index 0000000..94e6231
+index 0000000..1973a2f
 --- /dev/null
 +++ b/python/commands/powerlab_route.py
-@@ -0,0 +1,781 @@
+@@ -0,0 +1,788 @@
 +"""
 +The PowerLab router as a background job (PowerLab patch).
 +
@@ -4097,6 +4097,13 @@ index 0000000..94e6231
 +            taken += out
 +    rep["routed"] -= len(taken)
 +    rep["left"] = rep.get("left", []) + taken
++    if taken:  # the joins per priority after the take-outs
++        by_priority: Dict[int, Dict[str, int]] = {}
++        for nr in getattr(router, "nrs", []):
++            e = by_priority.setdefault(nr.priority, {"joins": 0, "routed": 0})
++            e["joins"] += len(nr.islands) - 1
++            e["routed"] += len(nr.branches)
++        rep["by_priority"] = by_priority
 +    rep["drc_taken_out"] = len(taken)
 +    rep["new_drc_errors"] = new_drc
 +    prio: Dict[str, List[str]] = {}
@@ -9678,10 +9685,10 @@ index 0000000..32ef387
 +    return p
 diff --git a/python/commands/powerlab_router2/router.py b/python/commands/powerlab_router2/router.py
 new file mode 100644
-index 0000000..598196f
+index 0000000..8d525ff
 --- /dev/null
 +++ b/python/commands/powerlab_router2/router.py
-@@ -0,0 +1,2023 @@
+@@ -0,0 +1,2075 @@
 +"""PowerLab router 2: route like a person plans, then negotiate.
 +
 +The first router (commands/powerlab_router/) routes one connection after another and rips
@@ -11542,30 +11549,57 @@ index 0000000..598196f
 +        the joins hanging on them, from the board too.
 +
 +        uuids: items named in new violations (only the router's own count). starved: pads
-+        (pcbnew) whose thermal spokes found no room; the other nets' new copper within a
-+        spoke's reach of them goes (the exact check can't see spokes: KiCad draws them when it
-+        fills). Returns the report's `left` entries for the joins taken out."""
++        (pcbnew) whose thermal spokes found no room; the other nets' new copper across a spoke's
++        line goes (the exact check can't see spokes: KiCad draws them when it fills), or, when
++        nothing new crosses one, the new copper within a spoke's reach of the pad. Returns the
++        report's `left` entries for the joins taken out."""
 +        uuids = set(uuids)
-+        spots = []
++        rb = self.rb
++        lines, boxes = [], []  # (net, layer, a, b): a spoke's line; (net, box): its reach
 +        for pad in starved:
++            c = xy(pad.GetPosition())
++            for L in rb.all_layers:
++                if not pad.IsOnLayer(L):
++                    continue
++                try:
++                    ax = rb.axis(pad, L)
++                    pts = [q for o, _h in polys(grown(pad, L, 0.0)) for q in o]
++                except Exception:
++                    continue
++                for a in ([45.0 + 90.0 * k for k in range(4)] if ax is None else [ax + 90.0 * k for k in range(4)]):
++                    u = (math.cos(math.radians(a)), math.sin(math.radians(a)))
++                    ext = max((q[0] - c[0]) * u[0] + (q[1] - c[1]) * u[1] for q in pts)
++                    lines.append((pad.GetNetname(), L, c, (c[0] + u[0] * (ext + SPOKE_REACH),
++                                                           c[1] + u[1] * (ext + SPOKE_REACH))))
 +            bb = pad.GetBoundingBox()
 +            r = SPOKE_REACH + 0.5
-+            spots.append((pad.GetNetname(), T(bb.GetLeft()) - r, T(bb.GetTop()) - r,
-+                          T(bb.GetRight()) + r, T(bb.GetBottom()) + r))
++            boxes.append((pad.GetNetname(), (T(bb.GetLeft()) - r, T(bb.GetTop()) - r,
++                                             T(bb.GetRight()) + r, T(bb.GetBottom()) + r)))
++
++        def across(net, it):
++            """`it` crosses a spoke line of a starved pad of another net."""
++            if it.Type() == pcbnew.PCB_VIA_T:
++                p, rad = xy(it.GetPosition()), _via_radius(it)
++                return any(n != net and _seg_dist(p, p, a, b) < SPOKE_HALF + rad - 0.075 for n, _L, a, b in lines)
++            s, e, w = xy(it.GetStart()), xy(it.GetEnd()), T(it.GetWidth())
++            return any(n != net and L == it.GetLayer() and _seg_dist(s, e, a, b) < SPOKE_HALF + (w - 0.15) / 2
++                       for n, L, a, b in lines)
++
++        def near(net, it):
++            ib = it.GetBoundingBox()
++            return any(n != net and T(ib.GetRight()) >= x0 and T(ib.GetLeft()) <= x1 and T(ib.GetBottom()) >= y0
++                       and T(ib.GetTop()) <= y1 for n, (x0, y0, x1, y1) in boxes)
++
++        nrs = getattr(self, "nrs", [])
++        test = across
++        if starved and not any(across(nr.net, it) for nr in nrs for b in nr.branches for it in getattr(b, "items", [])):
++            test = near
 +
 +        def hits(nr, it):
-+            if uuid(it) in uuids:
-+                return True
-+            for net, x0, y0, x1, y1 in spots:
-+                if net != nr.net:
-+                    ib = it.GetBoundingBox()
-+                    if T(ib.GetRight()) >= x0 and T(ib.GetLeft()) <= x1 and T(ib.GetBottom()) >= y0 and \
-+                            T(ib.GetTop()) <= y1:
-+                        return True
-+            return False
++            return uuid(it) in uuids or (bool(starved) and test(nr.net, it))
 +
 +        left = []
-+        for nr in getattr(self, "nrs", []):
++        for nr in nrs:
 +            mine = [b for b in nr.branches if any(hits(nr, it) for it in getattr(b, "items", None) or [])]
 +            if not mine:
 +                continue
@@ -11664,6 +11698,31 @@ index 0000000..598196f
 +
 +def _at(p):
 +    return f"kicad:at={p[0]:.2f},{p[1]:.2f}"
++
++
++def _via_radius(v):
++    for args in ((pcbnew.F_Cu,), ()):
++        try:
++            return T(v.GetWidth(*args)) / 2
++        except Exception:
++            pass
++    return 0.3
++
++
++def _seg_dist(p, q, a, b):
++    """Shortest distance between segments p-q and a-b (mm)."""
++    def to_seg(x, s, e):
++        dx, dy = e[0] - s[0], e[1] - s[1]
++        L2 = dx * dx + dy * dy
++        t = 0.0 if L2 == 0 else max(0.0, min(1.0, ((x[0] - s[0]) * dx + (x[1] - s[1]) * dy) / L2))
++        return math.dist(x, (s[0] + t * dx, s[1] + t * dy))
++
++    def cross(o, s, e):
++        return (s[0] - o[0]) * (e[1] - o[1]) - (s[1] - o[1]) * (e[0] - o[0])
++    d1, d2, d3, d4 = cross(a, b, p), cross(a, b, q), cross(p, q, a), cross(p, q, b)
++    if ((d1 > 0) != (d2 > 0)) and ((d3 > 0) != (d4 > 0)) and d1 and d2 and d3 and d4:
++        return 0.0
++    return min(to_seg(p, a, b), to_seg(q, a, b), to_seg(a, p, q), to_seg(b, p, q))
 +
 +
 +def _what(o):
@@ -19111,7 +19170,7 @@ index 41895ce..b5f5375 100644
    logger.info("Design rule tools registered");
  }
 diff --git a/src/tools/freerouting.ts b/src/tools/freerouting.ts
-index d9942f7..fce24d9 100644
+index d9942f7..2b6925e 100644
 --- a/src/tools/freerouting.ts
 +++ b/src/tools/freerouting.ts
 @@ -19,7 +19,7 @@ export function registerFreeroutingTools(server: McpServer, callKicadScript: Fun
@@ -19213,7 +19272,7 @@ index d9942f7..fce24d9 100644
 +  // The PowerLab router (PowerLab patch): a local router that applies the lab rules
 +  server.tool(
 +    "powerlab_route",
-+    "Route the board with the PowerLab router (router 2). It runs on this computer in KiCad's Python and follows a routing plan made from the schematic (routing/routing-plan.json next to the board; make and review it first with planOnly: true): each net's priority (3 gate drive, switch nodes, bootstrap, PWM, clocks; 2 power and analog; 1 signals; 0 test points, debug, LEDs), buses drawn as bundles, and which nets may go down to an inner plane layer when the outer layers are full. It first checks every pin's way out, then routes all nets at once and negotiates the overlaps (important nets keep their room), joins decaps to their IC pins first, draws 45-degree tracks with exact pad entries, and checks every track and via against the board's rules. At the end kicad-cli DRC has the last word: joins that cause a new DRC error (starved thermal reliefs included) are taken out and listed for hand routing, so the run adds no DRC errors. It routes, nothing else: pours and GND stitching vias are separate steps (stitching after hand routing). It routes the saved .kicad_pcb, so save in KiCad first. Default-class nets are routed from scratch (their unlocked tracks and vias are removed first); other nets only if they have no tracks yet; nets with locked copper (hand-routed) are left out. A run takes minutes (about 5 on a 2-layer board with ~130 connections, up to timeLimit), so it runs in the background: this call returns at once, then call powerlab_route_status until it reports the result. At the end the result goes into KiCad's open board, the zones are refilled and it is saved there (no File > Revert); without KiCad it goes into the board file. The board from before the run is kept; undo_autoroute puts it back. Parts are never moved.",
++    "Route the board with the PowerLab router (router 2). It runs on this computer in KiCad's Python and follows a routing plan made from the schematic (routing/routing-plan.json next to the board; make and review it first with planOnly: true): each net's priority (3 gate drive, switch nodes, bootstrap, PWM, clocks; 2 power and analog; 1 signals; 0 test points, debug, LEDs), buses drawn as bundles, and which nets may go down to an inner plane layer when the outer layers are full. It first checks every pin's way out, then routes all nets at once and negotiates the overlaps (important nets keep their room), joins decaps to their IC pins first, draws 45-degree tracks with exact pad entries, and checks every track and via against the board's rules. At the end kicad-cli DRC has the last word: joins that cause a new DRC error (starved thermal reliefs included) are taken out and listed for hand routing, so a run normally adds no DRC errors (any it couldn't trace to its own copper are listed in new_drc_errors). It routes, nothing else: pours and GND stitching vias are separate steps (stitching after hand routing). It routes the saved .kicad_pcb, so save in KiCad first. Default-class nets are routed from scratch (their unlocked tracks and vias are removed first); other nets only if they have no tracks yet; nets with locked copper (hand-routed) are left out. A run takes minutes (about 5 on a 2-layer board with ~130 connections, up to timeLimit), so it runs in the background: this call returns at once, then call powerlab_route_status until it reports the result. At the end the result goes into KiCad's open board, the zones are refilled and it is saved there (no File > Revert); without KiCad it goes into the board file. The board from before the run is kept; undo_autoroute puts it back. Parts are never moved.",
 +    {
 +      boardPath: z.string().optional().describe("Path to .kicad_pcb file (default: current board)"),
 +      planOnly: z
