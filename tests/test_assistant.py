@@ -143,18 +143,23 @@ class SkillToolsEnvTests(unittest.TestCase):
         self.assertIn("never offer it", panel.PANEL_NOTE)
 
     def test_powerlab_router_switch(self):
-        # The router is off until it has had more local testing: its tools are blocked and
-        # Claude routes by hand. undo_autoroute still undoes an earlier run.
+        # With the router off, its tools are blocked and Claude routes by hand; the panel note
+        # and the skill must say the same as the flag. undo_autoroute works either way.
         from powerlab_assistant import panel
         route = ("mcp__kicad__powerlab_route", "mcp__kicad__powerlab_route_status")
         for tool in route:
             self.assertEqual(tool in panel.DISALLOWED_TOOLS, not panel.POWERLAB_ROUTER)
         self.assertNotIn("mcp__kicad__undo_autoroute", panel.DISALLOWED_TOOLS)
+        with open(os.path.join(ROOT, "skills", "powerlab-autoroute", "SKILL.md"), encoding="utf-8") as f:
+            skill = f.read()
         if not panel.POWERLAB_ROUTER:
             self.assertIn("route by hand", panel.PANEL_NOTE)
             self.assertIn("switched off", panel.PANEL_NOTE)
-            with open(os.path.join(ROOT, "skills", "powerlab-autoroute", "SKILL.md"), encoding="utf-8") as f:
-                self.assertIn("The PowerLab router is switched off for now", f.read())
+            self.assertIn("The PowerLab router is switched off for now", skill)
+        else:
+            self.assertIn("PowerLab router (recommended", panel.PANEL_NOTE)
+            self.assertNotIn("switched off", panel.PANEL_NOTE)
+            self.assertNotIn("switched off", skill)
 
     def test_mcp_server_is_not_edited(self):
         # Issue #73: a kicad tool misbehaved, so Claude edited the installed MCP server and
@@ -226,13 +231,15 @@ class SkillToolsEnvTests(unittest.TestCase):
             route = f.read()
         # the first question, then the review without asking; no Freerouting
         self.assertIn("## 0. Ask first: by hand or the PowerLab router", route)
-        self.assertIn("PowerLab router, then I fix its DRC errors by hand (Recommended)", route)
+        self.assertIn("PowerLab router, then I finish what it leaves by hand (Recommended)", route)
+        # router 2: the routing plan goes to the user before the run
+        self.assertIn("planOnly: true", route)
         self.assertIn("Always run the design review next, without asking", route)
         self.assertIn("Never offer it.", route)
         self.assertNotIn("autoroute`", route.replace("undo_autoroute`", ""))
         # GND pours with thermal reliefs; solid only for high-current pours; power rails as pours
         self.assertIn("GND pours connect pads with thermal reliefs", route)
-        self.assertIn("powerPours", route)
+        self.assertIn("Afterwards give each rail a pour round its tracks", route)
         self.assertIn("No duplicate tracks", rules)
         # No GND fan-out vias up front: pads reach the pour, vias only after routing
         self.assertIn("No GND fan-out before routing", route)
@@ -428,6 +435,9 @@ class ChatHistoryTests(unittest.TestCase):
         panel_mod.threading.Thread = lambda **kw: types.SimpleNamespace(start=lambda: None)
         self.addCleanup(setattr, panel_mod.subprocess, "Popen", saved[0])
         self.addCleanup(setattr, panel_mod.threading, "Thread", saved[1])
+        if not hasattr(panel_mod.subprocess, "CREATE_NO_WINDOW"):  # Windows only; CI runs Linux too
+            panel_mod.subprocess.CREATE_NO_WINDOW = 0
+            self.addCleanup(delattr, panel_mod.subprocess, "CREATE_NO_WINDOW")
 
         second.launch("Carry on")
         args = runs[0][0]
@@ -729,7 +739,7 @@ class ChatHistoryTests(unittest.TestCase):
         # red, and reported as faults; Claude fixes both in its next step. kicad tools stay red.
         from powerlab_assistant import report
         panel = self.fake_panel()
-        path = os.path.join(self.project, "placement", "placementlock-plan.json")
+        path = os.path.join(self.project, "placement", "block-plan.json")
         panel.show_plan = lambda p: self.fail("a refused write isn't a written plan")
         steps = [("Edit", {"file_path": path}, "<tool_use_error>File has not been read yet. "
                   "Read it first before writing to it.</tool_use_error>", "slip"),
@@ -2690,6 +2700,13 @@ class LanguageTests(unittest.TestCase):
         self.assertEqual(self.i18n.current({"language": "uk"}), "uk")
         self.assertIn(self.i18n.current({"language": "xx"}), codes)  # unknown: Windows' or English
 
+    def test_readme_header_lists_every_language(self):
+        with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as f:
+            header = f.read().split("</div>")[0]
+        self.assertIn(f"**{len(self.i18n.LANGUAGES)} languages**", header)
+        for _, _, name in self.i18n.LANGUAGES:
+            self.assertIn(name, header)
+
     def test_claude_writes_in_the_chosen_language(self):
         self.assertEqual(self.i18n.reply_note("en"), "")
         note = self.i18n.reply_note("tr")
@@ -3002,6 +3019,10 @@ class UpdateCheckTests(unittest.TestCase):
             self.assertEqual(updates.version_in(f.read()), config.VERSION)
         self.assertEqual(updates.version_in('NOTICE_VERSION = 1\nVERSION = "1.2.3"  # bump\n'), "1.2.3")
         self.assertEqual(updates.version_in("nothing here"), "")
+
+    def test_readme_badge_shows_the_version(self):
+        with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as f:
+            self.assertIn(f"badge/version-{config.VERSION}-", f.read())
 
     def test_notes_wait_until_the_release_is_published(self):
         settings = {}

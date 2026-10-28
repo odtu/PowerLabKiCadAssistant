@@ -10,7 +10,8 @@
     1. Checks KiCad 10, git and Node.js.
     2. Claude Code (official installer) if missing.
     3. KiCad MCP server (mixelpixx/KiCAD-MCP-Server, pinned version) and its
-       Python packages in KiCad's own Python.
+       Python packages in KiCad's own Python; numba for the PowerLab router in
+       a folder of its own (pinned wheels, KiCad's NumPy left alone).
     4. The panel plugins into your KiCad 10 folder.
     5. The METU Power Lab library as a git clone, and KiCad pointed at it.
     6. Optionally GitHub CLI, for sharing libraries and filing reports.
@@ -39,6 +40,13 @@ $LocalData = Join-Path $env:LOCALAPPDATA "PowerLabKiCadAssistant"
 $McpRepo = "https://github.com/mixelpixx/KiCAD-MCP-Server.git"
 $LibraryRepo = "https://github.com/odtu/PowerLabKiCadLibraries.git"
 $SkillsDir = Join-Path $env:USERPROFILE ".claude\skills"
+# numba for the PowerLab router's compiled search: name, version, SHA-256 of the cp311
+# win_amd64 wheel (KiCad 10's Python 3.11), from PyPI. numba 0.68 takes NumPy 1.22-2.5.
+$Pylib = Join-Path $LocalData "pylib"
+$PylibWheels = @(
+    @("numba", "0.68.0", "d36f7c6a07c27fa175f5a4683083c6a830f7791fbda592a8676ce47a444965f7"),
+    @("llvmlite", "0.50.0", "ffe46ef508df226e54b5fe1f7bf11122e5297bcdbb3902cc5b670a429d56ff47")
+)
 
 function Say($text) { Write-Host $text -ForegroundColor Cyan }
 function Ok($text) { Write-Host "  OK  $text" -ForegroundColor Green }
@@ -71,6 +79,7 @@ function Save-Config {
     if ($script:KiCadBin) { $config["kicad_bin"] = $script:KiCadBin }
     if ($script:McpReady) { $config["mcp_path"] = $script:McpDir }
     if ($script:Library) { $config["library_path"] = $script:Library }
+    if ($script:PylibReady) { $config["pylib_path"] = $script:Pylib }
     foreach ($old in @("java_home", "freerouting_jar")) { $config.Remove($old) }  # no Freerouting since 1.0
     $config["source_path"] = $script:Root  # where the panel's Update button pulls from
     if (-not $config.ContainsKey("extra_dirs")) { $config["extra_dirs"] = @() }
@@ -121,6 +130,36 @@ function Run($exe, [string[]]$arguments, $where = $null) {
         & $exe @arguments
         if ($LASTEXITCODE -ne 0) { Fail "$exe $($arguments -join ' ') failed (exit $LASTEXITCODE)" }
     } finally { if ($where) { Pop-Location } }
+}
+function Install-Pylib {
+    # numba and llvmlite into $Pylib, which the router's search_nb.py adds to sys.path.
+    # Never into KiCad's site-packages, and --no-deps: KiCad's own NumPy stays as it is.
+    # Returns "current" (already there), "installed", or an error message.
+    $missing = @($PylibWheels | Where-Object { -not (Test-Path (Join-Path $Pylib "$($_[0])-$($_[1]).dist-info")) })
+    if ($missing.Count -eq 0) { return "current" }
+    $saved = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $requirements = Join-Path $env:TEMP "powerlab-pylib-requirements.txt"
+    try {
+        New-Item -ItemType Directory -Force $Pylib | Out-Null
+        # Older versions out first: pip --target won't replace folders that are there.
+        Get-ChildItem $Pylib -Force | Where-Object { $_.Name -like "numba*" -or $_.Name -like "llvmlite*" } |
+            ForEach-Object { Remove-Item -Recurse -Force $_.FullName -ErrorAction Stop }
+        $bin = Join-Path $Pylib "bin"  # numba's console script; pip --target skips a bin\ that is there
+        Get-ChildItem $bin -Filter "numba*" -ErrorAction SilentlyContinue |
+            ForEach-Object { Remove-Item -Force $_.FullName -ErrorAction Stop }
+        if ((Test-Path $bin) -and -not (Get-ChildItem $bin -Force)) { Remove-Item -Force $bin }
+        $PylibWheels | ForEach-Object { "$($_[0])==$($_[1]) --hash=sha256:$($_[2])" } | Set-Content -Encoding ascii $requirements
+        & $KiCadPython @("-m", "pip", "install", "--quiet", "--disable-pip-version-check", "--no-deps",
+            "--only-binary=:all:", "--require-hashes", "--target", $Pylib, "-r", $requirements) | Out-Host  # shown, not returned
+        if ($LASTEXITCODE -ne 0) { return "pip failed (exit $LASTEXITCODE)" }
+        if ((Probe $KiCadPython @("-c", "import sys; sys.path.insert(0, sys.argv[1]); import numba", $Pylib)) -ne 0) { return "numba was installed but doesn't load in KiCad's Python" }
+        return "installed"
+    } catch { return $_.Exception.Message }
+    finally {
+        Remove-Item -Force $requirements -ErrorAction SilentlyContinue
+        $ErrorActionPreference = $saved
+    }
 }
 
 Write-Host ""
@@ -226,6 +265,13 @@ if ($mcpCurrent) {
         Ok "KiCad tools registered with Claude Code (for your user only)"
     }
 } else { Warn "Skipped the KiCad MCP server (-SkipMcp)." }
+if ($McpReady) {
+    $pylibResult = Install-Pylib
+    if ($pylibResult -eq "current") { Ok "numba for the PowerLab router already installed" }
+    elseif ($pylibResult -eq "installed") { Ok "numba for the PowerLab router -> $Pylib" }
+    else { Warn "numba not installed ($pylibResult). The PowerLab router runs slower without numba." }
+    $PylibReady = ($pylibResult -eq "current" -or $pylibResult -eq "installed")
+}
 
 # ---- 4. Plugins ------------------------------------------------------------
 Say "4. Panel plugins"

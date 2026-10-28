@@ -29,12 +29,10 @@ ALLOWED_TOOLS = [
     # which would also allow Remove-Item.
     "PowerShell(tar -a -cf:*)",
 ]
-# The PowerLab router (powerlab_route) is switched off until it has had more local testing:
-# its tools are blocked and Claude routes by hand. Its code stays in the MCP patch, and the
-# powerlab-autoroute skill keeps its section. To switch it back on, set this to True, put
-# back PANEL_NOTE's routing question (by hand or the PowerLab router, recommended) and
-# remove the "switched off" notes in that skill.
-POWERLAB_ROUTER = False
+# The PowerLab router (powerlab_route, router 2 since 1.3). False blocks its tools and Claude
+# routes by hand; then also take PANEL_NOTE's routing question out and put "switched off"
+# notes in the powerlab-autoroute skill (as in 1.2).
+POWERLAB_ROUTER = True
 # Tools Claude may not use: AskUserQuestion has no one to answer it (see <choices>), and
 # routing is the PowerLab router's or by hand: the kicad MCP server's Freerouting tools
 # are left out of the panel.
@@ -179,9 +177,10 @@ PANEL_NOTE = (
     "powerlab-placement skill. Its first step is a block plan drawn on the outline, which "
     "the user agrees before you place any part.\n"
     "Routing: when the user asks to route the board or some nets, load the powerlab-autoroute "
-    "skill and route by hand. The PowerLab router is switched off for now while it is being "
-    "tested: don't offer it, and if the user asks for it, say it isn't available yet. "
-    "Freerouting isn't available in the panel; never offer it. Routing by hand means "
+    "skill. Its first step is one question with <choices>: by hand, or with the PowerLab "
+    "router (recommended: it routes the board from a routing plan you show the user first, "
+    "then you route what it left by hand). Freerouting isn't available in the panel; never "
+    "offer it. Routing by hand means "
     "you draw the tracks and vias with the kicad tools (route_trace, route_pad_to_pad, "
     "add_via), following the lab rules.\n"
     "When you finish a placement or routing task, or the user asks for a review, load the "

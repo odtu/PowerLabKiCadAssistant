@@ -26,6 +26,8 @@ The installer downloads these from their official sources into `%LOCALAPPDATA%\P
 | [colorlog](https://pypi.org/project/colorlog/), [pydantic](https://pypi.org/project/pydantic/) | | MIT |
 | [requests](https://pypi.org/project/requests/) | | Apache-2.0 |
 | [python-dotenv](https://pypi.org/project/python-dotenv/) | | BSD-3-Clause |
+| [numba](https://pypi.org/project/numba/) 0.68.0 (pinned wheel and SHA-256, see `install.ps1`), into `%LOCALAPPDATA%\PowerLabKiCadAssistant\pylib`, not KiCad's Python | PowerLab router's compiled search | BSD-2-Clause; code it contains from other projects (CPython, NumPy, NetworkX, cloudpickle, …) is listed with its licenses (PSF-2.0, BSD, MIT) in the wheel's `LICENSES.third-party` |
+| [llvmlite](https://pypi.org/project/llvmlite/) 0.50.0 (numba's compiler backend, same folder) | | BSD-2-Clause; the LLVM it bundles: Apache-2.0 WITH LLVM-exception (the wheel's `LICENSE.thirdparty`); the wheel also carries Microsoft's Visual C++ runtime (`msvcp140.dll`), under Microsoft's redistributable terms |
 
 ## Installed by you
 
