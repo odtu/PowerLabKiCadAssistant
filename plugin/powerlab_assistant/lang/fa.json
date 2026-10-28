@@ -187,5 +187,8 @@
  "Route the board": "مسیریابی برد",
  "Route this board": "این برد را مسیریابی کن",
  "Export Gerbers for PCBWay": "خروجی Gerber برای PCBWay",
- "Export Gerbers and drill files for PCBWay": "فایل‌های Gerber و drill را برای PCBWay خروجی بگیر"
+ "Export Gerbers and drill files for PCBWay": "فایل‌های Gerber و drill را برای PCBWay خروجی بگیر",
+ "Your edited library files are kept in {backup}.": "فایل‌های کتابخانه‌ای که ویرایش کرده‌اید در {backup} نگه داشته شده‌اند.",
+ "The library update changes files you've edited here ({names}). Share your edits first, or set them aside: they're copied to a backup folder next to the library and the update goes ahead.": "به‌روزرسانی کتابخانه فایل‌هایی را که اینجا ویرایش کرده‌اید ({names}) تغییر می‌دهد. ابتدا ویرایش‌هایتان را به اشتراک بگذارید یا آن‌ها را کنار بگذارید: در یک پوشهٔ پشتیبان کنار کتابخانه کپی می‌شوند و به‌روزرسانی ادامه می‌یابد.",
+ "Set aside and update": "کنار بگذار و به‌روزرسانی کن"
 }

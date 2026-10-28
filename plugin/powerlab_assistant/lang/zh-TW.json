@@ -187,5 +187,8 @@
  "Route the board": "對電路板佈線",
  "Route this board": "對這塊電路板佈線",
  "Export Gerbers for PCBWay": "匯出 PCBWay 用的 Gerber",
- "Export Gerbers and drill files for PCBWay": "匯出適用於 PCBWay 的 Gerber 與鑽孔檔案"
+ "Export Gerbers and drill files for PCBWay": "匯出適用於 PCBWay 的 Gerber 與鑽孔檔案",
+ "Your edited library files are kept in {backup}.": "你編輯過的庫檔案保存在 {backup}。",
+ "The library update changes files you've edited here ({names}). Share your edits first, or set them aside: they're copied to a backup folder next to the library and the update goes ahead.": "庫更新會變更你在這裡編輯過的檔案（{names}）。請先分享你的修改，或將其擱置：它們會被複製到庫旁邊的備份資料夾，更新繼續進行。",
+ "Set aside and update": "擱置並更新"
 }

@@ -187,5 +187,8 @@
  "Route the board": "Routing board",
  "Route this board": "Lakukan routing pada board ini",
  "Export Gerbers for PCBWay": "Ekspor Gerber untuk PCBWay",
- "Export Gerbers and drill files for PCBWay": "Ekspor file Gerber dan drill untuk PCBWay"
+ "Export Gerbers and drill files for PCBWay": "Ekspor file Gerber dan drill untuk PCBWay",
+ "Your edited library files are kept in {backup}.": "Berkas pustaka yang Anda ubah disimpan di {backup}.",
+ "The library update changes files you've edited here ({names}). Share your edits first, or set them aside: they're copied to a backup folder next to the library and the update goes ahead.": "Pembaruan pustaka mengubah berkas yang Anda ubah di sini ({names}). Bagikan perubahan Anda terlebih dahulu, atau sisihkan: berkas disalin ke folder cadangan di samping pustaka dan pembaruan dilanjutkan.",
+ "Set aside and update": "Sisihkan dan perbarui"
 }

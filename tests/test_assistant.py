@@ -737,6 +737,7 @@ class ChatHistoryTests(unittest.TestCase):
     def test_own_tool_slips_are_not_shown_as_failures(self):
         # #74, #78: an Edit before its Read and a Grep regex ripgrep can't parse were shown in
         # red, and reported as faults; Claude fixes both in its next step. kicad tools stay red.
+        # #84: a Grep call with a parameter the tool doesn't have (`n` for `-n`) is one too.
         from powerlab_assistant import report
         panel = self.fake_panel()
         path = os.path.join(self.project, "placement", "block-plan.json")
@@ -744,6 +745,8 @@ class ChatHistoryTests(unittest.TestCase):
         steps = [("Edit", {"file_path": path}, "<tool_use_error>File has not been read yet. "
                   "Read it first before writing to it.</tool_use_error>", "slip"),
                  ("Grep", {"pattern": "(?!x)"}, "rg: regex parse error: look-around is not supported", "slip"),
+                 ("Grep", {"pattern": "x", "n": True}, "<tool_use_error>InputValidationError: Grep failed "
+                  "due to the following issue: An unexpected parameter `n` was provided</tool_use_error>", "slip"),
                  ("mcp__kicad__add_via", {}, "No board is loaded", "error")]
         for i, (tool, args, text, word) in enumerate(steps):
             panel.handle({"type": "assistant", "message": {"content": [
@@ -2889,7 +2892,7 @@ class LibraryUpdateTests(unittest.TestCase):
         root = self.tmp.name
         self.remote = os.path.join(root, "remote.git")
         self.mine = os.path.join(root, "mine")
-        theirs = os.path.join(root, "theirs")
+        self.theirs = theirs = os.path.join(root, "theirs")
         sh(root, "git", "init", "-q", "--bare", "-b", "main", self.remote)
         sh(root, "git", "clone", "-q", self.remote, theirs)
         for repo in (theirs,):
@@ -2937,6 +2940,45 @@ class LibraryUpdateTests(unittest.TestCase):
         self.assertFalse(ok)
         with open(os.path.join(self.mine, "symbols/METUPowerLab_A.kicad_sym")) as f:
             self.assertIn("my unshared edit", f.read())  # never thrown away
+        self.assertEqual(info, {"blocked": ["symbols/METUPowerLab_A.kicad_sym"]})
+
+    def push_theirs(self, rel, text):
+        self.write(self.theirs, rel, text)
+        sh(self.theirs, "git", "add", "-A"); sh(self.theirs, "git", "commit", "-q", "-m", "more")
+        sh(self.theirs, "git", "push", "-q", "origin", "main")
+
+    def test_blocked_by_files_share_cannot_send(self):
+        """Issue #87: the update was blocked by local edits the user couldn't share (here a
+        file outside the library folders, which Share never lists), and it said to share them."""
+        self.push_theirs("README.md", "upstream readme\n")
+        self.write(self.mine, "README.md", "my local notes\n")
+        ok, info = library.update()
+        self.assertFalse(ok)
+        self.assertEqual(info, {"blocked": ["README.md"]})  # names the real blocker
+        self.assertNotIn("README.md", [f["path"] for f in library.changed_files(self.mine)])
+
+    def test_set_aside_backs_up_blocking_edits_and_updates(self):
+        self.write(self.mine, "symbols/METUPowerLab_A.kicad_sym", "v1\nmy unshared edit\n")
+        self.push_theirs("README.md", "upstream readme\n")
+        self.write(self.mine, "README.md", "my local notes\n")
+        self.write(self.mine, "symbols/METUPowerLab_B.kicad_sym", "kept, GitHub doesn't touch it\n")
+        backup = library.set_aside()
+        self.assertTrue(backup.startswith(os.path.normpath(self.mine) + "-backup"))
+        with open(os.path.join(backup, "symbols", "METUPowerLab_A.kicad_sym")) as f:
+            self.assertEqual(f.read(), "v1\nmy unshared edit\n")
+        with open(os.path.join(backup, "README.md")) as f:
+            self.assertEqual(f.read(), "my local notes\n")
+        self.assertFalse(os.path.exists(os.path.join(backup, "symbols", "METUPowerLab_B.kicad_sym")))
+        ok, info = library.update()
+        self.assertTrue(ok, info)
+        self.assertEqual(self.git("rev-parse", "HEAD"), self.git("rev-parse", "origin/main"))
+        self.assertEqual(self.git("status", "--porcelain"), "?? symbols/METUPowerLab_B.kicad_sym")
+
+    def test_unreachable_github_is_not_blamed_on_edits(self):
+        sh(self.mine, "git", "remote", "set-url", "origin", os.path.join(self.tmp.name, "missing.git"))
+        ok, info = library.update()
+        self.assertFalse(ok)
+        self.assertIn("GitHub couldn't be reached", info)
 
 
 class ContributeCommandTests(unittest.TestCase):

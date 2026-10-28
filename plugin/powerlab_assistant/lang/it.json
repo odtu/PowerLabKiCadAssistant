@@ -187,5 +187,8 @@
  "Route the board": "Routing della scheda",
  "Route this board": "Esegui il routing di questa scheda",
  "Export Gerbers for PCBWay": "Esporta i Gerber per PCBWay",
- "Export Gerbers and drill files for PCBWay": "Esporta i Gerber e i file di foratura per PCBWay"
+ "Export Gerbers and drill files for PCBWay": "Esporta i Gerber e i file di foratura per PCBWay",
+ "Your edited library files are kept in {backup}.": "I file di libreria che hai modificato sono conservati in {backup}.",
+ "The library update changes files you've edited here ({names}). Share your edits first, or set them aside: they're copied to a backup folder next to the library and the update goes ahead.": "L'aggiornamento della libreria modifica file che hai modificato qui ({names}). Condividi prima le tue modifiche, oppure mettile da parte: vengono copiate in una cartella di backup accanto alla libreria e l'aggiornamento prosegue.",
+ "Set aside and update": "Metti da parte e aggiorna"
 }
