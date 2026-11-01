@@ -1204,10 +1204,12 @@ class ClaudePanel(wx.Frame):
             turns = msg.get("num_turns") or 0
             secs = time.time() - self.started
             labels = {i: l for i, l, _, _ in MODELS if i}
-            used = [labels.get(m, m) for m in (msg.get("modelUsage") or {})]
+            main, helpers = usage.models(msg, self.model)
+            helpers = [labels.get(m, m) for m in helpers]
             tokens, window = usage.context(msg)
             self.say("meta", text=f"{secs:.0f}s" + (f" · {turns} steps" if turns > 1 else "")
-                      + (f" · {', '.join(used)} · {self.effort} effort" if used else ""))
+                      + (f" · {labels.get(main, main)} · {self.effort} effort" if main else "")
+                      + (f" · Claude Code's helper: {', '.join(helpers)}" if helpers else ""))
             text, tip = usage.summary(self.limits, tokens, window)
             self.emit("usage", text=text, tip=tip)
             if tokens > FRESH_AFTER_TOKENS and not msg.get("is_error"):
