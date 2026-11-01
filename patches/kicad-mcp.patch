@@ -19230,10 +19230,10 @@ index 0000000..2d30edb
 +    return max((abs(_turn(_sub(pts[i], pts[i - 1]), _sub(pts[i + 1], pts[i])))
 +                for i in range(1, len(pts) - 1)), default=0.0)
 diff --git a/src/command-timeout.ts b/src/command-timeout.ts
-index dfd876c..1f020d4 100644
+index dfd876c..2622a49 100644
 --- a/src/command-timeout.ts
 +++ b/src/command-timeout.ts
-@@ -35,6 +35,11 @@ export const LONG_RUNNING_COMMANDS = [
+@@ -35,6 +35,18 @@ export const LONG_RUNNING_COMMANDS = [
    "list_schematic_labels",
    "get_schematic_view",
    "digikey_check_library_availability",
@@ -19242,10 +19242,17 @@ index dfd876c..1f020d4 100644
 +  "undo_autoroute", // PowerLab patch: refills the zones in KiCad
 +  "open_board", // PowerLab patch (#61): a large board with 300+ symbol libraries
 +  "open_project", // PowerLab patch (#61): loads the board too
++  // PowerLab patch (#91): every part and label re-reads and rewrites the sheet, so a batch's
++  // cost grows with its size times the sheet's; at 30 s the work still finished afterwards.
++  "batch_add_components", // PowerLab patch (#91)
++  "batch_add_and_connect", // PowerLab patch (#91)
++  "batch_connect", // PowerLab patch (#91)
++  "batch_add_no_connects", // PowerLab patch (#91)
++  "batch_edit_schematic_components", // PowerLab patch (#91)
  ] as const;
  
  /**
-@@ -66,6 +71,13 @@ export function computeCommandTimeout(command: string, params?: unknown): number
+@@ -66,6 +78,13 @@ export function computeCommandTimeout(command: string, params?: unknown): number
      return Math.max(budgetMs, LONG_COMMAND_TIMEOUT_MS);
    }
  
@@ -20352,6 +20359,21 @@ index f2b7f4d..f0dee9f 100644
    // Add free-form text annotation to schematic
    server.tool(
      "add_schematic_text",
+diff --git a/tests-ts/command-timeout.test.ts b/tests-ts/command-timeout.test.ts
+index e46e228..da51312 100644
+--- a/tests-ts/command-timeout.test.ts
++++ b/tests-ts/command-timeout.test.ts
+@@ -19,6 +19,10 @@ describe("computeCommandTimeout", () => {
+     }
+   });
+ 
++  it("gives the batch schematic tools the long allowance (PowerLab #91)", () => {
++    expect(computeCommandTimeout("batch_add_and_connect", {})).toBe(LONG_COMMAND_TIMEOUT_MS);
++  });
++
+   describe("autoroute (issue #251)", () => {
+     it("is never left on the 30s default", () => {
+       // The regression itself: autoroute was absent from the long-running list,
 diff --git a/tests/test_autoroute_best_of_n.py b/tests/test_autoroute_best_of_n.py
 index bc5f7ae..3dbf1c6 100644
 --- a/tests/test_autoroute_best_of_n.py
