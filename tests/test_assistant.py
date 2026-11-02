@@ -13,6 +13,7 @@ import tempfile
 import time
 import types
 import unittest
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -1461,7 +1462,7 @@ class McpPatchTests(unittest.TestCase):
         for command in ("place_component", "add_mounting_hole", "sync_schematic_to_board",
                         "edit_component", "replace_component"):
             self.assertIn(f'+        "{command}",\n', patch)
-        self.assertIn("kicad_board.revert()", patch)
+        self.assertIn("self._while_kicad_busy(kicad_board.revert)", patch)
         self.assertIn('"replace_component": self._handle_replace_component', patch)
         self.assertIn("cli_nets = self._kicad_cli_pad_net_map(schematic_path)", patch)
         self.assertIn("nets_renamed.append(", patch)
@@ -1610,6 +1611,57 @@ class McpPatchTests(unittest.TestCase):
         patch = self.patch()
         self.assertIn("+    def _board_path_to_load(self, params", patch)
         self.assertIn('and result.get("message") == "No board is loaded"', patch)
+
+    def test_kicad_busy_save_is_retried(self):
+        # Issue #95: set_design_rules failed at once when KiCad answered "busy" to the save
+        # (a dialog open, a tool or zone fill running); the raw error said nothing to do
+        patch = self.patch()
+        start = '+    # KiCad answers "busy" while a dialog is open'
+        block = patch.split(start, 1)[1].split("+    def _edit_saved_board_then_revert(", 1)[0]
+        lines = [start] + block.split("\n")[1:]
+        body = "\n".join(line[1:] for line in lines if line.startswith("+"))
+        namespace = {"Any": object}
+        exec("class Interface:\n" + body, namespace)
+        iface = namespace["Interface"]()
+        busy = Exception("KiCad returned error: KiCad is busy and cannot respond to API requests right now")
+
+        calls = []
+
+        def save():
+            calls.append(1)
+            if len(calls) < 3:
+                raise busy
+            return True
+
+        with mock.patch("time.sleep") as sleep:
+            self.assertTrue(iface._while_kicad_busy(save))
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(sleep.call_count, 2)
+
+        def always_busy():
+            raise busy
+
+        with mock.patch("time.sleep"), mock.patch("time.monotonic", side_effect=[0.0, 1.0, 9.0]):
+            with self.assertRaises(Exception) as caught:
+                iface._while_kicad_busy(always_busy)
+        message = iface._kicad_save_failed(caught.exception)
+        self.assertIn("close the dialog", message)
+        self.assertIn("Nothing was changed", message)
+
+        def broken():
+            calls.append(1)
+            raise RuntimeError("no such board")
+
+        calls.clear()
+        with mock.patch("time.sleep") as sleep, self.assertRaises(RuntimeError):
+            iface._while_kicad_busy(broken)
+        self.assertEqual(len(calls), 1)  # other errors aren't retried
+        self.assertNotIn("dialog", iface._kicad_save_failed(RuntimeError("no such board")))
+
+        # every save and revert of KiCad's board on the save / edit / revert path uses it
+        for call in ("kicad_board.save", "kicad_board.revert", "live[1].save", "live[1].revert"):
+            self.assertIn(f"self._while_kicad_busy({call})", patch)
+        self.assertNotIn("+                live[1].save()\n", patch)
 
     def test_session_vias_keep_their_annular_ring(self):
         self.assertIn("via_drills = _repair_via_drills(self.board)", self.patch())

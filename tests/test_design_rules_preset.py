@@ -403,7 +403,7 @@ class WiringTests(unittest.TestCase):
         # the tool's own pcbnew re-reads the project (LoadBoard reuses a loaded one)
         self.assertIn("+                manager.UnloadProject(project, False)", patch)
         # the solder mask settings reach KiCad through save / edit / revert
-        self.assertIn("+                    live[1].revert()", patch)
+        self.assertIn("+                    self._while_kicad_busy(live[1].revert)", patch)
         # TypeScript and JSON-RPC schemas
         self.assertIn('+        .enum(["powerlab"])', patch)
         self.assertIn('+                "preset": {"type": "string", "enum": ["powerlab"]},', patch)

@@ -16079,7 +16079,7 @@ index 6f9a813..a2d32a8 100644
              # Create outline polyline
              outline = PolyLine()
 diff --git a/python/kicad_interface.py b/python/kicad_interface.py
-index c6ac305..6b71db8 100644
+index c6ac305..e2055f7 100644
 --- a/python/kicad_interface.py
 +++ b/python/kicad_interface.py
 @@ -36,6 +36,7 @@ if sys.platform == "win32":
@@ -16268,7 +16268,7 @@ index c6ac305..6b71db8 100644
          "refill_zones",
          "import_svg_logo",
          "sync_schematic_to_board",
-@@ -1848,6 +1921,531 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -1848,6 +1921,567 @@ class KiCADInterface(SchematicHandlersMixin):
          state = self._dirty_state(board_path)
          return {"success": True, "boardPath": board_path, **state}
  
@@ -16447,6 +16447,42 @@ index c6ac305..6b71db8 100644
 +            logger.warning(f"No board from KiCad: {e}")
 +            return None
 +
++    # KiCad answers "busy" while a dialog is open, a tool is running or zones fill. A
++    # save or revert is tried again for this long (the tool call times out at 30 s).
++    KICAD_BUSY_WAIT_S = 8.0
++
++    @staticmethod
++    def _kicad_busy(error: Exception) -> bool:
++        return "busy" in str(error).lower()
++
++    def _while_kicad_busy(self, call: Any) -> Any:
++        """call() again while KiCad says it is busy, for up to KICAD_BUSY_WAIT_S
++        (PowerLab patch, #95). Other errors, and a busy KiCad after that, are raised."""
++        import time
++
++        deadline = time.monotonic() + self.KICAD_BUSY_WAIT_S
++        delay = 0.25
++        while True:
++            try:
++                return call()
++            except Exception as e:
++                if not self._kicad_busy(e) or time.monotonic() + delay > deadline:
++                    raise
++            time.sleep(delay)
++            delay = min(delay * 2, 2.0)
++
++    def _kicad_save_failed(self, error: Exception) -> str:
++        """Why KiCad's save failed, with what to do when it stayed busy (PowerLab patch, #95)."""
++        message = f"KiCad could not save the board: {error}"
++        if self._kicad_busy(error):
++            message += (
++                f". KiCad stayed busy for {self.KICAD_BUSY_WAIT_S:.0f} s: a dialog is "
++                "probably open in KiCad (e.g. Board Setup), or a tool or zone fill is still "
++                "running. Ask the user to close the dialog or finish the tool (Esc), then "
++                "try again. Nothing was changed."
++            )
++        return message
++
 +    def _edit_saved_board_then_revert(
 +        self, command: str, handler: Any, params: Dict[str, Any], live: Tuple[str, Any]
 +    ) -> Dict[str, Any]:
@@ -16454,9 +16490,9 @@ index c6ac305..6b71db8 100644
 +        (PowerLab patch, see LIVE_VIA_FILE_COMMANDS)."""
 +        board_path, kicad_board = live
 +        try:
-+            kicad_board.save()
++            self._while_kicad_busy(kicad_board.save)
 +        except Exception as e:
-+            return {"success": False, "message": f"{command}: KiCad could not save the board: {e}"}
++            return {"success": False, "message": f"{command}: {self._kicad_save_failed(e)}"}
 +        self._reload_board_file(board_path)
 +        if getattr(self, "board", None) is None:
 +            return {"success": False, "message": f"{command}: could not load {board_path}"}
@@ -16475,7 +16511,7 @@ index c6ac305..6b71db8 100644
 +                pcbnew.SaveBoard(board_path, self.board)
 +        self._record_board_signature()
 +        try:
-+            kicad_board.revert()
++            self._while_kicad_busy(kicad_board.revert)
 +        except Exception as e:
 +            result["warnings"] = list(result.get("warnings") or []) + [
 +                f"Saved to the board file, but KiCad did not reload it ({e}): "
@@ -16522,9 +16558,9 @@ index c6ac305..6b71db8 100644
 +        synced = True  # the tool's board matches the saved file
 +        if live is not None and mask:
 +            try:
-+                live[1].save()
++                self._while_kicad_busy(live[1].save)
 +            except Exception as e:
-+                return {"success": False, "message": f"KiCad could not save the board: {e}"}
++                return {"success": False, "message": self._kicad_save_failed(e)}
 +            self._reload_board_file(board_path)
 +        elif board_path and live is None:
 +            status = self._auto_save_board()
@@ -16552,7 +16588,7 @@ index c6ac305..6b71db8 100644
 +            self._reload_board_with_project(board_path, warnings)
 +            if live is not None and mask:
 +                try:
-+                    live[1].revert()
++                    self._while_kicad_busy(live[1].revert)
 +                except Exception as e:
 +                    warnings.append(
 +                        f"KiCad did not reload the board ({e}): use File > Revert in KiCad "
@@ -16800,7 +16836,7 @@ index c6ac305..6b71db8 100644
      def _handle_batch_move_components(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """Batch move wrapper that preserves the external-edit save guard."""
          if getattr(self, "session_backend", None) == "ipc" and not self._ipc_session_alive():
-@@ -4667,6 +5265,59 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -4667,6 +5301,59 @@ class KiCADInterface(SchematicHandlersMixin):
              logger.error(traceback.format_exc())
              return {"success": False, "message": str(e)}
  
@@ -16860,7 +16896,7 @@ index c6ac305..6b71db8 100644
      def _handle_get_elements_in_region(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """List all wires, labels, and symbols within a rectangular region"""
          logger.info("Getting elements in schematic region")
-@@ -4677,7 +5328,8 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -4677,7 +5364,8 @@ class KiCADInterface(SchematicHandlersMixin):
  
              schematic_path = params.get("schematicPath")
              if not schematic_path:
@@ -16870,7 +16906,7 @@ index c6ac305..6b71db8 100644
  
              x1 = float(params.get("x1", 0))
              y1 = float(params.get("y1", 0))
-@@ -4948,6 +5600,10 @@ print("ok")
+@@ -4948,6 +5636,10 @@ print("ok")
                          }
                      self.board = reloaded
                      self._update_command_handlers()
@@ -16881,7 +16917,7 @@ index c6ac305..6b71db8 100644
                      logger.info("Zone fill subprocess succeeded")
                      return {
                          "success": True,
-@@ -4982,47 +5638,30 @@ print("ok")
+@@ -4982,47 +5674,30 @@ print("ok")
      # =========================================================================
  
      def _ipc_route_trace(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -16948,7 +16984,7 @@ index c6ac305..6b71db8 100644
  
      def _ipc_route_arc_trace(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for route_arc_trace - adds copper arc with real-time UI update"""
-@@ -5079,6 +5718,65 @@ print("ok")
+@@ -5079,6 +5754,65 @@ print("ok")
              logger.error(f"IPC route_arc_trace error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -17014,7 +17050,7 @@ index c6ac305..6b71db8 100644
      def _ipc_add_via(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for add_via - adds via with real-time UI update"""
          try:
-@@ -5131,21 +5829,37 @@ print("ok")
+@@ -5131,21 +5865,37 @@ print("ok")
              net = params.get("net")
              clearance = params.get("clearance", 0.5)
              min_width = params.get("minWidth", 0.25)
@@ -17059,7 +17095,7 @@ index c6ac305..6b71db8 100644
  
              success = self.ipc_board_api.add_zone(
                  points=formatted_points,
-@@ -5156,6 +5870,7 @@ print("ok")
+@@ -5156,6 +5906,7 @@ print("ok")
                  priority=priority,
                  fill_mode=fill_type,
                  name=name,
@@ -17067,7 +17103,7 @@ index c6ac305..6b71db8 100644
              )
  
              return {
-@@ -5179,6 +5894,65 @@ print("ok")
+@@ -5179,6 +5930,65 @@ print("ok")
              logger.error(f"IPC add_copper_pour error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -17133,7 +17169,7 @@ index c6ac305..6b71db8 100644
      def _ipc_refill_zones(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for refill_zones - refills all zones with real-time UI update"""
          try:
-@@ -5204,12 +5978,18 @@ print("ok")
+@@ -5204,12 +6014,18 @@ print("ok")
              layer = params.get("layer", "F.SilkS")
              size = params.get("size", 1.0)
              rotation = params.get("rotation", 0)
@@ -17154,7 +17190,7 @@ index c6ac305..6b71db8 100644
                  "success": success,
                  "message": (
                      f"Added text '{text}' (visible in KiCAD UI)"
-@@ -5217,6 +5997,10 @@ print("ok")
+@@ -5217,6 +6033,10 @@ print("ok")
                      else "Failed to add text"
                  ),
              }
@@ -17165,7 +17201,7 @@ index c6ac305..6b71db8 100644
          except Exception as e:
              logger.error(f"IPC add_text error: {e}")
              return {"success": False, "message": str(e)}
-@@ -5349,6 +6133,19 @@ print("ok")
+@@ -5349,6 +6169,19 @@ print("ok")
                  x = x * 0.0254
                  y = y * 0.0254
  
@@ -17185,7 +17221,7 @@ index c6ac305..6b71db8 100644
              success = self.ipc_board_api.move_component(
                  reference=reference, x=x, y=y, rotation=rotation
              )
-@@ -5356,7 +6153,9 @@ print("ok")
+@@ -5356,7 +6189,9 @@ print("ok")
              return {
                  "success": success,
                  "message": (
@@ -17196,7 +17232,7 @@ index c6ac305..6b71db8 100644
                      if success
                      else "Failed to move component"
                  ),
-@@ -5456,11 +6255,306 @@ print("ok")
+@@ -5456,11 +6291,306 @@ print("ok")
              return {"success": False, "message": str(e)}
  
      def _ipc_delete_trace(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -17508,7 +17544,7 @@ index c6ac305..6b71db8 100644
  
      def _ipc_query_traces(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for query_traces - reads traces from the live KiCAD board."""
-@@ -5558,11 +6652,20 @@ print("ok")
+@@ -5558,11 +6688,20 @@ print("ok")
          and correctly generates PCB_SHAPE arcs for rounded corners.
          """
          shape = params.get("shape", "rectangle")
@@ -17529,7 +17565,7 @@ index c6ac305..6b71db8 100644
              return self.board_commands.add_board_outline(params)
  
          try:
-@@ -5614,6 +6717,50 @@ print("ok")
+@@ -5614,6 +6753,50 @@ print("ok")
              logger.error(f"IPC add_board_outline error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -17580,7 +17616,7 @@ index c6ac305..6b71db8 100644
      def _ipc_add_mounting_hole(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for add_mounting_hole - adds mounting hole with real-time UI update"""
          try:
-@@ -5833,6 +6980,100 @@ print("ok")
+@@ -5833,6 +7016,100 @@ print("ok")
              logger.error(f"IPC set_footprint_type error: {e}")
              return {"success": False, "message": str(e)}
  
