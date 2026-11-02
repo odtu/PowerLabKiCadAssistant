@@ -420,8 +420,11 @@ class ChatHistoryTests(unittest.TestCase):
         class Proc:
             stdin = types.SimpleNamespace(write=lambda text: runs[-1].append(text), close=lambda: None)
 
+        envs = []
+
         def popen(args, **kwargs):
             runs.append([args])
+            envs.append(kwargs.get("env") or {})
             return Proc()
 
         snap = types.SimpleNamespace(cwd=self.project, context="ctx", state="", watch=[])
@@ -456,6 +459,9 @@ class ChatHistoryTests(unittest.TestCase):
         self.assertIn("Claude: Reply 4", text)
         self.assertIn("(steps: Run drc)", text)
         self.assertIsNone(second.retry)  # nothing to resend into an old session
+        # The user's claude.ai connectors (#97) stay out of the panel's headless runs: their
+        # tools aren't allowed there, so a call to one only failed with a permission error.
+        self.assertEqual(envs[0].get("ENABLE_CLAUDEAI_MCP_SERVERS"), "false")
         # Within the sitting, the next message resumes the new session as before.
         second.proc = None
         second.handle({"type": "system", "subtype": "init", "session_id": "s-2"})
