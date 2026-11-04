@@ -296,6 +296,26 @@ class UsageTests(unittest.TestCase):
         self.assertIn("Weekly limit: 20% used", tip)
         self.assertEqual(usage.summary([], 0, 0), ("", ""))
 
+    def test_helper_model_is_not_shown_as_the_answering_one(self):
+        # Issue #93: the reply's line listed "Haiku 4.5, Opus 5.5" with Opus chosen, because
+        # Claude Code calls Haiku itself for side jobs. The chosen model is the one that answered.
+        from powerlab_assistant import usage
+        result = {"modelUsage": {"claude-haiku-4-5-20251001": {"outputTokens": 40},
+                                 "claude-opus-5-5": {"outputTokens": 900}}}
+        self.assertEqual(usage.models(result, "claude-opus-5-5"),
+                         ("claude-opus-5-5", ["claude-haiku-4-5-20251001"]))
+        self.assertEqual(usage.models(result, ""),  # Claude Code's default: the one that wrote most
+                         ("claude-opus-5-5", ["claude-haiku-4-5-20251001"]))
+        haiku = {"modelUsage": {"claude-haiku-4-5-20251001": {"outputTokens": 50}}}
+        self.assertEqual(usage.models(haiku, "claude-haiku-4-5-20251001"), ("claude-haiku-4-5-20251001", []))
+        self.assertEqual(usage.models({"modelUsage": {"claude-opus-5-5[1m]": {}}}, "claude-opus-5-5"),
+                         ("claude-opus-5-5[1m]", []))
+        self.assertEqual(usage.models({}, "claude-opus-5-5"), ("", []))
+        with open(os.path.join(ROOT, "plugin", "powerlab_assistant", "panel.py"), encoding="utf-8") as f:
+            source = f.read()
+        self.assertIn("usage.models(msg, self.model)", source)
+        self.assertNotIn('msg.get("modelUsage")', source)
+
 
 class ChatHistoryTests(unittest.TestCase):
     """Closing the panel, the editor or KiCad must not forget the chat."""
