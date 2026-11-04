@@ -173,6 +173,7 @@
  "Claude Code isn't signed in yet.": "Claude Code ist noch nicht angemeldet.",
  "Sign in": "Anmelden",
  "This chat got long. To save tokens, your next message continues it with only your last prompts and the project.": "Dieser Chat ist lang geworden. Um Tokens zu sparen, setzt Ihre nächste Nachricht ihn nur mit Ihren letzten Prompts und dem Projekt fort.",
+ "Claude Code's sign-in has expired. Press Sign in, type /login in the window that opens, then send your message again.": "Die Anmeldung von Claude Code ist abgelaufen. Klicken Sie auf „Anmelden“, geben Sie im sich öffnenden Fenster /login ein und senden Sie Ihre Nachricht dann erneut.",
  "This model can't show its thinking live, so the panel stopped asking for it. Send your message again.": "Dieses Modell kann sein Denken nicht live anzeigen, daher fragt das Panel es nicht mehr an. Senden Sie Ihre Nachricht erneut.",
  "Start a new board from scratch": "Neue Platine von Grund auf beginnen",
  "I want to design a new board from scratch. Ask me the requirements first.": "Ich möchte eine neue Platine von Grund auf entwerfen. Frag mich zuerst nach den Anforderungen.",

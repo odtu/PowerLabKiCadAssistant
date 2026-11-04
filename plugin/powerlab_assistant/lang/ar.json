@@ -173,6 +173,7 @@
  "Claude Code isn't signed in yet.": "لم يتم تسجيل الدخول إلى Claude Code بعد.",
  "Sign in": "تسجيل الدخول",
  "This chat got long. To save tokens, your next message continues it with only your last prompts and the project.": "طالت هذه المحادثة. لتوفير التوكنات، ستتابعها رسالتك التالية بآخر طلباتك والمشروع فقط.",
+ "Claude Code's sign-in has expired. Press Sign in, type /login in the window that opens, then send your message again.": "انتهت صلاحية تسجيل الدخول إلى Claude Code. اضغط «تسجيل الدخول»، واكتب ‎/login‎ في النافذة التي تُفتح، ثم أعد إرسال رسالتك.",
  "This model can't show its thinking live, so the panel stopped asking for it. Send your message again.": "لا يستطيع هذا النموذج عرض تفكيره مباشرةً، لذا توقفت اللوحة عن طلبه. أعد إرسال رسالتك.",
  "Start a new board from scratch": "ابدأ لوحة جديدة من الصفر",
  "I want to design a new board from scratch. Ask me the requirements first.": "أريد تصميم لوحة جديدة من الصفر. اسألني عن المتطلبات أولًا.",

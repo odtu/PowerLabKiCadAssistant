@@ -718,6 +718,26 @@ class ChatHistoryTests(unittest.TestCase):
         self.assertEqual(sent, [("Run DRC", [], None)])
         self.assertFalse(any(e["kind"] == "meta" or e.get("level") == "error" for e in panel.emitted))
 
+    def test_expired_sign_in_offers_sign_in_not_report(self):
+        # #107: an expired Claude Code sign-in showed as an error with Report, which
+        # can't help; it gets the Sign in button, like "Not logged in".
+        for text in ("Failed to authenticate: OAuth session expired and could not be refreshed",
+                     "OAuth token has expired. Please obtain a new token or refresh your existing token.",
+                     "Invalid API key · Please run /login"):
+            panel = self.fake_panel()
+            panel.model = "claude-opus-5-5"
+            panel.handle({"type": "result", "subtype": "success", "is_error": True, "result": text})
+            notes = [e for e in panel.emitted if e["kind"] == "note"]
+            self.assertEqual(len(notes), 1, text)
+            self.assertEqual(notes[0]["level"], "warn")
+            self.assertIn("sign-in has expired", notes[0]["text"])
+            self.assertEqual(notes[0]["action"], {"label": "Sign in", "type": "terminal"})
+        # A successful reply that mentions OAuth is just a reply.
+        panel = self.fake_panel()
+        panel.model = "claude-opus-5-5"
+        panel.handle({"type": "result", "subtype": "success", "result": "Failed to authenticate"})
+        self.assertFalse(any(e["kind"] == "note" for e in panel.emitted))
+
     def test_design_review_is_shown_with_its_pdf(self):
         # The design-review skill writes design-review.md; when the run ends, the panel
         # shows the review in the chat and saves it as a PDF next to it.

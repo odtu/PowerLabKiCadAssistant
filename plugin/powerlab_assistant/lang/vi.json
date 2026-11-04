@@ -173,6 +173,7 @@
  "Claude Code isn't signed in yet.": "Claude Code chưa được đăng nhập.",
  "Sign in": "Đăng nhập",
  "This chat got long. To save tokens, your next message continues it with only your last prompts and the project.": "Chat này đã dài. Để tiết kiệm token, tin nhắn tiếp theo sẽ tiếp tục chỉ với các prompt gần nhất và dự án.",
+ "Claude Code's sign-in has expired. Press Sign in, type /login in the window that opens, then send your message again.": "Phiên đăng nhập Claude Code đã hết hạn. Nhấn \"Đăng nhập\", gõ /login trong cửa sổ vừa mở, rồi gửi lại tin nhắn.",
  "This model can't show its thinking live, so the panel stopped asking for it. Send your message again.": "Mô hình này không thể hiển thị quá trình suy nghĩ trực tiếp, nên panel đã ngừng yêu cầu. Hãy gửi lại tin nhắn.",
  "Start a new board from scratch": "Bắt đầu board mới từ đầu",
  "I want to design a new board from scratch. Ask me the requirements first.": "Tôi muốn thiết kế một board mới từ đầu. Hãy hỏi tôi các yêu cầu trước.",
