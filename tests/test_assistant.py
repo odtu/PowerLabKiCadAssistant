@@ -781,7 +781,7 @@ class ChatHistoryTests(unittest.TestCase):
         self.addCleanup(setattr, review, "build", saved)
         panel.handle({"type": "assistant", "message": {"content": [
             {"type": "tool_use", "id": "d1", "name": "Write", "input": {"file_path": bom}},
-            {"type": "tool_use", "id": "d2", "name": "Write", "input": {"file_path": "documents\\notes.md"}},
+            {"type": "tool_use", "id": "d2", "name": "Write", "input": {"file_path": os.path.join("documents", "notes.md")}},
             {"type": "tool_use", "id": "d3", "name": "Write", "input": {"file_path": os.path.join(self.project, "notes.md")}}]}})
         panel.handle({"type": "user", "message": {"content": [
             {"type": "tool_result", "tool_use_id": i} for i in ("d1", "d2", "d3")]}})
