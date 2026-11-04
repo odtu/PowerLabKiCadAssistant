@@ -1071,6 +1071,10 @@ class ClaudePanel(wx.Frame):
         self.thought = ""
         env = clean_env()
         env.update(self.api_env())
+        # The user's claude.ai connectors (#97): Claude Code loads them into every session, but
+        # their tools aren't in ALLOWED_TOOLS and a headless run can't ask, so a call to one only
+        # failed with a permission error. The terminal session (open_terminal) keeps them.
+        env["ENABLE_CLAUDEAI_MCP_SERVERS"] = "false"
         self.summaries_on = (self.summaries and self.model in SUMMARY_MODELS
                              and "CLAUDE_CODE_EXTRA_BODY" not in env)
         if self.summaries_on:
