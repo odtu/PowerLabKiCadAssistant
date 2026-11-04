@@ -171,6 +171,7 @@
  "Library updated. If a changed part doesn't look updated yet, restart KiCad.": "库已更新。如果某个已更改的元件看起来还没更新，请重启 KiCad。",
  "KiCad didn't finish saving. Save it there, then send again.": "KiCad 未能完成保存。请在 KiCad 中保存，然后重新发送。",
  "Claude Code isn't signed in yet.": "Claude Code 尚未登录。",
+ "Claude Code's sign-in has expired. Click Sign in, type /login in the window that opens, then send your message again.": "Claude Code 的登录已过期。请点击“登录”，在打开的窗口中输入 /login，然后重新发送消息。",
  "Sign in": "登录",
  "This chat got long. To save tokens, your next message continues it with only your last prompts and the project.": "此对话已变长。为节省 token，你的下一条消息将仅带着你最近的提示词和项目继续对话。",
  "This model can't show its thinking live, so the panel stopped asking for it. Send your message again.": "此模型无法实时显示其思考过程，因此面板不再请求。请重新发送你的消息。",

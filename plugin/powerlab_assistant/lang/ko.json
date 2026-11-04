@@ -171,6 +171,7 @@
  "Library updated. If a changed part doesn't look updated yet, restart KiCad.": "라이브러리가 업데이트되었습니다. 변경한 부품이 아직 갱신되지 않은 것 같으면 KiCad를 다시 시작하세요.",
  "KiCad didn't finish saving. Save it there, then send again.": "KiCad가 저장을 마치지 못했습니다. 그곳에서 저장한 뒤 다시 보내세요.",
  "Claude Code isn't signed in yet.": "Claude Code에 아직 로그인하지 않았습니다.",
+ "Claude Code's sign-in has expired. Click Sign in, type /login in the window that opens, then send your message again.": "Claude Code 로그인이 만료되었습니다. 로그인을 클릭하고 열리는 창에 /login을 입력한 다음 메시지를 다시 보내세요.",
  "Sign in": "로그인",
  "This chat got long. To save tokens, your next message continues it with only your last prompts and the project.": "채팅이 길어졌습니다. 토큰을 절약하기 위해 다음 메시지는 마지막 프롬프트와 프로젝트만으로 이어집니다.",
  "This model can't show its thinking live, so the panel stopped asking for it. Send your message again.": "이 모델은 생각 과정을 실시간으로 보여줄 수 없어 패널이 요청을 중단했습니다. 메시지를 다시 보내세요.",

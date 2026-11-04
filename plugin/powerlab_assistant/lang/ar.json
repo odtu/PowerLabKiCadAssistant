@@ -171,6 +171,7 @@
  "Library updated. If a changed part doesn't look updated yet, restart KiCad.": "تم تحديث المكتبة. إذا لم تظهر قطعة معدّلة محدّثة بعد، فأعد تشغيل KiCad.",
  "KiCad didn't finish saving. Save it there, then send again.": "لم ينتهِ KiCad من الحفظ. احفظ هناك ثم أرسل مجددًا.",
  "Claude Code isn't signed in yet.": "لم يتم تسجيل الدخول إلى Claude Code بعد.",
+ "Claude Code's sign-in has expired. Click Sign in, type /login in the window that opens, then send your message again.": "انتهت صلاحية تسجيل الدخول إلى Claude Code. انقر على «تسجيل الدخول»، واكتب /login في النافذة التي تفتح، ثم أرسل رسالتك مرة أخرى.",
  "Sign in": "تسجيل الدخول",
  "This chat got long. To save tokens, your next message continues it with only your last prompts and the project.": "طالت هذه المحادثة. لتوفير التوكنات، ستتابعها رسالتك التالية بآخر طلباتك والمشروع فقط.",
  "This model can't show its thinking live, so the panel stopped asking for it. Send your message again.": "لا يستطيع هذا النموذج عرض تفكيره مباشرةً، لذا توقفت اللوحة عن طلبه. أعد إرسال رسالتك.",

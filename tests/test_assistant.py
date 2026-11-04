@@ -119,6 +119,31 @@ class UnreachableHintTests(unittest.TestCase):
         self.assertIn("kicad_processes: 2 running, 1 without a window", diag)
 
 
+class SignInTests(unittest.TestCase):
+    """An expired Claude Code sign-in showed as an error with Report, not with Sign in."""
+
+    def test_sign_in_errors_offer_sign_in(self):
+        from powerlab_assistant import panel
+        self.assertIn("isn't signed in", panel.sign_in_note("Not logged in · Please run /login"))
+        for text in ("Failed to authenticate: OAuth session expired and could not be refreshed",
+                     "Failed to authenticate. API Error: 401 {\"type\":\"error\",\"error\":"
+                     "{\"type\":\"authentication_error\",\"message\":\"OAuth token has expired.\"}}",
+                     "OAuth token revoked · Please run /login"):
+            self.assertIn("/login", panel.sign_in_note(text), text)
+        for text in ("API Error: 529 Overloaded", "", None, "error_max_turns"):
+            self.assertIsNone(panel.sign_in_note(text))
+
+    def test_note_shown_once_per_message(self):
+        from powerlab_assistant import panel
+        notes = []
+        fake = types.SimpleNamespace(signed_out=False,
+                                     emit=lambda kind, **kw: notes.append(kw))
+        for _ in range(2):
+            panel.ClaudePanel.ask_sign_in(fake, "Failed to authenticate: OAuth session expired")
+        self.assertEqual(len(notes), 1)
+        self.assertEqual(notes[0]["action"]["type"], "terminal")
+
+
 class SkillToolsEnvTests(unittest.TestCase):
     """The tools the panel's Claude sessions get, and the ones they don't."""
 

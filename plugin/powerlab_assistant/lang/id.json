@@ -171,6 +171,7 @@
  "Library updated. If a changed part doesn't look updated yet, restart KiCad.": "Library diperbarui. Jika komponen yang berubah belum terlihat diperbarui, mulai ulang KiCad.",
  "KiCad didn't finish saving. Save it there, then send again.": "KiCad belum selesai menyimpan. Simpan di sana, lalu kirim lagi.",
  "Claude Code isn't signed in yet.": "Claude Code belum masuk.",
+ "Claude Code's sign-in has expired. Click Sign in, type /login in the window that opens, then send your message again.": "Sesi masuk Claude Code telah kedaluwarsa. Klik Masuk, ketik /login di jendela yang terbuka, lalu kirim pesan Anda lagi.",
  "Sign in": "Masuk",
  "This chat got long. To save tokens, your next message continues it with only your last prompts and the project.": "Chat ini sudah panjang. Untuk menghemat token, pesan berikutnya melanjutkannya hanya dengan prompt terakhir Anda dan proyek.",
  "This model can't show its thinking live, so the panel stopped asking for it. Send your message again.": "Model ini tidak dapat menampilkan proses berpikirnya secara langsung, jadi panel berhenti memintanya. Kirim ulang pesan Anda.",

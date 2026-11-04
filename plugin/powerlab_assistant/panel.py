@@ -255,6 +255,24 @@ def split_choices(text):
     return CHOICES_BLOCK.sub("", text).strip(), [q for q in questions if q["options"]]
 
 
+NOT_SIGNED_IN = "Claude Code isn't signed in yet."
+SIGN_IN_EXPIRED = ("Claude Code's sign-in has expired. Click Sign in, type /login in the window "
+                   "that opens, then send your message again.")
+EXPIRED_ERRORS = ("Failed to authenticate", "Please run /login", "OAuth session expired",
+                  "OAuth token has expired", "OAuth token revoked", "authentication_error")
+
+
+def sign_in_note(text):
+    """The note for Claude Code's sign-in errors (none signed in, or the sign-in expired and
+    couldn't be refreshed), or None for any other text."""
+    text = str(text or "")
+    if "Not logged in" in text:
+        return NOT_SIGNED_IN
+    if any(s in text for s in EXPIRED_ERRORS):
+        return SIGN_IN_EXPIRED
+    return None
+
+
 def describe_tool(name, args):
     if name.startswith("mcp__kicad__"):
         name = name[len("mcp__kicad__"):].replace("_", " ").capitalize()
@@ -409,6 +427,7 @@ class ClaudePanel(wx.Frame):
         self.started = 0.0
         self.last_text = ""
         self.got_result = False
+        self.signed_out = False  # the sign-in note was shown for this message
         self.held_text = ""
         self.attached = []  # files attached to the next message
         self.limits = []  # plan limits from Claude Code's last rate_limit_event
@@ -1075,6 +1094,7 @@ class ClaudePanel(wx.Frame):
         self.started = time.time()
         self.last_text = ""
         self.got_result = False
+        self.signed_out = False
         self.activity, self.activity_sent = ("waiting", ""), time.time()
         self.thinking_tokens = 0
         self.thought = ""
@@ -1114,7 +1134,10 @@ class ClaudePanel(wx.Frame):
             try:
                 msg = json.loads(line)
             except ValueError:
-                wx.CallAfter(self.safe, self.emit, "note", level="info", text=line)
+                if sign_in_note(line):
+                    wx.CallAfter(self.safe, self.ask_sign_in, line)
+                else:
+                    wx.CallAfter(self.safe, self.emit, "note", level="info", text=line)
                 continue
             wx.CallAfter(self.safe, self.handle, msg)
         proc.wait()
@@ -1205,9 +1228,8 @@ class ClaudePanel(wx.Frame):
                 return
             result = str(msg.get("result") or msg.get("subtype"))
             report.note_event("result", f"{msg.get('subtype', '')} error={bool(msg.get('is_error'))}")
-            if "Not logged in" in result:
-                self.emit("note", level="warn", text="Claude Code isn't signed in yet.",
-                          action={"label": "Sign in", "type": "terminal"})
+            if sign_in_note(result):
+                self.ask_sign_in(result)
             elif msg.get("is_error") and self.summaries_on and "thinking" in result.lower():
                 self.summaries = False  # until the panel restarts
                 self.emit("note", level="warn", text="This model can't show its thinking live, so the "
@@ -1232,6 +1254,14 @@ class ClaudePanel(wx.Frame):
                 self.fresh = True
                 self.emit("note", level="info", text="This chat got long. To save tokens, your next "
                           "message continues it with only your last prompts and the project.")
+
+    def ask_sign_in(self, text):
+        """Claude Code isn't signed in, or its sign-in expired: once per message, offer the
+        terminal, where /login signs in again (the panel's runs can't open a browser)."""
+        if not self.signed_out:
+            self.signed_out = True
+            self.emit("note", level="warn", text=sign_in_note(text),
+                      action={"label": "Sign in", "type": "terminal"})
 
     def set_activity(self, phase, name=""):
         """Tell the page what Claude is doing: on a change, and every ALIVE_EVERY seconds

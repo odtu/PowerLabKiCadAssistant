@@ -171,6 +171,7 @@
  "Library updated. If a changed part doesn't look updated yet, restart KiCad.": "Bibliothek aktualisiert. Wirkt ein geändertes Bauteil noch nicht aktualisiert, KiCad neu starten.",
  "KiCad didn't finish saving. Save it there, then send again.": "KiCad hat das Speichern nicht abgeschlossen. Dort speichern und dann erneut senden.",
  "Claude Code isn't signed in yet.": "Claude Code ist noch nicht angemeldet.",
+ "Claude Code's sign-in has expired. Click Sign in, type /login in the window that opens, then send your message again.": "Die Anmeldung von Claude Code ist abgelaufen. Klicke auf „Anmelden“, gib im sich öffnenden Fenster /login ein und sende deine Nachricht dann erneut.",
  "Sign in": "Anmelden",
  "This chat got long. To save tokens, your next message continues it with only your last prompts and the project.": "Dieser Chat ist lang geworden. Um Tokens zu sparen, setzt Ihre nächste Nachricht ihn nur mit Ihren letzten Prompts und dem Projekt fort.",
  "This model can't show its thinking live, so the panel stopped asking for it. Send your message again.": "Dieses Modell kann sein Denken nicht live anzeigen, daher fragt das Panel es nicht mehr an. Senden Sie Ihre Nachricht erneut.",
