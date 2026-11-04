@@ -18,6 +18,7 @@ import tempfile
 from .common import CREATE_NO_WINDOW
 
 FILE_NAME = "design-review.md"
+DOCS_FOLDER = "documents"  # in the project: Markdown here is shown and printed too (is_document)
 IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
                ".gif": "image/gif", ".webp": "image/webp"}
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
@@ -65,8 +66,18 @@ figcaption { font-size: 9pt; color: #5b6672; text-align: center; margin-top: 3pt
 """
 
 
+def is_document(path):
+    """Another document Claude writes for the user (#102, #103): Markdown in a folder named
+    documents. The panel shows and prints it like the review, because Claude itself can't run
+    Edge or Word in the panel."""
+    path = os.path.normpath(path or "")
+    return (os.path.splitext(path)[1].lower() == ".md"
+            and os.path.basename(os.path.dirname(path)).lower() == DOCS_FOLDER)
+
+
 def is_review(path):
-    return os.path.basename(path or "").lower() == FILE_NAME
+    """The design review, or another document the panel shows and prints (is_document)."""
+    return os.path.basename(path or "").lower() == FILE_NAME or is_document(path)
 
 
 def find_edge():
@@ -264,19 +275,24 @@ def body_html(md, base_dir, for_panel=False):
     return "\n".join(out)
 
 
-def title_and_verdict(md):
-    title = next((l.lstrip("#").strip() for l in md.splitlines() if re.match(r"^#\s", l)), "Design review")
+def title_and_verdict(md, default="Design review"):
+    title = next((l.lstrip("#").strip() for l in md.splitlines() if re.match(r"^#\s", l)), default)
     verdict = re.search(r"\*\*Verdict:?\*\*:?\s*(.+)", md)
     return title, verdict.group(1).strip() if verdict else ""
 
 
-def document(md, base_dir):
-    title, _ = title_and_verdict(md)
+def _default_title(md_path):
+    return "Design review" if not is_document(md_path) else os.path.splitext(os.path.basename(md_path))[0]
+
+
+def document(md, base_dir, title="Design review", is_design_review=True):
+    title, _ = title_and_verdict(md, title)
+    foot = ("check the findings against the board and the datasheets before you order"
+            if is_design_review else "check it against the design and the datasheets before you use it")
     return (f'<!doctype html><html><head><meta charset="utf-8"><title>{html.escape(title)}</title>'
             f"<style>{CSS}</style></head><body>{body_html(md, base_dir)}"
             '<p class="foot">Written by Claude in the PowerLab KiCad Assistant. Claude can make '
-            "mistakes: check the findings against the board and the datasheets before you order."
-            "</p></body></html>")
+            f"mistakes: {foot}.</p></body></html>")
 
 
 def make_pdf(html_path, pdf_path, edge):
@@ -309,15 +325,18 @@ def card(md_path):
         with open(md_path, encoding="utf-8-sig") as f:
             md = f.read()
     except OSError:
-        return {"path": md_path, "title": "Design review", "verdict": "",
+        return {"path": md_path, "title": _default_title(md_path), "verdict": "",
                 "body": '<p class="missing">The review file is no longer there.</p>'}
-    title, verdict = title_and_verdict(md)
+    title, verdict = title_and_verdict(md, _default_title(md_path))
+    if not verdict and is_document(md_path):
+        verdict = os.path.basename(md_path)  # the row's second line: which file it is
     return {"path": md_path, "title": title, "verdict": verdict,
             "body": body_html(md, os.path.dirname(md_path), for_panel=True)}
 
 
 def build(md_path, edge=None):
-    """The panel card for md_path, plus design-review.pdf next to it.
+    """The panel card for md_path, plus the PDF next to it (design-review.pdf, or
+    documents\\<name>.pdf for another document).
 
     If the PDF can't be made, the HTML is saved next to the review instead, so it can
     still be opened and printed from a browser."""
@@ -325,12 +344,13 @@ def build(md_path, edge=None):
     if not os.path.isfile(md_path):
         return data
     with open(md_path, encoding="utf-8-sig") as f:
-        page = document(f.read(), os.path.dirname(md_path))
+        page = document(f.read(), os.path.dirname(md_path), _default_title(md_path),
+                        is_design_review=not is_document(md_path))
     stem = os.path.splitext(md_path)[0]
     pdf = stem + ".pdf"
     tmp = tempfile.mkdtemp(prefix="powerlab-review-")
     try:
-        html_path = os.path.join(tmp, "design-review.html")
+        html_path = os.path.join(tmp, os.path.basename(stem) + ".html")
         with open(html_path, "w", encoding="utf-8") as f:
             f.write(page)
         error = make_pdf(html_path, pdf, edge if edge is not None else find_edge())

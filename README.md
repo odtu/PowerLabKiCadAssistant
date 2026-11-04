@@ -97,7 +97,7 @@ Problem reports contain versions, the error and the panel's own stack trace. The
 - your Claude login and your GitHub login (if you use one)
 - the panel's settings (`%APPDATA%\PowerLabKiCadAssistant`)
 - your conversation history (`%USERPROFILE%\.claude`, and the panel's copy in `%APPDATA%\PowerLabKiCadAssistant\chats`)
-- design reviews and their PDFs (`design-review\` in your project; Microsoft Edge prints the PDF on your computer, offline)
+- design reviews and their PDFs (`design-review\` in your project; Microsoft Edge prints the PDF on your computer, offline), and other documents you ask Claude for as a PDF (`documents\`, printed the same way)
 
 The repository contains no API keys or tokens. Each user signs in with their own accounts.
 

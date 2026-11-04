@@ -153,6 +153,13 @@ PANEL_NOTE = (
     "PowerShell tool: `tar -a -cf fab\\gerbers.zip -C fab\\gerbers *` (the zip first, then -C "
     "and the folder whose files go in). It is the only other shell command the panel allows; "
     "Compress-Archive is blocked.\n"
+    "To give the user a document as a PDF (a report, notes, a parts list, a summary), write "
+    "it in Markdown to documents\\<name>.md in the project folder (headings, lists, tables, "
+    "bold, links; images on a line of their own as ![caption](relative/path.png)). When your "
+    "reply ends, the panel shows it in the chat and prints documents\\<name>.pdf next to it. "
+    "Never try to run Edge, Word, a browser or a converter yourself, and don't write HTML for "
+    "it: the panel blocks them. For a Word file, give the PDF: Word opens it (File > Open) "
+    "and saves it as .docx.\n"
     "Read, list and search files only with the Read, Grep and Glob tools, never with shell "
     "commands such as cd, grep, cat, ls, dir or Select-String: the panel blocks them. "
     "Grep uses ripgrep's regex syntax: no look-ahead, look-behind or backreferences "
@@ -305,6 +312,8 @@ class CardWindow(wx.Frame):
 
     def __init__(self, panel, kind, path):
         title = {"plan": "Block plan", "review": "Design review"}[kind]
+        if kind == "review" and review.is_document(path):
+            title = os.path.basename(path)
         super().__init__(panel, title=f"{title} — PowerLab Assistant",
                          style=wx.DEFAULT_FRAME_STYLE | wx.FRAME_FLOAT_ON_PARENT)
         self.panel, self.kind, self.path = panel, kind, path
@@ -411,8 +420,8 @@ class ClaudePanel(wx.Frame):
         self.pending = []
         self.context_items = None
         self.image_reads = {}
-        self.review_writes = {}  # tool id -> design-review.md being written in this run
-        self.review_md = None  # the review written in this run, shown when the run ends
+        self.review_writes = {}  # tool id -> design-review.md (or a document) being written in this run
+        self.review_mds = []  # the review and documents written in this run, shown when the run ends
         self.plan_writes = {}  # tool id -> block-plan.json being written (shown once written)
         self.card_windows = {}  # (kind, normcased path) -> CardWindow showing that plan or review
         self.activity, self.activity_sent = ("waiting", ""), 0.0
@@ -1179,8 +1188,8 @@ class ClaudePanel(wx.Frame):
                 self.say("tool_done", id=block.get("tool_use_id"), error=failed and not slip,
                          **({"slip": True} if slip else {}), text=detail)
                 written = self.review_writes.pop(block.get("tool_use_id"), None)
-                if written and not failed:
-                    self.review_md = written
+                if written and not failed and written not in self.review_mds:
+                    self.review_mds.append(written)
                 plan_path = self.plan_writes.pop(block.get("tool_use_id"), None)
                 if plan_path and not failed:
                     self.show_plan(plan_path)
@@ -1293,9 +1302,9 @@ class ClaudePanel(wx.Frame):
                 return
         self.emit("busy", value=False)
         self.save_chat()
-        if self.review_md:
-            self.show_review(self.review_md)
-            self.review_md = None
+        for md_path in self.review_mds:
+            self.show_review(md_path)
+        self.review_mds = []
         if not self.got_result and returncode not in (0, None, 1, 15, -15):
             self.problem("error", f"Claude Code stopped unexpectedly (exit code {returncode}).",
                          "claude exited without a result", f"exit code {returncode}")

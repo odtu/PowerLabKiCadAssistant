@@ -349,7 +349,7 @@ class ChatHistoryTests(unittest.TestCase):
         panel.session_id, panel.chat_cwd, panel.events = None, None, []
         panel.retry, panel.stale_session, panel.proc = None, False, None
         panel.got_result, panel.watched, panel.image_reads = False, {}, {}
-        panel.review_writes, panel.review_md, panel.plan_writes = {}, None, {}
+        panel.review_writes, panel.review_mds, panel.plan_writes = {}, [], {}
         panel.last_text, panel.limits, panel.started, panel.effort = "", [], 0.0, "high"
         panel.activity, panel.activity_sent = ("waiting", ""), time.time()
         panel.thinking_tokens = 0
@@ -760,6 +760,45 @@ class ChatHistoryTests(unittest.TestCase):
             {"type": "tool_result", "tool_use_id": "w3", "is_error": True, "content": "no"}]}})
         panel.finished(0)
         self.assertFalse(any(e["kind"] == "review" for e in panel.emitted))
+
+    def test_documents_are_shown_and_printed_like_the_review(self):
+        # #102, #103: asked for a PDF or Word file, Claude wrote HTML and tried to run Edge
+        # (blocked: "UNC path") and a claude.ai connector (no permission). Markdown written to
+        # documents\ now gets the review's card and PDF; the panel note says so.
+        from powerlab_assistant import review
+        panel = self.fake_panel()
+        panel.in_background = lambda work, done: done(work())
+        panel.chat_cwd = self.project
+        folder = os.path.join(self.project, "documents")
+        os.makedirs(folder)
+        bom, notes = os.path.join(folder, "bom.md"), os.path.join(folder, "notes.md")
+        with open(bom, "w", encoding="utf-8") as f:
+            f.write("# Parts list\n\n| Ref | Value |\n|---|---|\n| R1 | 10k |\n")
+        with open(notes, "w", encoding="utf-8") as f:
+            f.write("No heading here.\n")
+        saved = review.build
+        review.build = lambda path: dict(saved(path, edge=""), pdf=path[:-3] + ".pdf")
+        self.addCleanup(setattr, review, "build", saved)
+        panel.handle({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "d1", "name": "Write", "input": {"file_path": bom}},
+            {"type": "tool_use", "id": "d2", "name": "Write", "input": {"file_path": "documents\\notes.md"}},
+            {"type": "tool_use", "id": "d3", "name": "Write", "input": {"file_path": os.path.join(self.project, "notes.md")}}]}})
+        panel.handle({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": i} for i in ("d1", "d2", "d3")]}})
+        panel.finished(0)
+        cards = [e for e in panel.emitted if e["kind"] == "review"]
+        self.assertEqual([(c["title"], c["verdict"]) for c in cards],
+                         [("Parts list", "bom.md"), ("notes", "notes.md")])  # both, not only the last
+        self.assertTrue(cards[0]["pdf"].endswith(os.path.join("documents", "bom.pdf")))
+        self.assertIn("<td>R1</td>", cards[0]["body"])
+        self.assertFalse(review.is_review(os.path.join(self.project, "notes.md")))
+        self.assertFalse(review.is_review(os.path.join(folder, "bom.html")))
+        page = review.document("# Parts list\n", folder, "bom", is_design_review=False)
+        self.assertNotIn("findings", page)
+        with open(os.path.join(ROOT, "plugin", "powerlab_assistant", "panel.py"), encoding="utf-8") as f:
+            source = f.read()
+        self.assertIn(r"documents\\<name>.md", source)
+        self.assertIn("Never try to run Edge, Word", source)
 
     def test_own_tool_slips_are_not_shown_as_failures(self):
         # #74, #78: an Edit before its Read and a Grep regex ripgrep can't parse were shown in
