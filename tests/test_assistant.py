@@ -13,6 +13,7 @@ import tempfile
 import time
 import types
 import unittest
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -296,6 +297,26 @@ class UsageTests(unittest.TestCase):
         self.assertIn("Weekly limit: 20% used", tip)
         self.assertEqual(usage.summary([], 0, 0), ("", ""))
 
+    def test_helper_model_is_not_shown_as_the_answering_one(self):
+        # Issue #93: the reply's line listed "Haiku 4.5, Opus 5.5" with Opus chosen, because
+        # Claude Code calls Haiku itself for side jobs. The chosen model is the one that answered.
+        from powerlab_assistant import usage
+        result = {"modelUsage": {"claude-haiku-4-5-20251001": {"outputTokens": 40},
+                                 "claude-opus-5-5": {"outputTokens": 900}}}
+        self.assertEqual(usage.models(result, "claude-opus-5-5"),
+                         ("claude-opus-5-5", ["claude-haiku-4-5-20251001"]))
+        self.assertEqual(usage.models(result, ""),  # Claude Code's default: the one that wrote most
+                         ("claude-opus-5-5", ["claude-haiku-4-5-20251001"]))
+        haiku = {"modelUsage": {"claude-haiku-4-5-20251001": {"outputTokens": 50}}}
+        self.assertEqual(usage.models(haiku, "claude-haiku-4-5-20251001"), ("claude-haiku-4-5-20251001", []))
+        self.assertEqual(usage.models({"modelUsage": {"claude-opus-5-5[1m]": {}}}, "claude-opus-5-5"),
+                         ("claude-opus-5-5[1m]", []))
+        self.assertEqual(usage.models({}, "claude-opus-5-5"), ("", []))
+        with open(os.path.join(ROOT, "plugin", "powerlab_assistant", "panel.py"), encoding="utf-8") as f:
+            source = f.read()
+        self.assertIn("usage.models(msg, self.model)", source)
+        self.assertNotIn('msg.get("modelUsage")', source)
+
 
 class ChatHistoryTests(unittest.TestCase):
     """Closing the panel, the editor or KiCad must not forget the chat."""
@@ -328,7 +349,7 @@ class ChatHistoryTests(unittest.TestCase):
         panel.session_id, panel.chat_cwd, panel.events = None, None, []
         panel.retry, panel.stale_session, panel.proc = None, False, None
         panel.got_result, panel.watched, panel.image_reads = False, {}, {}
-        panel.review_writes, panel.review_md, panel.plan_writes = {}, None, {}
+        panel.review_writes, panel.review_mds, panel.plan_writes = {}, [], {}
         panel.last_text, panel.limits, panel.started, panel.effort = "", [], 0.0, "high"
         panel.activity, panel.activity_sent = ("waiting", ""), time.time()
         panel.thinking_tokens = 0
@@ -420,8 +441,11 @@ class ChatHistoryTests(unittest.TestCase):
         class Proc:
             stdin = types.SimpleNamespace(write=lambda text: runs[-1].append(text), close=lambda: None)
 
+        envs = []
+
         def popen(args, **kwargs):
             runs.append([args])
+            envs.append(kwargs.get("env") or {})
             return Proc()
 
         snap = types.SimpleNamespace(cwd=self.project, context="ctx", state="", watch=[])
@@ -456,6 +480,9 @@ class ChatHistoryTests(unittest.TestCase):
         self.assertIn("Claude: Reply 4", text)
         self.assertIn("(steps: Run drc)", text)
         self.assertIsNone(second.retry)  # nothing to resend into an old session
+        # The user's claude.ai connectors (#97) stay out of the panel's headless runs: their
+        # tools aren't allowed there, so a call to one only failed with a permission error.
+        self.assertEqual(envs[0].get("ENABLE_CLAUDEAI_MCP_SERVERS"), "false")
         # Within the sitting, the next message resumes the new session as before.
         second.proc = None
         second.handle({"type": "system", "subtype": "init", "session_id": "s-2"})
@@ -733,6 +760,45 @@ class ChatHistoryTests(unittest.TestCase):
             {"type": "tool_result", "tool_use_id": "w3", "is_error": True, "content": "no"}]}})
         panel.finished(0)
         self.assertFalse(any(e["kind"] == "review" for e in panel.emitted))
+
+    def test_documents_are_shown_and_printed_like_the_review(self):
+        # #102, #103: asked for a PDF or Word file, Claude wrote HTML and tried to run Edge
+        # (blocked: "UNC path") and a claude.ai connector (no permission). Markdown written to
+        # documents\ now gets the review's card and PDF; the panel note says so.
+        from powerlab_assistant import review
+        panel = self.fake_panel()
+        panel.in_background = lambda work, done: done(work())
+        panel.chat_cwd = self.project
+        folder = os.path.join(self.project, "documents")
+        os.makedirs(folder)
+        bom, notes = os.path.join(folder, "bom.md"), os.path.join(folder, "notes.md")
+        with open(bom, "w", encoding="utf-8") as f:
+            f.write("# Parts list\n\n| Ref | Value |\n|---|---|\n| R1 | 10k |\n")
+        with open(notes, "w", encoding="utf-8") as f:
+            f.write("No heading here.\n")
+        saved = review.build
+        review.build = lambda path: dict(saved(path, edge=""), pdf=path[:-3] + ".pdf")
+        self.addCleanup(setattr, review, "build", saved)
+        panel.handle({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "d1", "name": "Write", "input": {"file_path": bom}},
+            {"type": "tool_use", "id": "d2", "name": "Write", "input": {"file_path": os.path.join("documents", "notes.md")}},
+            {"type": "tool_use", "id": "d3", "name": "Write", "input": {"file_path": os.path.join(self.project, "notes.md")}}]}})
+        panel.handle({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": i} for i in ("d1", "d2", "d3")]}})
+        panel.finished(0)
+        cards = [e for e in panel.emitted if e["kind"] == "review"]
+        self.assertEqual([(c["title"], c["verdict"]) for c in cards],
+                         [("Parts list", "bom.md"), ("notes", "notes.md")])  # both, not only the last
+        self.assertTrue(cards[0]["pdf"].endswith(os.path.join("documents", "bom.pdf")))
+        self.assertIn("<td>R1</td>", cards[0]["body"])
+        self.assertFalse(review.is_review(os.path.join(self.project, "notes.md")))
+        self.assertFalse(review.is_review(os.path.join(folder, "bom.html")))
+        page = review.document("# Parts list\n", folder, "bom", is_design_review=False)
+        self.assertNotIn("findings", page)
+        with open(os.path.join(ROOT, "plugin", "powerlab_assistant", "panel.py"), encoding="utf-8") as f:
+            source = f.read()
+        self.assertIn(r"documents\\<name>.md", source)
+        self.assertIn("Never try to run Edge, Word", source)
 
     def test_own_tool_slips_are_not_shown_as_failures(self):
         # #74, #78: an Edit before its Read and a Grep regex ripgrep can't parse were shown in
@@ -1448,6 +1514,15 @@ class McpPatchTests(unittest.TestCase):
         self.assertIn('env_vars = getattr(self, "_uri_env_vars", None)', patch)
         self.assertIn('+  "open_board", // PowerLab patch (#61)', patch)
 
+    def test_batch_schematic_tools_get_the_long_timeout(self):
+        """Issue #91: batch_add_and_connect re-reads and rewrites the sheet for every part
+        and label, so a large batch passed the 30 s limit; the work still finished
+        afterwards, while Claude was told it had failed."""
+        patch = self.patch()
+        for command in ("batch_add_components", "batch_add_and_connect", "batch_connect",
+                        "batch_add_no_connects", "batch_edit_schematic_components"):
+            self.assertIn(f'+  "{command}", // PowerLab patch (#91)', patch)
+
     def test_junctions_count_wires_running_through(self):
         """Issue #62: every wire edit dropped the junctions of T's drawn in KiCad."""
         patch = self.patch()
@@ -1461,7 +1536,7 @@ class McpPatchTests(unittest.TestCase):
         for command in ("place_component", "add_mounting_hole", "sync_schematic_to_board",
                         "edit_component", "replace_component"):
             self.assertIn(f'+        "{command}",\n', patch)
-        self.assertIn("kicad_board.revert()", patch)
+        self.assertIn("self._while_kicad_busy(kicad_board.revert)", patch)
         self.assertIn('"replace_component": self._handle_replace_component', patch)
         self.assertIn("cli_nets = self._kicad_cli_pad_net_map(schematic_path)", patch)
         self.assertIn("nets_renamed.append(", patch)
@@ -1610,6 +1685,57 @@ class McpPatchTests(unittest.TestCase):
         patch = self.patch()
         self.assertIn("+    def _board_path_to_load(self, params", patch)
         self.assertIn('and result.get("message") == "No board is loaded"', patch)
+
+    def test_kicad_busy_save_is_retried(self):
+        # Issue #95: set_design_rules failed at once when KiCad answered "busy" to the save
+        # (a dialog open, a tool or zone fill running); the raw error said nothing to do
+        patch = self.patch()
+        start = '+    # KiCad answers "busy" while a dialog is open'
+        block = patch.split(start, 1)[1].split("+    def _edit_saved_board_then_revert(", 1)[0]
+        lines = [start] + block.split("\n")[1:]
+        body = "\n".join(line[1:] for line in lines if line.startswith("+"))
+        namespace = {"Any": object}
+        exec("class Interface:\n" + body, namespace)
+        iface = namespace["Interface"]()
+        busy = Exception("KiCad returned error: KiCad is busy and cannot respond to API requests right now")
+
+        calls = []
+
+        def save():
+            calls.append(1)
+            if len(calls) < 3:
+                raise busy
+            return True
+
+        with mock.patch("time.sleep") as sleep:
+            self.assertTrue(iface._while_kicad_busy(save))
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(sleep.call_count, 2)
+
+        def always_busy():
+            raise busy
+
+        with mock.patch("time.sleep"), mock.patch("time.monotonic", side_effect=[0.0, 1.0, 9.0]):
+            with self.assertRaises(Exception) as caught:
+                iface._while_kicad_busy(always_busy)
+        message = iface._kicad_save_failed(caught.exception)
+        self.assertIn("close the dialog", message)
+        self.assertIn("Nothing was changed", message)
+
+        def broken():
+            calls.append(1)
+            raise RuntimeError("no such board")
+
+        calls.clear()
+        with mock.patch("time.sleep") as sleep, self.assertRaises(RuntimeError):
+            iface._while_kicad_busy(broken)
+        self.assertEqual(len(calls), 1)  # other errors aren't retried
+        self.assertNotIn("dialog", iface._kicad_save_failed(RuntimeError("no such board")))
+
+        # every save and revert of KiCad's board on the save / edit / revert path uses it
+        for call in ("kicad_board.save", "kicad_board.revert", "live[1].save", "live[1].revert"):
+            self.assertIn(f"self._while_kicad_busy({call})", patch)
+        self.assertNotIn("+                live[1].save()\n", patch)
 
     def test_session_vias_keep_their_annular_ring(self):
         self.assertIn("via_drills = _repair_via_drills(self.board)", self.patch())
@@ -2833,6 +2959,16 @@ class PanelDefaultsTests(unittest.TestCase):
         self.assertIn("Never run a script (python -c", c["PANEL_NOTE"])
         self.assertIn("Read tool in parts (offset and limit)", c["PANEL_NOTE"])
         self.assertFalse(any(t.startswith(("Bash(python", "PowerShell(python")) for t in c["ALLOWED_TOOLS"]))
+
+    def test_bom_goes_through_the_bom_tool(self):
+        # Issue #98: a BOM's quantity column is the field ${QUANTITY}. In a shell command
+        # Claude Code can't check a variable in braces and blocks it; export_sch_bom runs
+        # kicad-cli without a shell, so the field reaches kicad-cli as written.
+        c = self.constants()
+        self.assertIn("export_sch_bom", c["PANEL_NOTE"])
+        self.assertIn("${QUANTITY}", c["PANEL_NOTE"])
+        with open(os.path.join(ROOT, "patches", "kicad-mcp.patch"), encoding="utf-8") as f:
+            self.assertNotIn('-    "export_sch_bom",', f.read())  # the pin's tool, still there
 
     def test_grep_patterns_are_ripgrep_syntax(self):
         # Issue #34: Claude gave Grep a look-ahead `(?!...)`, which ripgrep rejects.

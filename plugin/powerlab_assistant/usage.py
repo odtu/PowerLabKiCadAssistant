@@ -51,6 +51,20 @@ def context(result):
     return tokens, window
 
 
+def models(result, chosen=""):
+    """From a result event: (the model that answered, [helper models]). Claude Code calls a
+    small model (Haiku) itself for side jobs, e.g. reading a fetched page or checking a shell
+    command, so modelUsage lists it next to the chosen one (#93). The answering model is the
+    chosen one, or without a choice the one that wrote the most."""
+    used = (result or {}).get("modelUsage") or {}
+    if not used:
+        return "", []
+    main = next((m for m in used if chosen and m.split("[")[0] == chosen), None)
+    if main is None:
+        main = max(used, key=lambda m: int((used[m] or {}).get("outputTokens") or 0))
+    return main, [m for m in used if m != main]
+
+
 def summary(limit_items, tokens, window):
     """Short text for the panel plus a longer tooltip."""
     parts, tips = [], []

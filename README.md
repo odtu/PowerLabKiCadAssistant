@@ -8,7 +8,7 @@
 
 [![KiCad 10](https://img.shields.io/badge/KiCad-10.0%2B-314CB0?logo=kicad&logoColor=white)](https://www.kicad.org/)
 [![Windows](https://img.shields.io/badge/platform-Windows-0078D4)](#requirements)
-[![Version](https://img.shields.io/badge/version-1.3.1-2ea44f)](plugin/powerlab_assistant/config.py)
+[![Version](https://img.shields.io/badge/version-1.4.0-2ea44f)](plugin/powerlab_assistant/config.py)
 [![Tests](https://github.com/odtu/PowerLabKiCadAssistant/actions/workflows/tests.yml/badge.svg)](https://github.com/odtu/PowerLabKiCadAssistant/actions/workflows/tests.yml)
 [![License: CERN-OHL-S-2.0](https://img.shields.io/badge/license-CERN--OHL--S--2.0-blue)](LICENSE)
 
@@ -97,7 +97,7 @@ Problem reports contain versions, the error and the panel's own stack trace. The
 - your Claude login and your GitHub login (if you use one)
 - the panel's settings (`%APPDATA%\PowerLabKiCadAssistant`)
 - your conversation history (`%USERPROFILE%\.claude`, and the panel's copy in `%APPDATA%\PowerLabKiCadAssistant\chats`)
-- design reviews and their PDFs (`design-review\` in your project; Microsoft Edge prints the PDF on your computer, offline)
+- design reviews and their PDFs (`design-review\` in your project; Microsoft Edge prints the PDF on your computer, offline), and other documents you ask Claude for as a PDF (`documents\`, printed the same way)
 
 The repository contains no API keys or tokens. Each user signs in with their own accounts.
 

@@ -3501,10 +3501,10 @@ index 0000000..052abc5
 +
 diff --git a/python/commands/powerlab_route.py b/python/commands/powerlab_route.py
 new file mode 100644
-index 0000000..17c886d
+index 0000000..c78a30b
 --- /dev/null
 +++ b/python/commands/powerlab_route.py
-@@ -0,0 +1,818 @@
+@@ -0,0 +1,824 @@
 +"""
 +The PowerLab router as a background job (PowerLab patch).
 +
@@ -3557,6 +3557,7 @@ index 0000000..17c886d
 +LIVE_GAP = 2.0  # s between live updates in KiCad
 +TIME_LIMIT_MIN = 15.0  # default minutes for routing the connections; the run then finishes what it has
 +STALL = 180  # s without a newly routed connection while routing: reported as stalled
++REPAIR_POURS = True  # router 2: Router.repair_pours after routing
 +
 +_procs: Dict[str, subprocess.Popen] = {}  # job folder -> router process started by this worker
 +
@@ -4079,6 +4080,11 @@ index 0000000..17c886d
 +            st.write(phase=r["phase"])
 +
 +    rep = router.run(nets, log=progress)
++    if REPAIR_POURS:
++        # joins whose tracks cut a pour into pieces go round on a dearer layer (Router.repair_pours)
++        st.write(phase="mending the pours")
++        rep["pour_repair"] = {"joins_moved": router.repair_pours(time.time() + 180),
++                              **getattr(router, "repair_why", {})}
 +    if live:
 +        live.push(board, force=True)
 +    taken: List[Dict[str, Any]] = []
@@ -9784,10 +9790,10 @@ index 0000000..32ef387
 +    return p
 diff --git a/python/commands/powerlab_router2/router.py b/python/commands/powerlab_router2/router.py
 new file mode 100644
-index 0000000..1924db4
+index 0000000..827906b
 --- /dev/null
 +++ b/python/commands/powerlab_router2/router.py
-@@ -0,0 +1,2194 @@
+@@ -0,0 +1,2437 @@
 +"""PowerLab router 2: route like a person plans, then negotiate.
 +
 +The first router (commands/powerlab_router/) routes one connection after another and rips
@@ -9850,7 +9856,7 @@ index 0000000..1924db4
 +                 margins=(3.0, 10.0, None), magnetics=2.0, escape=1.0, weight=1.3, fast=True, spokes=1.0,
 +                 force=False, door=0.0, spoke_corridor=0.0, escalated=3.0, bus_pull=0.6, levels=True,
 +                 loop_pairs=False, escape_vias=False, escape_via_cost=0.0, against=1.0, top_axis="v",
-+                 pour_layer=2.0, fan_all=False, fan_straight=1.0):
++                 pour_layer=2.0, fan_all=True, fan_straight=0.3):
 +        self.turn, self.via, self.diagonal, self.weight, self.fast = turn, via, diagonal, weight, fast
 +        # preferred directions, as by hand on two layers: the top runs one way (top_axis, "v" or
 +        # "h"), the bottom the other, inner layers alternate. A step across a layer's direction
@@ -9859,9 +9865,9 @@ index 0000000..1924db4
 +        # (detours) and the bottom pour is cut into pieces (sf-motion's GND: 12 against 3)
 +        self.against, self.top_axis = against, top_axis
 +        self.fan_straight = fan_straight  # mm on going straight on instead of the fan's 45 degrees
-+        # Router.lanes: every fine-pitch pin fans toward its other pads. Off: on sf-motion (fan_straight
-+        # 0.3) 111.7 -> 113.3 joins and 8.3 -> 6.7 important ones open, but the shaping leaves
-+        # 0.1-0.2 mm jogs at the fan's turn (22.5 degree pieces, 67 degree corners): fix that first
++        # Router.lanes: every fine-pitch pin fans toward its other pads (sf-motion, 3 seeds: 111.7
++        # -> 113.3 joins, important ones open 8.3 -> 6.7). Its jogs at the turn were the shaping's:
++        # _lane_turn and the magnetics mask in _clear_fn (check_routing 26 -> 17.7, as without)
 +        self.fan_all = fan_all
 +        self.pour_layer = pour_layer  # factor on an outer layer mostly covered by a pour net (pour_layers)
 +        # force: a late round's failed search tries again at the first round's price (strict
@@ -10208,8 +10214,12 @@ index 0000000..1924db4
 +                bb = fp.GetBoundingBox(False)
 +                x0, y0, x1, y1 = T(bb.GetLeft()), T(bb.GetTop()), T(bb.GetRight()), T(bb.GetBottom())
 +                mag.append(([(x0, y0), (x1, y0), (x1, y1), (x0, y1)], []))
++        # the shaping keeps out from under magnetics by this mask, not by the summed costs: the
++        # escape-room costs of two neighbouring fine-pitch pins also add up to `magnetics`, and
++        # the shaping then refused the very cells the search had taken in front of a pin row
++        self.under_magnetics = g.polygons(mag) if mag else None
 +        if mag:
-+            m = g.polygons(mag)
++            m = self.under_magnetics
 +            for a in out:
 +                a[m] += self.costs.magnetics
 +        spokes = [[] for _ in rb.layers]
@@ -11377,7 +11387,7 @@ index 0000000..1924db4
 +        blocked = self._blocked_fn(nr)
 +        occ = self.occ[nr.key]
 +        own_t = occ.stamps.get(nr.net, ([None] * len(rb.layers), None))[0]
-+        lab = self.labc
++        mag = getattr(self, "under_magnetics", None)
 +        p = g.pitch
 +
 +        def free(Li, i, j):
@@ -11388,7 +11398,7 @@ index 0000000..1924db4
 +                return False
 +            if Li in self.esc and (not nr.inner or self.esc_block[Li][j, i]):
 +                return False
-+            return lab[Li][j, i] < self.costs.magnetics
++            return mag is None or not mag[j, i]
 +
 +        def clear(Li, pts):
 +            seen = set()
@@ -11442,6 +11452,16 @@ index 0000000..1924db4
 +        if b.end is not None and not b.end.stub:
 +            L1, p1 = out[-1]
 +            out[-1] = (L1, shape.corners(p1 + [b.end.centre]))
++        if not plain:
++            # the turn after a lane slides back along the pad's axis where the run after it can
++            # start from there: no hook past the turn or V under it at the lane's exit
++            L0, p0 = out[0]
++            if not b.start.stub:
++                out[0] = (L0, _lane_turn(p0, b.start.pad, self.rb.layers[L0], lambda poly, L=L0: clear(L, poly)))
++            L1, p1 = out[-1]
++            if b.end is not None and not b.end.stub:
++                out[-1] = (L1, _lane_turn(p1[::-1], b.end.pad, self.rb.layers[L1],
++                                          lambda poly, L=L1: clear(L, poly))[::-1])
 +        out = [(L, shape.despike(pts, None if plain else (lambda poly, L=L: clear(L, poly)))) for L, pts in out]
 +        if not plain:
 +            # a spike taken out can leave a square corner: chamfer it
@@ -11820,6 +11840,187 @@ index 0000000..1924db4
 +            nr.branches = [b for b in nr.branches if b not in gone]
 +        return left
 +
++    # --- pours after routing ---------------------------------------------------------------------
++    def _pour_pieces(self, min_area=1.0):
++        """Fill the zones; the pour nets' filled pieces on the routed layers beyond the largest
++        of each zone, at least `min_area` mm2 (slivers between parallel tracks don't count):
++        [(layer, area mm2, outline)]. A track that closes a ring with others or the edge cuts
++        the plane into pieces; the search's costs only see length, not the cut."""
++        pcbnew.ZONE_FILLER(self.board).Fill(self.board.Zones())
++        out = []
++        for z in self.board.Zones():
++            if z.GetIsRuleArea() or z.GetNetname() not in self.rb.pour_nets:
++                continue
++            for L in self.rb.layers:
++                if not z.IsOnLayer(L):
++                    continue
++                f = z.GetFilledPolysList(L)
++                pieces = sorted(((abs(f.Outline(i).Area()) / 1e12, f.Outline(i).Clone())
++                                 for i in range(f.OutlineCount())), key=lambda p: -p[0])
++                out += [(L, a, o) for a, o in pieces[1:] if a >= min_area]
++        return out
++
++    def _bounding(self, L, outline, reach=0.4):
++        """The router's joins with a track on L within `reach` mm of a piece's outline."""
++        r = int(pcbnew.FromMM(reach))
++        found = []
++        for nr in getattr(self, "nrs", []):
++            for b in nr.branches:
++                for it in getattr(b, "items", None) or []:
++                    if it.Type() == pcbnew.PCB_VIA_T or it.GetLayer() != L:
++                        continue
++                    if outline.Collide(pcbnew.SEG(it.GetStart(), it.GetEnd()), r):
++                        found.append((nr, b))
++                        break
++        return found
++
++    def repair_pours(self, deadline, factor=6.0):
++        """Joins whose tracks bound a cut-off piece of a pour are routed again, all of that
++        piece's at once (a piece is mostly closed by several nets: moving one of them never
++        joined it back), with that layer `factor` times dearer per mm and the other nets as
++        walls. Kept only if every new way is clear (exact check), no join is lost and less of
++        the pour is cut off; else the old copper goes back. Returns how many joins moved."""
++        moved = 0
++        why = self.repair_why = {}
++
++        def note(k):
++            why[k] = why.get(k, 0) + 1
++        def per_layer(ps):
++            d = {}
++            for L, x, _o in ps:
++                d[L] = d.get(L, 0.0) + x
++            return d
++        pieces = self._pour_pieces()
++        cut = sum(a for _L, a, _o in pieces)
++        layers_cut = per_layer(pieces)
++        why["cut_off_mm2_before"] = {self.rb.layer_names[L]: round(x, 1) for L, x in layers_cut.items()}
++        tried = set()
++        while time.time() < deadline:
++            todo = [(L, a, o) for L, a, o in sorted(pieces, key=lambda p: -p[1])
++                    if (L, round(a, 1)) not in tried]
++            if not todo:
++                break
++            L, a, o = todo[0]
++            tried.add((L, round(a, 1)))
++            group = self._bounding(L, o)
++            if not group:
++                note("no join of the router's bounds it")
++                continue
++            ok, undo = self._reroute_group(group, L, factor, deadline)
++            if ok is False and undo == "overlaps" and len({id(nr) for nr, _b in group}) > 1:
++                # the first net routed again took the room the next one needed: the other order
++                note("overlaps, tried the other order")
++                ok, undo = self._reroute_group(group[::-1], L, factor, deadline)
++            if not ok:
++                note(ok is None and "out of time" or undo)
++                continue
++            after = self._pour_pieces()
++            cut_after = sum(x for _L, x, _o in after)
++            layers_after = per_layer(after)
++            # no pour is traded for another: on TestPCB2 the moved tracks went to the top,
++            # also a GND pour, and cut it there (7 -> 10 pieces) while the total fell
++            worse = [M for M in set(layers_after) | set(layers_cut)
++                     if layers_after.get(M, 0.0) > layers_cut.get(M, 0.0) + 0.5]
++            if cut_after < cut - 0.5 and not worse:
++                pieces, cut, layers_cut = after, cut_after, layers_after
++                moved += len(group)
++                tried = set()  # the pieces moved: look again
++                continue
++            note("cuts another pour" if worse else "no less cut off")
++            undo()
++            pieces = self._pour_pieces()
++        why["cut_off_mm2_after"] = {self.rb.layer_names[L]: round(x, 1) for L, x in layers_cut.items()}
++        return moved
++
++    def _reroute_group(self, group, L, factor, deadline):
++        """Route the joins of `group` again with layer L `factor` times dearer, the rest as
++        walls, and put them on the board. Returns (True, undo) or (False, why)."""
++        Li = self.rb.layers.index(L)
++        nets = {}
++        for nr, b in group:
++            nets.setdefault(id(nr), (nr, []))[1].append(b)
++        saved = []
++        for nr, bs in nets.values():
++            saved.append((nr, list(nr.branches), list(nr.failed), nr.grid_geo, nr.final_geo,
++                          {id(x): x.items for x in nr.branches}, self._with_dependents(nr, bs)))
++
++        added = []  # the new copper put on the board (only once everything is clear)
++
++        def undo():
++            for it in added:
++                self.board.Remove(it)
++            added.clear()
++            for nr, br, fl, gg, fg, items, gone in saved:
++                self.unstamp(nr)
++                nr.branches, nr.failed, nr.grid_geo, nr.final_geo = br, fl, gg, fg
++                for x in nr.branches:
++                    x.items = items[id(x)]
++                for x in gone:
++                    for it in x.items:
++                        self.board.Add(it)
++                self.stamp(nr, nr.final_geo or nr.grid_geo)
++
++        # take the old copper off first, so the joins of the group can use each other's room
++        for nr, br, fl, gg, fg, items, gone in saved:
++            for x in gone:
++                for it in x.items:
++                    self.board.Remove(it)
++            self.unstamp(nr)
++            nr.branches = [x for x in nr.branches if x not in gone]
++            nr.grid_geo = self._grid_geo(nr)
++            self.stamp(nr, nr.grid_geo)
++        lf = self.lf[Li]
++        self.lf[Li] = lf * factor
++        why = ""
++        try:
++            for nr, br, fl, gg, fg, items, gone in saved:
++                open_before = len(fl)
++                self.unstamp(nr)
++                nr.nodes_used.clear()
++                self.route_net(nr, 1e4, deadline, keep=list(nr.branches), weight=1.0)
++                self.stamp(nr, nr.grid_geo)
++                if self.cut:
++                    why = None
++                    break
++                if len(nr.failed) > open_before:
++                    why = "a join found no other way"
++                    break
++                if self._bad_branches(nr)[0]:
++                    why = "overlaps"
++                    break
++        finally:
++            self.lf[Li] = lf
++        if why != "":
++            undo()
++            return (None if why is None else False), why
++        nrs = getattr(self, "nrs", [])
++        new = {}
++        for nr, br, fl, gg, fg, items, gone in saved:
++            self._shape_net(nr)
++            new[id(nr)] = [x for x in nr.branches if id(x) not in items]
++            for x in new[id(nr)]:
++                x.items = self._items(nr, x)
++        moving = {id(nr) for nr, *_ in saved}
++        others = [(it, n.net) for n in nrs if id(n) not in moving for x in n.branches for it in x.items]
++        mine = [(it, nr.net) for nr, *_ in saved for x in nr.branches if id(x) in {id(y) for y in new[id(nr)]}
++                for it in x.items]
++        kept = [(it, nr.net) for nr, br, fl, gg, fg, items, gone in saved for x in nr.branches
++                if id(x) in items for it in x.items]
++        idx = self.rb.index(others + kept + mine + [(it, it.GetNetname()) for it in self.rb.fixed])
++        for nr, *_ in saved:
++            for x in new[id(nr)]:
++                for it in x.items:
++                    kind = "Via" if it.Type() == pcbnew.PCB_VIA_T else "Track"
++                    if [h for h in self.rb.hits(nr.net, self._item_key(nr, it), it, kind, idx) if h is not None]:
++                        undo()
++                        return False, "too close (exact check)"
++        for nr, *_ in saved:
++            for x in new[id(nr)]:
++                for it in x.items:
++                    self.board.Add(it)
++                    added.append(it)
++        return True, undo
++
 +    def untake(self, trial):
 +        """Put back the joins take_out(trial=...) took out; returns their `left` entries."""
 +        back = []
@@ -11916,6 +12117,54 @@ index 0000000..1924db4
 +
 +def _at(p):
 +    return f"kicad:at={p[0]:.2f},{p[1]:.2f}"
++
++
++LANE_TURN_REACH = 2.0  # mm of track after a lane's exit that _lane_turn may cut out
++
++
++def _lane_turn(pts, pad, layer, clear):
++    """pts starts at the pad's centre and runs along its axis to the lane's exit, then on. The
++    exit sits on the grid's nearest cell, so the run that really leaves often starts a cell
++    off it: a V down and up again, or a hook past the turn and back (sf-motion, with every
++    fine-pitch pin fanned). Here the turn moves onto the axis where a later run's line meets
++    it, cutting what lies between, if that point is outside the pad, the turn is at most 90
++    degrees and the new pieces are clear. The latest such run wins (it cuts the most)."""
++    if len(pts) < 4 or math.dist(pts[0], pts[1]) < 1e-6:
++        return pts
++    c = pts[0]
++    u = ((pts[1][0] - c[0]) / math.dist(c, pts[1]), (pts[1][1] - c[1]) / math.dist(c, pts[1]))
++    try:
++        edge = max((q[0] - c[0]) * u[0] + (q[1] - c[1]) * u[1] for o, _h in polys(grown(pad, layer, 0.0)) for q in o)
++    except Exception:
++        return pts
++    walked = 0.0
++    best = None
++    for m in range(2, len(pts) - 1):
++        walked += math.dist(pts[m - 1], pts[m])
++        if walked > LANE_TURN_REACH:
++            break
++        a, e = pts[m], pts[m + 1]
++        d = math.dist(a, e)
++        if d < 1e-6:
++            continue
++        v = ((e[0] - a[0]) / d, (e[1] - a[1]) / d)
++        if u[0] * v[0] + u[1] * v[1] < -1e-6:
++            continue  # more than a 90 degree turn
++        cr = u[0] * v[1] - u[1] * v[0]
++        if abs(cr) < 1e-9:
++            continue  # parallel to the axis: nothing to meet
++        # c + t u = a + s v
++        t = ((a[0] - c[0]) * v[1] - (a[1] - c[1]) * v[0]) / cr
++        s = ((a[0] - c[0]) * u[1] - (a[1] - c[1]) * u[0]) / cr
++        if t <= edge + 1e-3 or s >= d - 1e-6:
++            continue  # the turn would sit on the pad, or past the run's own end
++        turn = (c[0] + t * u[0], c[1] + t * u[1])
++        cand = [c, turn] + pts[m + 1:]
++        if shape.length(cand) >= shape.length(pts) - 1e-6:
++            continue
++        if clear([c, turn, pts[m + 1]]):
++            best = cand
++    return shape.corners(best) if best else pts
 +
 +
 +def _via_radius(v):
@@ -15830,7 +16079,7 @@ index 6f9a813..a2d32a8 100644
              # Create outline polyline
              outline = PolyLine()
 diff --git a/python/kicad_interface.py b/python/kicad_interface.py
-index c6ac305..6b71db8 100644
+index c6ac305..e2055f7 100644
 --- a/python/kicad_interface.py
 +++ b/python/kicad_interface.py
 @@ -36,6 +36,7 @@ if sys.platform == "win32":
@@ -16019,7 +16268,7 @@ index c6ac305..6b71db8 100644
          "refill_zones",
          "import_svg_logo",
          "sync_schematic_to_board",
-@@ -1848,6 +1921,531 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -1848,6 +1921,567 @@ class KiCADInterface(SchematicHandlersMixin):
          state = self._dirty_state(board_path)
          return {"success": True, "boardPath": board_path, **state}
  
@@ -16198,6 +16447,42 @@ index c6ac305..6b71db8 100644
 +            logger.warning(f"No board from KiCad: {e}")
 +            return None
 +
++    # KiCad answers "busy" while a dialog is open, a tool is running or zones fill. A
++    # save or revert is tried again for this long (the tool call times out at 30 s).
++    KICAD_BUSY_WAIT_S = 8.0
++
++    @staticmethod
++    def _kicad_busy(error: Exception) -> bool:
++        return "busy" in str(error).lower()
++
++    def _while_kicad_busy(self, call: Any) -> Any:
++        """call() again while KiCad says it is busy, for up to KICAD_BUSY_WAIT_S
++        (PowerLab patch, #95). Other errors, and a busy KiCad after that, are raised."""
++        import time
++
++        deadline = time.monotonic() + self.KICAD_BUSY_WAIT_S
++        delay = 0.25
++        while True:
++            try:
++                return call()
++            except Exception as e:
++                if not self._kicad_busy(e) or time.monotonic() + delay > deadline:
++                    raise
++            time.sleep(delay)
++            delay = min(delay * 2, 2.0)
++
++    def _kicad_save_failed(self, error: Exception) -> str:
++        """Why KiCad's save failed, with what to do when it stayed busy (PowerLab patch, #95)."""
++        message = f"KiCad could not save the board: {error}"
++        if self._kicad_busy(error):
++            message += (
++                f". KiCad stayed busy for {self.KICAD_BUSY_WAIT_S:.0f} s: a dialog is "
++                "probably open in KiCad (e.g. Board Setup), or a tool or zone fill is still "
++                "running. Ask the user to close the dialog or finish the tool (Esc), then "
++                "try again. Nothing was changed."
++            )
++        return message
++
 +    def _edit_saved_board_then_revert(
 +        self, command: str, handler: Any, params: Dict[str, Any], live: Tuple[str, Any]
 +    ) -> Dict[str, Any]:
@@ -16205,9 +16490,9 @@ index c6ac305..6b71db8 100644
 +        (PowerLab patch, see LIVE_VIA_FILE_COMMANDS)."""
 +        board_path, kicad_board = live
 +        try:
-+            kicad_board.save()
++            self._while_kicad_busy(kicad_board.save)
 +        except Exception as e:
-+            return {"success": False, "message": f"{command}: KiCad could not save the board: {e}"}
++            return {"success": False, "message": f"{command}: {self._kicad_save_failed(e)}"}
 +        self._reload_board_file(board_path)
 +        if getattr(self, "board", None) is None:
 +            return {"success": False, "message": f"{command}: could not load {board_path}"}
@@ -16226,7 +16511,7 @@ index c6ac305..6b71db8 100644
 +                pcbnew.SaveBoard(board_path, self.board)
 +        self._record_board_signature()
 +        try:
-+            kicad_board.revert()
++            self._while_kicad_busy(kicad_board.revert)
 +        except Exception as e:
 +            result["warnings"] = list(result.get("warnings") or []) + [
 +                f"Saved to the board file, but KiCad did not reload it ({e}): "
@@ -16273,9 +16558,9 @@ index c6ac305..6b71db8 100644
 +        synced = True  # the tool's board matches the saved file
 +        if live is not None and mask:
 +            try:
-+                live[1].save()
++                self._while_kicad_busy(live[1].save)
 +            except Exception as e:
-+                return {"success": False, "message": f"KiCad could not save the board: {e}"}
++                return {"success": False, "message": self._kicad_save_failed(e)}
 +            self._reload_board_file(board_path)
 +        elif board_path and live is None:
 +            status = self._auto_save_board()
@@ -16303,7 +16588,7 @@ index c6ac305..6b71db8 100644
 +            self._reload_board_with_project(board_path, warnings)
 +            if live is not None and mask:
 +                try:
-+                    live[1].revert()
++                    self._while_kicad_busy(live[1].revert)
 +                except Exception as e:
 +                    warnings.append(
 +                        f"KiCad did not reload the board ({e}): use File > Revert in KiCad "
@@ -16551,7 +16836,7 @@ index c6ac305..6b71db8 100644
      def _handle_batch_move_components(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """Batch move wrapper that preserves the external-edit save guard."""
          if getattr(self, "session_backend", None) == "ipc" and not self._ipc_session_alive():
-@@ -4667,6 +5265,59 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -4667,6 +5301,59 @@ class KiCADInterface(SchematicHandlersMixin):
              logger.error(traceback.format_exc())
              return {"success": False, "message": str(e)}
  
@@ -16611,7 +16896,7 @@ index c6ac305..6b71db8 100644
      def _handle_get_elements_in_region(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """List all wires, labels, and symbols within a rectangular region"""
          logger.info("Getting elements in schematic region")
-@@ -4677,7 +5328,8 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -4677,7 +5364,8 @@ class KiCADInterface(SchematicHandlersMixin):
  
              schematic_path = params.get("schematicPath")
              if not schematic_path:
@@ -16621,7 +16906,7 @@ index c6ac305..6b71db8 100644
  
              x1 = float(params.get("x1", 0))
              y1 = float(params.get("y1", 0))
-@@ -4948,6 +5600,10 @@ print("ok")
+@@ -4948,6 +5636,10 @@ print("ok")
                          }
                      self.board = reloaded
                      self._update_command_handlers()
@@ -16632,7 +16917,7 @@ index c6ac305..6b71db8 100644
                      logger.info("Zone fill subprocess succeeded")
                      return {
                          "success": True,
-@@ -4982,47 +5638,30 @@ print("ok")
+@@ -4982,47 +5674,30 @@ print("ok")
      # =========================================================================
  
      def _ipc_route_trace(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -16699,7 +16984,7 @@ index c6ac305..6b71db8 100644
  
      def _ipc_route_arc_trace(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for route_arc_trace - adds copper arc with real-time UI update"""
-@@ -5079,6 +5718,65 @@ print("ok")
+@@ -5079,6 +5754,65 @@ print("ok")
              logger.error(f"IPC route_arc_trace error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -16765,7 +17050,7 @@ index c6ac305..6b71db8 100644
      def _ipc_add_via(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for add_via - adds via with real-time UI update"""
          try:
-@@ -5131,21 +5829,37 @@ print("ok")
+@@ -5131,21 +5865,37 @@ print("ok")
              net = params.get("net")
              clearance = params.get("clearance", 0.5)
              min_width = params.get("minWidth", 0.25)
@@ -16810,7 +17095,7 @@ index c6ac305..6b71db8 100644
  
              success = self.ipc_board_api.add_zone(
                  points=formatted_points,
-@@ -5156,6 +5870,7 @@ print("ok")
+@@ -5156,6 +5906,7 @@ print("ok")
                  priority=priority,
                  fill_mode=fill_type,
                  name=name,
@@ -16818,7 +17103,7 @@ index c6ac305..6b71db8 100644
              )
  
              return {
-@@ -5179,6 +5894,65 @@ print("ok")
+@@ -5179,6 +5930,65 @@ print("ok")
              logger.error(f"IPC add_copper_pour error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -16884,7 +17169,7 @@ index c6ac305..6b71db8 100644
      def _ipc_refill_zones(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for refill_zones - refills all zones with real-time UI update"""
          try:
-@@ -5204,12 +5978,18 @@ print("ok")
+@@ -5204,12 +6014,18 @@ print("ok")
              layer = params.get("layer", "F.SilkS")
              size = params.get("size", 1.0)
              rotation = params.get("rotation", 0)
@@ -16905,7 +17190,7 @@ index c6ac305..6b71db8 100644
                  "success": success,
                  "message": (
                      f"Added text '{text}' (visible in KiCAD UI)"
-@@ -5217,6 +5997,10 @@ print("ok")
+@@ -5217,6 +6033,10 @@ print("ok")
                      else "Failed to add text"
                  ),
              }
@@ -16916,7 +17201,7 @@ index c6ac305..6b71db8 100644
          except Exception as e:
              logger.error(f"IPC add_text error: {e}")
              return {"success": False, "message": str(e)}
-@@ -5349,6 +6133,19 @@ print("ok")
+@@ -5349,6 +6169,19 @@ print("ok")
                  x = x * 0.0254
                  y = y * 0.0254
  
@@ -16936,7 +17221,7 @@ index c6ac305..6b71db8 100644
              success = self.ipc_board_api.move_component(
                  reference=reference, x=x, y=y, rotation=rotation
              )
-@@ -5356,7 +6153,9 @@ print("ok")
+@@ -5356,7 +6189,9 @@ print("ok")
              return {
                  "success": success,
                  "message": (
@@ -16947,7 +17232,7 @@ index c6ac305..6b71db8 100644
                      if success
                      else "Failed to move component"
                  ),
-@@ -5456,11 +6255,306 @@ print("ok")
+@@ -5456,11 +6291,306 @@ print("ok")
              return {"success": False, "message": str(e)}
  
      def _ipc_delete_trace(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -17259,7 +17544,7 @@ index c6ac305..6b71db8 100644
  
      def _ipc_query_traces(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for query_traces - reads traces from the live KiCAD board."""
-@@ -5558,11 +6652,20 @@ print("ok")
+@@ -5558,11 +6688,20 @@ print("ok")
          and correctly generates PCB_SHAPE arcs for rounded corners.
          """
          shape = params.get("shape", "rectangle")
@@ -17280,7 +17565,7 @@ index c6ac305..6b71db8 100644
              return self.board_commands.add_board_outline(params)
  
          try:
-@@ -5614,6 +6717,50 @@ print("ok")
+@@ -5614,6 +6753,50 @@ print("ok")
              logger.error(f"IPC add_board_outline error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -17331,7 +17616,7 @@ index c6ac305..6b71db8 100644
      def _ipc_add_mounting_hole(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for add_mounting_hole - adds mounting hole with real-time UI update"""
          try:
-@@ -5833,6 +6980,100 @@ print("ok")
+@@ -5833,6 +7016,100 @@ print("ok")
              logger.error(f"IPC set_footprint_type error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -18981,10 +19266,10 @@ index 0000000..2d30edb
 +    return max((abs(_turn(_sub(pts[i], pts[i - 1]), _sub(pts[i + 1], pts[i])))
 +                for i in range(1, len(pts) - 1)), default=0.0)
 diff --git a/src/command-timeout.ts b/src/command-timeout.ts
-index dfd876c..1f020d4 100644
+index dfd876c..2622a49 100644
 --- a/src/command-timeout.ts
 +++ b/src/command-timeout.ts
-@@ -35,6 +35,11 @@ export const LONG_RUNNING_COMMANDS = [
+@@ -35,6 +35,18 @@ export const LONG_RUNNING_COMMANDS = [
    "list_schematic_labels",
    "get_schematic_view",
    "digikey_check_library_availability",
@@ -18993,10 +19278,17 @@ index dfd876c..1f020d4 100644
 +  "undo_autoroute", // PowerLab patch: refills the zones in KiCad
 +  "open_board", // PowerLab patch (#61): a large board with 300+ symbol libraries
 +  "open_project", // PowerLab patch (#61): loads the board too
++  // PowerLab patch (#91): every part and label re-reads and rewrites the sheet, so a batch's
++  // cost grows with its size times the sheet's; at 30 s the work still finished afterwards.
++  "batch_add_components", // PowerLab patch (#91)
++  "batch_add_and_connect", // PowerLab patch (#91)
++  "batch_connect", // PowerLab patch (#91)
++  "batch_add_no_connects", // PowerLab patch (#91)
++  "batch_edit_schematic_components", // PowerLab patch (#91)
  ] as const;
  
  /**
-@@ -66,6 +71,13 @@ export function computeCommandTimeout(command: string, params?: unknown): number
+@@ -66,6 +78,13 @@ export function computeCommandTimeout(command: string, params?: unknown): number
      return Math.max(budgetMs, LONG_COMMAND_TIMEOUT_MS);
    }
  
@@ -20103,6 +20395,21 @@ index f2b7f4d..f0dee9f 100644
    // Add free-form text annotation to schematic
    server.tool(
      "add_schematic_text",
+diff --git a/tests-ts/command-timeout.test.ts b/tests-ts/command-timeout.test.ts
+index e46e228..da51312 100644
+--- a/tests-ts/command-timeout.test.ts
++++ b/tests-ts/command-timeout.test.ts
+@@ -19,6 +19,10 @@ describe("computeCommandTimeout", () => {
+     }
+   });
+ 
++  it("gives the batch schematic tools the long allowance (PowerLab #91)", () => {
++    expect(computeCommandTimeout("batch_add_and_connect", {})).toBe(LONG_COMMAND_TIMEOUT_MS);
++  });
++
+   describe("autoroute (issue #251)", () => {
+     it("is never left on the 30s default", () => {
+       // The regression itself: autoroute was absent from the long-running list,
 diff --git a/tests/test_autoroute_best_of_n.py b/tests/test_autoroute_best_of_n.py
 index bc5f7ae..3dbf1c6 100644
 --- a/tests/test_autoroute_best_of_n.py

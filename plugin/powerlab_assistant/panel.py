@@ -145,11 +145,21 @@ PANEL_NOTE = (
     "`kicad-cli sch export pdf -o out.pdf design.kicad_sch` - never locate it first, and never "
     "use variables, `&`, `;`, pipes or its full path: the panel only allows a plain "
     "`kicad-cli ...` command and blocks everything else. It creates missing output folders "
-    "itself. Write outputs inside the project folder.\n"
+    "itself. Write outputs inside the project folder. A command with a variable in braces is "
+    "blocked, so make a BOM with the kicad tool export_sch_bom instead (its fields "
+    "take KiCad's ${QUANTITY}, ${DNP} and the like as written), never "
+    "`kicad-cli sch export bom`.\n"
     "To zip outputs (e.g. Gerbers and drill files for PCBWay), run one plain command with the "
     "PowerShell tool: `tar -a -cf fab\\gerbers.zip -C fab\\gerbers *` (the zip first, then -C "
     "and the folder whose files go in). It is the only other shell command the panel allows; "
     "Compress-Archive is blocked.\n"
+    "To give the user a document as a PDF (a report, notes, a parts list, a summary), write "
+    "it in Markdown to documents\\<name>.md in the project folder (headings, lists, tables, "
+    "bold, links; images on a line of their own as ![caption](relative/path.png)). When your "
+    "reply ends, the panel shows it in the chat and prints documents\\<name>.pdf next to it. "
+    "Never try to run Edge, Word, a browser or a converter yourself, and don't write HTML for "
+    "it: the panel blocks them. For a Word file, give the PDF: Word opens it (File > Open) "
+    "and saves it as .docx.\n"
     "Read, list and search files only with the Read, Grep and Glob tools, never with shell "
     "commands such as cd, grep, cat, ls, dir or Select-String: the panel blocks them. "
     "Grep uses ripgrep's regex syntax: no look-ahead, look-behind or backreferences "
@@ -302,6 +312,8 @@ class CardWindow(wx.Frame):
 
     def __init__(self, panel, kind, path):
         title = {"plan": "Block plan", "review": "Design review"}[kind]
+        if kind == "review" and review.is_document(path):
+            title = os.path.basename(path)
         super().__init__(panel, title=f"{title} — PowerLab Assistant",
                          style=wx.DEFAULT_FRAME_STYLE | wx.FRAME_FLOAT_ON_PARENT)
         self.panel, self.kind, self.path = panel, kind, path
@@ -408,8 +420,8 @@ class ClaudePanel(wx.Frame):
         self.pending = []
         self.context_items = None
         self.image_reads = {}
-        self.review_writes = {}  # tool id -> design-review.md being written in this run
-        self.review_md = None  # the review written in this run, shown when the run ends
+        self.review_writes = {}  # tool id -> design-review.md (or a document) being written in this run
+        self.review_mds = []  # the review and documents written in this run, shown when the run ends
         self.plan_writes = {}  # tool id -> block-plan.json being written (shown once written)
         self.card_windows = {}  # (kind, normcased path) -> CardWindow showing that plan or review
         self.activity, self.activity_sent = ("waiting", ""), 0.0
@@ -1068,6 +1080,10 @@ class ClaudePanel(wx.Frame):
         self.thought = ""
         env = clean_env()
         env.update(self.api_env())
+        # The user's claude.ai connectors (#97): Claude Code loads them into every session, but
+        # their tools aren't in ALLOWED_TOOLS and a headless run can't ask, so a call to one only
+        # failed with a permission error. The terminal session (open_terminal) keeps them.
+        env["ENABLE_CLAUDEAI_MCP_SERVERS"] = "false"
         self.summaries_on = (self.summaries and self.model in SUMMARY_MODELS
                              and "CLAUDE_CODE_EXTRA_BODY" not in env)
         if self.summaries_on:
@@ -1172,8 +1188,8 @@ class ClaudePanel(wx.Frame):
                 self.say("tool_done", id=block.get("tool_use_id"), error=failed and not slip,
                          **({"slip": True} if slip else {}), text=detail)
                 written = self.review_writes.pop(block.get("tool_use_id"), None)
-                if written and not failed:
-                    self.review_md = written
+                if written and not failed and written not in self.review_mds:
+                    self.review_mds.append(written)
                 plan_path = self.plan_writes.pop(block.get("tool_use_id"), None)
                 if plan_path and not failed:
                     self.show_plan(plan_path)
@@ -1204,10 +1220,12 @@ class ClaudePanel(wx.Frame):
             turns = msg.get("num_turns") or 0
             secs = time.time() - self.started
             labels = {i: l for i, l, _, _ in MODELS if i}
-            used = [labels.get(m, m) for m in (msg.get("modelUsage") or {})]
+            main, helpers = usage.models(msg, self.model)
+            helpers = [labels.get(m, m) for m in helpers]
             tokens, window = usage.context(msg)
             self.say("meta", text=f"{secs:.0f}s" + (f" · {turns} steps" if turns > 1 else "")
-                      + (f" · {', '.join(used)} · {self.effort} effort" if used else ""))
+                      + (f" · {labels.get(main, main)} · {self.effort} effort" if main else "")
+                      + (f" · Claude Code's helper: {', '.join(helpers)}" if helpers else ""))
             text, tip = usage.summary(self.limits, tokens, window)
             self.emit("usage", text=text, tip=tip)
             if tokens > FRESH_AFTER_TOKENS and not msg.get("is_error"):
@@ -1284,9 +1302,9 @@ class ClaudePanel(wx.Frame):
                 return
         self.emit("busy", value=False)
         self.save_chat()
-        if self.review_md:
-            self.show_review(self.review_md)
-            self.review_md = None
+        for md_path in self.review_mds:
+            self.show_review(md_path)
+        self.review_mds = []
         if not self.got_result and returncode not in (0, None, 1, 15, -15):
             self.problem("error", f"Claude Code stopped unexpectedly (exit code {returncode}).",
                          "claude exited without a result", f"exit code {returncode}")
