@@ -108,8 +108,22 @@ function Update-McpPatch {
     # Not applied, or an older version of it is: start again from the pinned files.
     Run git @("-C", $McpDir, "checkout", "--quiet", "--force", $McpCommit)
     Run git @("-C", $McpDir, "clean", "-fdq", "--", "python", "src")
+    Remove-PatchNewFiles $patch
     Run git @("-C", $McpDir, "apply", "--whitespace=nowarn", $patch)
     return $true
+}
+function Remove-PatchNewFiles([string]$patch) {
+    # Files the patch adds aren't in the pinned commit, so the checkout above leaves the
+    # older patch's copies behind as untracked files, and git apply then refuses to create
+    # them again ("already exists in working directory", #105): tests\ is outside the clean.
+    $prev = ""
+    foreach ($line in [IO.File]::ReadAllLines($patch)) {
+        if ($prev -eq "--- /dev/null" -and $line -match '^\+\+\+ b/(.+)$') {
+            $file = Join-Path $McpDir ($Matches[1].Trim() -replace '/', '\')
+            if (Test-Path -LiteralPath $file -PathType Leaf) { Remove-Item -LiteralPath $file -Force }
+        }
+        $prev = $line
+    }
 }
 function Get-PatchHash {
     (Get-FileHash (Join-Path $Root "patches\kicad-mcp.patch") -Algorithm SHA256).Hash

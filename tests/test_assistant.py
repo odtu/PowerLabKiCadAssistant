@@ -7,6 +7,7 @@ import base64
 import math
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1463,6 +1464,66 @@ class McpPatchTests(unittest.TestCase):
         self.assertIn('"dist\\.powerlab-patch"', text)
         self.assertIn("elseif ((Get-McpBuildStamp) -ne (Get-PatchHash))", text)
         self.assertEqual(text.count("Save-McpBuildStamp"), 4)  # defined, and after each of the 3 builds
+
+    def test_update_removes_files_an_older_patch_added(self):
+        """Issue #105: updating to 1.4.0 failed with "tests/...: already exists in working
+        directory". The checkout back to the pin leaves the files an older patch added as
+        untracked files, and the clean covered only python/ and src/, not tests/."""
+        with open(os.path.join(ROOT, "install.ps1"), encoding="utf-8") as f:
+            text = f.read()
+        update = re.search(r"(?ms)^function Update-McpPatch\b.*?^\}", text).group(0)
+        self.assertLess(update.index("Remove-PatchNewFiles $patch"), update.index('"apply", "--whitespace=nowarn"'))
+        self.assertTrue(text.isascii())
+        if sys.platform != "win32" or not shutil.which("git"):
+            return
+        # The installer's functions, on a small repository: pin, a patch adding tests/new.py
+        # and changing src/a.ts, and the older patch's tests/new.py left behind.
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        repo = os.path.join(tmp, "mcp")
+        os.makedirs(os.path.join(repo, "src"))
+
+        def git(*args):
+            subprocess.run(["git", "-C", repo, *args], check=True, capture_output=True)
+
+        git("init", "-q")
+        with open(os.path.join(repo, "src", "a.ts"), "w", newline="\n") as f:
+            f.write("one\n")
+        git("add", ".")
+        git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "pin")
+        pin = subprocess.run(["git", "-C", repo, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+        os.makedirs(os.path.join(repo, "tests"))
+        with open(os.path.join(repo, "tests", "new.py"), "w", newline="\n") as f:
+            f.write("x = 2\n")
+        with open(os.path.join(repo, "src", "a.ts"), "w", newline="\n") as f:
+            f.write("two\n")
+        git("add", "-N", "tests/new.py")
+        patch = os.path.join(tmp, "kicad-mcp.patch")
+        with open(patch, "wb") as f:
+            f.write(subprocess.run(["git", "-C", repo, "diff", pin], capture_output=True).stdout)
+        git("reset", "-q")
+        with open(os.path.join(repo, "tests", "new.py"), "w", newline="\n") as f:
+            f.write("x = 1\n")  # the older patch's copy
+        functions = "\n".join(re.search(rf"(?ms)^function {name}\b.*?^\}}", text).group(0)
+                              for name in ("Update-McpPatch", "Remove-PatchNewFiles"))
+        script = os.path.join(tmp, "run.ps1")
+        with open(script, "w", encoding="utf-8") as f:
+            f.write('$ErrorActionPreference = "Stop"\n'
+                    f'$Root = "{tmp}"; $McpDir = "{repo}"; $McpCommit = "{pin}"\n'
+                    'function Run($exe, $argv) { & $exe @argv; if ($LASTEXITCODE) { throw "failed" } }\n'
+                    'function Probe($exe, $argv) { $ErrorActionPreference = "Continue"; '
+                    '& $exe @argv *> $null; return $LASTEXITCODE }\n'
+                    f"{functions}\n"
+                    'New-Item -ItemType Directory -Force (Join-Path $Root "patches") | Out-Null\n'
+                    'Move-Item -Force (Join-Path $Root "kicad-mcp.patch") (Join-Path $Root "patches")\n'
+                    'Update-McpPatch\n')
+        run = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script],
+                             capture_output=True, text=True)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        with open(os.path.join(repo, "tests", "new.py")) as f:
+            self.assertEqual(f.read(), "x = 2\n")
+        with open(os.path.join(repo, "src", "a.ts")) as f:
+            self.assertEqual(f.read(), "two\n")
 
     def test_rotation_keeps_3d_models(self):
         patch = self.patch()
