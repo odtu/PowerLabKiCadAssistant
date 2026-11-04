@@ -173,6 +173,7 @@
  "Claude Code isn't signed in yet.": "Claude Code में अभी साइन इन नहीं है।",
  "Sign in": "साइन इन करें",
  "This chat got long. To save tokens, your next message continues it with only your last prompts and the project.": "यह चैट लंबी हो गई है। टोकन बचाने के लिए आपका अगला संदेश इसे सिर्फ़ आपके पिछले प्रॉम्प्ट और प्रोजेक्ट के साथ जारी रखता है।",
+ "Claude Code's sign-in has expired. Press Sign in, type /login in the window that opens, then send your message again.": "Claude Code का साइन-इन समाप्त हो गया है। “साइन इन करें” दबाएँ, खुलने वाली विंडो में /login टाइप करें, फिर अपना संदेश दोबारा भेजें।",
  "This model can't show its thinking live, so the panel stopped asking for it. Send your message again.": "यह मॉडल अपनी सोच लाइव नहीं दिखा सकता, इसलिए पैनल ने उसे माँगना बंद कर दिया। अपना संदेश फिर से भेजें।",
  "Start a new board from scratch": "नया बोर्ड शुरू से बनाएँ",
  "I want to design a new board from scratch. Ask me the requirements first.": "मैं एक नया बोर्ड शुरू से डिज़ाइन करना चाहता हूँ। पहले मुझसे ज़रूरतें पूछो।",

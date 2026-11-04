@@ -173,6 +173,7 @@
  "Claude Code isn't signed in yet.": "Claude Code belum masuk.",
  "Sign in": "Masuk",
  "This chat got long. To save tokens, your next message continues it with only your last prompts and the project.": "Chat ini sudah panjang. Untuk menghemat token, pesan berikutnya melanjutkannya hanya dengan prompt terakhir Anda dan proyek.",
+ "Claude Code's sign-in has expired. Press Sign in, type /login in the window that opens, then send your message again.": "Sesi masuk Claude Code telah kedaluwarsa. Tekan \"Masuk\", ketik /login di jendela yang terbuka, lalu kirim ulang pesan Anda.",
  "This model can't show its thinking live, so the panel stopped asking for it. Send your message again.": "Model ini tidak dapat menampilkan proses berpikirnya secara langsung, jadi panel berhenti memintanya. Kirim ulang pesan Anda.",
  "Start a new board from scratch": "Mulai board baru dari nol",
  "I want to design a new board from scratch. Ask me the requirements first.": "Saya ingin mendesain board baru dari nol. Tanyakan dulu kebutuhan saya.",

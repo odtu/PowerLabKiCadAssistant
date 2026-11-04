@@ -173,6 +173,7 @@
  "Claude Code isn't signed in yet.": "Claude Code'da henüz oturum açılmadı.",
  "Sign in": "Oturum aç",
  "This chat got long. To save tokens, your next message continues it with only your last prompts and the project.": "Bu sohbet uzadı. Token tasarrufu için sonraki mesajınız yalnızca son istemlerinizle ve projeyle devam eder.",
+ "Claude Code's sign-in has expired. Press Sign in, type /login in the window that opens, then send your message again.": "Claude Code oturumunun süresi doldu. \"Oturum aç\" düğmesine basın, açılan pencerede /login yazın, sonra mesajınızı yeniden gönderin.",
  "This model can't show its thinking live, so the panel stopped asking for it. Send your message again.": "Bu model düşüncesini canlı gösteremiyor, bu yüzden panel bunu istemeyi bıraktı. Mesajınızı yeniden gönderin.",
  "Start a new board from scratch": "Sıfırdan yeni bir kart başlat",
  "I want to design a new board from scratch. Ask me the requirements first.": "Sıfırdan yeni bir kart tasarlamak istiyorum. Önce benden gereksinimleri sor.",

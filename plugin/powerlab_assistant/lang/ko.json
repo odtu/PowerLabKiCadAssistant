@@ -173,6 +173,7 @@
  "Claude Code isn't signed in yet.": "Claude Code에 아직 로그인하지 않았습니다.",
  "Sign in": "로그인",
  "This chat got long. To save tokens, your next message continues it with only your last prompts and the project.": "채팅이 길어졌습니다. 토큰을 절약하기 위해 다음 메시지는 마지막 프롬프트와 프로젝트만으로 이어집니다.",
+ "Claude Code's sign-in has expired. Press Sign in, type /login in the window that opens, then send your message again.": "Claude Code 로그인이 만료되었습니다. '로그인'을 누르고 열리는 창에 /login을 입력한 다음 메시지를 다시 보내세요.",
  "This model can't show its thinking live, so the panel stopped asking for it. Send your message again.": "이 모델은 생각 과정을 실시간으로 보여줄 수 없어 패널이 요청을 중단했습니다. 메시지를 다시 보내세요.",
  "Start a new board from scratch": "새 기판을 처음부터 시작",
  "I want to design a new board from scratch. Ask me the requirements first.": "새 기판을 처음부터 설계하고 싶습니다. 먼저 요구 사항을 물어봐 주세요.",

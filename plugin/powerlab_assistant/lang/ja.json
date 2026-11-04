@@ -173,6 +173,7 @@
  "Claude Code isn't signed in yet.": "Claude Code にまだサインインしていません。",
  "Sign in": "サインイン",
  "This chat got long. To save tokens, your next message continues it with only your last prompts and the project.": "このチャットが長くなりました。トークンを節約するため、次のメッセージでは直近のプロンプトとプロジェクトだけでチャットを続けます。",
+ "Claude Code's sign-in has expired. Press Sign in, type /login in the window that opens, then send your message again.": "Claude Code のサインインの有効期限が切れました。「サインイン」を押し、開いたウィンドウで /login と入力してから、メッセージをもう一度送信してください。",
  "This model can't show its thinking live, so the panel stopped asking for it. Send your message again.": "このモデルは思考をライブ表示できないため、パネルは思考の要求をやめました。メッセージをもう一度送信してください。",
  "Start a new board from scratch": "新しい基板をゼロから始める",
  "I want to design a new board from scratch. Ask me the requirements first.": "新しい基板をゼロから設計したいです。まず要件を質問してください。",

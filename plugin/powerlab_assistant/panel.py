@@ -227,6 +227,16 @@ _live_panel = None  # the panel that receives reports of this plugin's own excep
 
 
 STATE_BLOCK = re.compile(r"\s*<kicad_state>.*?(</kicad_state>|$)", re.S)
+# Claude Code's errors when its sign-in expired or was revoked (#107), e.g. "Failed to
+# authenticate: OAuth session expired and could not be refreshed", "OAuth token has
+# expired. Please run /login", "Invalid API key · Please run /login".
+SIGNED_OUT = re.compile(r"failed to authenticate|oauth (session|token)|please run /login"
+                        r"|invalid api key|authentication_error", re.I)
+
+
+def signed_out(text):
+    """True if Claude Code's error says it must sign in again."""
+    return bool(SIGNED_OUT.search(text or ""))
 
 
 def strip_state(text):
@@ -1207,6 +1217,10 @@ class ClaudePanel(wx.Frame):
             report.note_event("result", f"{msg.get('subtype', '')} error={bool(msg.get('is_error'))}")
             if "Not logged in" in result:
                 self.emit("note", level="warn", text="Claude Code isn't signed in yet.",
+                          action={"label": "Sign in", "type": "terminal"})
+            elif msg.get("is_error") and signed_out(result):
+                self.emit("note", level="warn", text="Claude Code's sign-in has expired. Press Sign in, "
+                          "type /login in the window that opens, then send your message again.",
                           action={"label": "Sign in", "type": "terminal"})
             elif msg.get("is_error") and self.summaries_on and "thinking" in result.lower():
                 self.summaries = False  # until the panel restarts
