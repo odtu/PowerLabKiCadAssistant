@@ -1448,6 +1448,15 @@ class McpPatchTests(unittest.TestCase):
         self.assertIn('env_vars = getattr(self, "_uri_env_vars", None)', patch)
         self.assertIn('+  "open_board", // PowerLab patch (#61)', patch)
 
+    def test_batch_schematic_tools_get_the_long_timeout(self):
+        """Issue #91: batch_add_and_connect re-reads and rewrites the sheet for every part
+        and label, so a large batch passed the 30 s limit; the work still finished
+        afterwards, while Claude was told it had failed."""
+        patch = self.patch()
+        for command in ("batch_add_components", "batch_add_and_connect", "batch_connect",
+                        "batch_add_no_connects", "batch_edit_schematic_components"):
+            self.assertIn(f'+  "{command}", // PowerLab patch (#91)', patch)
+
     def test_junctions_count_wires_running_through(self):
         """Issue #62: every wire edit dropped the junctions of T's drawn in KiCad."""
         patch = self.patch()
