@@ -2915,6 +2915,16 @@ class PanelDefaultsTests(unittest.TestCase):
         self.assertIn("Read tool in parts (offset and limit)", c["PANEL_NOTE"])
         self.assertFalse(any(t.startswith(("Bash(python", "PowerShell(python")) for t in c["ALLOWED_TOOLS"]))
 
+    def test_bom_goes_through_the_bom_tool(self):
+        # Issue #98: a BOM's quantity column is the field ${QUANTITY}. In a shell command
+        # Claude Code can't check a variable in braces and blocks it; export_sch_bom runs
+        # kicad-cli without a shell, so the field reaches kicad-cli as written.
+        c = self.constants()
+        self.assertIn("export_sch_bom", c["PANEL_NOTE"])
+        self.assertIn("${QUANTITY}", c["PANEL_NOTE"])
+        with open(os.path.join(ROOT, "patches", "kicad-mcp.patch"), encoding="utf-8") as f:
+            self.assertNotIn('-    "export_sch_bom",', f.read())  # the pin's tool, still there
+
     def test_grep_patterns_are_ripgrep_syntax(self):
         # Issue #34: Claude gave Grep a look-ahead `(?!...)`, which ripgrep rejects.
         c = self.constants()
