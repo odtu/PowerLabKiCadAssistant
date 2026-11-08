@@ -42,17 +42,31 @@ Ask for whatever you can't read from the board, and don't guess currents or volt
     - via 0.6 mm, through hole 0.3 mm, annular ring 0.15 mm
     - copper to hole 0.25 mm, copper to edge 0.5 mm, hole to hole 0.4 mm
     - no micro or blind vias
+  - **2 oz copper** (`copper: "2oz"`): minimum track 0.18 mm (PCBWay's 2 oz outer-layer floor; the lab's 0.15 mm floor is for 1 oz), clearance 0.2 mm, annular ring 0.2 mm, via 0.7 mm. The Default class routes signals at **0.2 mm**, not at the floor: 2 oz etches with more undercut, and the floor is kept for neck-downs at fine-pitch pins. Add a `.kicad_dru` warning rule so DRC shows where a signal used the floor:
+    ```
+    (rule "signal tracks 0.2 mm"
+        (condition "A.Type == 'Track' && A.NetClass == 'Default'")
+        (constraint track_width (min 0.2mm))
+        (severity warning))
+    ```
 - **Net classes (§2.6):** the router routes every net at its class's width, clearance and via. Create them with `create_netclass` (its `nets` list) or `assign_net_to_class`. Both take net names, not patterns, so list the nets with `get_nets_list` and pick the ones matching the §1.6 patterns `*GND*`, `+*`, `-*`, `VBUS*`:
 
   | Class | Track | Clearance | Via drill / pad |
   |---|---|---|---|
-  | Default | 0.15 mm | 0.2 mm | 0.3 / 0.6 mm |
+  | Default | 0.15 mm (2 oz: 0.2 mm) | 0.2 mm (2 oz: 0.25 mm) | 0.3 / 0.6 mm (2 oz: 0.3 / 0.7 mm) |
   | Power, GND | width for the current, at least 0.5 mm | 0.3 mm | 0.4 / 0.8 mm |
   | HV (> 50 V) | width for the current | from the §3.3 voltage table | 0.4 / 0.8 mm |
 
   - **Power widths:** ask the user for each rail's current, then size the track from the §3.3 table. On 1 oz outer copper that is 0.3 mm for 1 A, 0.8 mm for 2 A and 1.4 mm for 3 A. Above about 3 A the net belongs in a pour, not a track.
   - **Never route a power net at the default width.**
 - **Schematic `LAYOUT:` notes:** collect them, because they are requirements too (§1.7). Typical ones are hot loops, Kelvin connections and impedance.
+- **Length budgets:** give the MCU's control and sense lines a maximum length in the `.kicad_dru` before routing, one rule per group (PWM, CAN/UART logic, fault and power-good flags, voltage and current sense):
+  ```
+  (rule "length budget PWM"
+      (condition "A.NetName == 'PWM_*'")
+      (constraint length (max 65mm)))
+  ```
+  Set each budget to about 1.5× the group's longest pin-to-pin distance, or to what an earlier routing of the same board reached plus a few millimetres. The router accepts a join up to 2.5× its direct length, so without a budget a long detour round a blocked corridor passes unnoticed; with one, DRC reports it as `length_out_of_range`.
 
 ## 2. Make sure the board is ready (design rules §3.1–3.3)
 - **Saved:** the board is saved in KiCad. The router routes the saved `.kicad_pcb`.
@@ -65,6 +79,7 @@ Ask for whatever you can't read from the board, and don't guess currents or volt
 
   Locked copper is kept: the router leaves nets with locked copper out and routes around it. Steps 1–4 are routed by hand first on a power board. If they aren't done, say so and recommend doing them first.
 - **Power rails (§3.3, "power rails are copper areas, not traces"):** low-current rails (+3V3, +5V, VBUS…) may be left to the PowerLab router: it routes them at the Power class width. Afterwards give each rail a pour round its tracks (`add_copper_pour` with an `outline`, above the GND pour), whoever routed it. Only high-current power rails connect pads solid (`padConnection: "solid"`); everything else uses thermal reliefs, and GND always does.
+  - **More than 4 layers:** give each low-current rail a plane on a spare inner layer next to a GND plane (+3V3 on one, the analog supply of the current-sense amplifiers and references on another) instead of a long track. A plane can share its layer with a few signal lanes, as long as it stays in one piece where its loads are (check its fill).
 - **GND (§3.3):** GND is a pour, never tracks.
   - **Check for existing pours first** with `query_zones`. Never add a second pour for the same net on a layer that already has one ("zones intersect" in DRC).
   - If the board has no GND pour, create one before routing with `add_copper_pour` on the bottom layer and on the top (leave out `outline` to cover the whole board; on 4 layers, the inner GND plane layer). **GND pours connect pads with thermal reliefs** (`padConnection: "thermal"`, the default) so the pads can be soldered, **every GND pour and plane, also round high-current GND pads** (give those wider spokes instead). Solid connection (`padConnection: "solid"`) is only for high-current power pours (DC bus, switch node, phase). Check existing GND zones with `query_zones` and set any solid one to thermal with `edit_zone`.
@@ -98,7 +113,7 @@ The router never forces a connection. Whatever it leaves, and every DRC error it
   - **One call per run:** pass the bends as waypoints to `route_trace` (or use `route_pad_to_pad`) so the run is drawn in one piece, rather than many short calls whose ends meet at odd angles.
   - **Same-net neighbours directly:** a decoupling cap and its IC pin, two caps in parallel, a bead and its cap: one short straight track pad to pad. Never round the part, out and back, or through a via when the direct track is free.
   - **Buses together:** lines that run side by side (SPI, JTAG, a parallel bus) keep one pitch and bend together. Draw the outer line first and the others parallel to it, so none takes a kink or a different angle.
-  - **Signals at 0.15 mm** (the Default class); power at its class width.
+  - **Signals at the Default class width** (0.15 mm on 1 oz, 0.2 mm on 2 oz), narrower only at a fine-pitch pin that forces it; power at its class width.
   - **Check after each block:** save, run `check_routing` for that block's nets and redraw whatever it lists (off-angle pieces, corners, kinks, detours, off-centre pad entries) before moving on.
 - **DRC errors:** run `run_drc` and compare with the baseline. Fix every new error: move or reroute the track, nudge a via. The goal is **0 new errors**. Track-width or clearance errors usually mean the net classes don't match the board constraints: fix the rules and route again rather than hiding the errors.
 - **Small placement fixes while routing:** when a connection has no way (a pad boxed in, "no free entry lane", a corner too crowded for its tracks), you may move a part by up to 2 mm or turn it by 90° without asking. The part stays on its side and in its block (the block plan is binding), a decap stays at its pin, and `check_part_spacing` stays clean afterwards. Bigger moves, flips to the other side, and moving ICs, connectors, magnetics or power-stage parts: ask first. **List every change** (reference, from → to or the angle, and which connection it freed) in your reply and in the design review's "Placement changes during routing", so the user can check them.
@@ -114,7 +129,9 @@ The router never forces a connection. Whatever it leaves, and every DRC error it
   - power rails without their pour, pours chopped into islands, slivers next to pads.
   Fix what you see and render again before reporting.
 - **GND tracks:** list them (`query_traces`). Every one must be a short pad-to-via stub. A GND track from pad to pad means a pad was routed instead of reaching the pour.
-- **Power:** every power track at its class width (a neck-down only right at a pin that forces it), at least 2 vias at each power layer change (§3.5), no vias in SMD pads except thermal pads, and every rail inside its pour.
+- **Length:** fix every `length_out_of_range` from the budgets (§1) by rerouting the net along a shorter corridor. For nets without a budget, compare each priority 2–3 net's routed length with its pin-to-pin distance; more than about 1.5× is a detour to reroute, or to explain in the review.
+- **Power:** every power track at its class width (a neck-down only right at a pin that forces it), at least 2 vias at each power layer change (§3.5), no vias in SMD pads except thermal pads, and every rail inside its pour. That includes copper in a power path that belongs to no power class: a net tie, a jumper, a link from a pad to a winding or terminal via carries the full current, so size it with the §3.3 table, not at a signal or default width.
+- **Signal widths:** on 2 oz, list the Default-class tracks under 0.2 mm (DRC warnings from the rule in §1) and widen every one that has room; `clean_up_routing` widens tracks to their class width and keeps a change only if DRC stays clean.
 - **Pours and stitching:** after the fill, check the GND pours are whole and the stitching vias are about every 5 mm (more along the edges and round noisy parts, §3.5). Add any that are missing with `add_gnd_stitching_vias` (`viaSize: 0.8`, `viaDrill: 0.4`) and check its list by hand. Remove copper islands or stitch them to GND (§3.3).
 - **High-speed, magnetics and switching (§3.4):** no clock or fast signal across a gap in its reference plane or changing layer without need; no track under an inductor or transformer body; no switching track on the layer with the high-current copper beside it.
 - **Unrouted nets:** report what is still unrouted (`get_ratsnest`) after your hand routing; it should be nothing.
