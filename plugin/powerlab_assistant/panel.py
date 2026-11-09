@@ -63,6 +63,10 @@ LIBRARY_CHECK_EVERY = 10 * 60  # seconds between GitHub checks for library updat
 # before its Read, a regex ripgrep can't parse), which it fixes in its next step. Shown in
 # red, users reported them as faults (#74, #78); they show as retried, the error on hover.
 OWN_TOOLS = {"Read", "Glob", "Grep", "Edit", "Write", "ToolSearch", "Skill"}
+# Claude Code's permission check refusing a call the panel doesn't allow (a shell command
+# other than kicad-cli or tar, e.g. git status, #109): the panel's rule working, not a fault.
+REFUSED = re.compile(r"requires? approval|requested permissions to use|haven't granted it"
+                     r"|Permission to use \S+.* has been denied", re.I)
 # What Claude is doing, shown with a timer while it works: a long think shows no messages,
 # and looked like a hang. Content blocks of the streamed reply -> the activity they show.
 STREAM_ACTIVITY = {"thinking": "thinking", "redacted_thinking": "thinking", "text": "writing",
@@ -152,7 +156,8 @@ PANEL_NOTE = (
     "To zip outputs (e.g. Gerbers and drill files for PCBWay), run one plain command with the "
     "PowerShell tool: `tar -a -cf fab\\gerbers.zip -C fab\\gerbers *` (the zip first, then -C "
     "and the folder whose files go in). It is the only other shell command the panel allows; "
-    "Compress-Archive is blocked.\n"
+    "Compress-Archive is blocked, and so are git, ls, dir and every other command: look at "
+    "files with Glob, Grep and Read instead.\n"
     "To give the user a document as a PDF (a report, notes, a parts list, a summary), write "
     "it in Markdown to documents\\<name>.md in the project folder (headings, lists, tables, "
     "bold, links; images on a line of their own as ![caption](relative/path.png)). When your "
@@ -1207,7 +1212,7 @@ class ClaudePanel(wx.Frame):
                         detail = " ".join(b.get("text", "") for b in detail if isinstance(b, dict))
                     detail = str(detail)[:200]
                 name, image = self.image_reads.pop(block.get("tool_use_id"), ("tool", ""))
-                slip = failed and name in OWN_TOOLS
+                slip = failed and (name in OWN_TOOLS or bool(REFUSED.search(detail)))
                 self.say("tool_done", id=block.get("tool_use_id"), error=failed and not slip,
                          **({"slip": True} if slip else {}), text=detail)
                 written = self.review_writes.pop(block.get("tool_use_id"), None)
