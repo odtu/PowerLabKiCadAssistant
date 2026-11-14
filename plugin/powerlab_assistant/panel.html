@@ -1136,8 +1136,9 @@ const app = {
         const row = document.getElementById('tool-' + e.id);
         if (!row) break;
         const ti = row.querySelector('.ti');
-        // A slip (Claude's own file or search tool refused, e.g. Edit before Read) is
-        // retried in the next step: grey, not a failure, its error on hover.
+        // A slip (Claude's own file or search tool refused, e.g. Edit before Read, or a
+        // command the panel doesn't allow) is retried in the next step: grey, not a
+        // failure, its error on hover.
         ti.className = 'ti ' + (e.error ? 'bad' : e.slip ? 'slip' : 'ok');
         ti.innerHTML = e.error || e.slip ? ICON_BAD : ICON_OK;
         if (e.error) row.dataset.error = e.text || 'failed';

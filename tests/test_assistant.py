@@ -839,6 +839,14 @@ class ChatHistoryTests(unittest.TestCase):
                  ("Grep", {"pattern": "(?!x)"}, "rg: regex parse error: look-around is not supported", "slip"),
                  ("Grep", {"pattern": "x", "n": True}, "<tool_use_error>InputValidationError: Grep failed "
                   "due to the following issue: An unexpected parameter `n` was provided</tool_use_error>", "slip"),
+                 # #109: a shell command the panel doesn't allow (git status) is refused by
+                 # Claude Code's permission check; that's the panel's rule working, not a fault.
+                 ("Bash", {"command": "git status --short; git log -1"}, "This Bash command contains "
+                  "multiple operations. The following parts require approval: git status --short", "slip"),
+                 ("Bash", {"command": "ls"}, "This command requires approval", "slip"),
+                 ("PowerShell", {"command": "Get-ChildItem"}, "Claude requested permissions to use "
+                  "PowerShell, but you haven't granted it yet.", "slip"),
+                 ("Bash", {"command": "kicad-cli pcb drc x.kicad_pcb"}, "Error: file not found", "error"),
                  ("mcp__kicad__add_via", {}, "No board is loaded", "error")]
         for i, (tool, args, text, word) in enumerate(steps):
             panel.handle({"type": "assistant", "message": {"content": [
