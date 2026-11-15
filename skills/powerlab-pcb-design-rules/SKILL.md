@@ -225,7 +225,7 @@ Green, red, yellow and blue mask, and white or black silk, cost nothing extra.
 
 Defaults for a **1 oz** board. For 2 oz or 3 oz, take the values from the tables above.
 
-The board minimums are the **PCBWay standard-price floor** (§2.2), so DRC only rejects what can't be made without a surcharge. The **net classes** below carry the lab defaults, and that's what tracks are routed at. Signal tracks are 0.15 mm (the Default class); give a signal more only where it carries current or there's room and a reason. Power and GND tracks are sized for their current.
+The board minimums are the **PCBWay standard-price floor** (§2.2), so DRC only rejects what can't be made without a surcharge. The **net classes** below carry the lab defaults, and that's what tracks are routed at. Signal tracks are 0.15 mm (the Default class) on 1 oz; on 2 oz they are 0.2 mm, with the 0.18 mm outer-layer floor kept for neck-downs at fine-pitch pins. Give a signal more only where it carries current or there's room and a reason. Power and GND tracks are sized for their current.
 
 Put these values in **Board Setup** itself (Constraints and Net Classes), not only in a `.kicad_dru` rule: `set_design_rules` with `preset: "powerlab"` sets them, and `create_netclass` the Power and GND classes. Check them with `get_design_rules` before routing. A board whose Board Setup still shows KiCad's defaults (minimum clearance 0, track 0.2, annular ring 0.1, via 0.5 mm) isn't set up.
 

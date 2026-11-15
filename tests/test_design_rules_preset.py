@@ -164,6 +164,8 @@ class PresetTests(unittest.TestCase):
         self.assertEqual(two["rules"]["min_via_annular_width"], 0.2)
         self.assertEqual(two["boardFile"]["solderMaskMinWidth"], 0.13)
         self.assertEqual(two["labClasses"]["via_diameter"], 0.85)
+        self.assertEqual(two["rules"]["min_track_width"], 0.18)
+        self.assertEqual(two["defaultClass"]["track_width"], 0.2)  # signals above the 2 oz floor
 
         no_classes = self.drp.resolve_design_rule_params(
             {"preset": "powerlab", "labNetClasses": False}

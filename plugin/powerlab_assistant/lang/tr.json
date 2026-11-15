@@ -171,6 +171,7 @@
  "Library updated. If a changed part doesn't look updated yet, restart KiCad.": "Kütüphane güncellendi. Değişen bir parça henüz güncellenmemiş görünüyorsa KiCad'i yeniden başlatın.",
  "KiCad didn't finish saving. Save it there, then send again.": "KiCad kaydetmeyi tamamlamadı. Orada kaydedin, sonra yeniden gönderin.",
  "Claude Code isn't signed in yet.": "Claude Code'da henüz oturum açılmadı.",
+ "Claude Code's sign-in has expired. Click Sign in, type /login in the window that opens, then send your message again.": "Claude Code oturumunun süresi doldu. Oturum aç'a tıklayın, açılan pencerede /login yazın, sonra mesajınızı yeniden gönderin.",
  "Sign in": "Oturum aç",
  "This chat got long. To save tokens, your next message continues it with only your last prompts and the project.": "Bu sohbet uzadı. Token tasarrufu için sonraki mesajınız yalnızca son istemlerinizle ve projeyle devam eder.",
  "This model can't show its thinking live, so the panel stopped asking for it. Send your message again.": "Bu model düşüncesini canlı gösteremiyor, bu yüzden panel bunu istemeyi bıraktı. Mesajınızı yeniden gönderin.",

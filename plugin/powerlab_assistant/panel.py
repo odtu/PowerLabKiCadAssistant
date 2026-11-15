@@ -63,6 +63,10 @@ LIBRARY_CHECK_EVERY = 10 * 60  # seconds between GitHub checks for library updat
 # before its Read, a regex ripgrep can't parse), which it fixes in its next step. Shown in
 # red, users reported them as faults (#74, #78); they show as retried, the error on hover.
 OWN_TOOLS = {"Read", "Glob", "Grep", "Edit", "Write", "ToolSearch", "Skill"}
+# Claude Code's permission check refusing a call the panel doesn't allow (a shell command
+# other than kicad-cli or tar, e.g. git status, #109): the panel's rule working, not a fault.
+REFUSED = re.compile(r"requires? approval|requested permissions to use|haven't granted it"
+                     r"|Permission to use \S+.* has been denied", re.I)
 # What Claude is doing, shown with a timer while it works: a long think shows no messages,
 # and looked like a hang. Content blocks of the streamed reply -> the activity they show.
 STREAM_ACTIVITY = {"thinking": "thinking", "redacted_thinking": "thinking", "text": "writing",
@@ -152,7 +156,8 @@ PANEL_NOTE = (
     "To zip outputs (e.g. Gerbers and drill files for PCBWay), run one plain command with the "
     "PowerShell tool: `tar -a -cf fab\\gerbers.zip -C fab\\gerbers *` (the zip first, then -C "
     "and the folder whose files go in). It is the only other shell command the panel allows; "
-    "Compress-Archive is blocked.\n"
+    "Compress-Archive is blocked, and so are git, ls, dir and every other command: look at "
+    "files with Glob, Grep and Read instead.\n"
     "To give the user a document as a PDF (a report, notes, a parts list, a summary), write "
     "it in Markdown to documents\\<name>.md in the project folder (headings, lists, tables, "
     "bold, links; images on a line of their own as ![caption](relative/path.png)). When your "
@@ -253,6 +258,24 @@ def split_choices(text):
             elif line and not option:
                 questions.append({"question": re.sub(r"^\d+[.)]\s*", "", line), "options": []})
     return CHOICES_BLOCK.sub("", text).strip(), [q for q in questions if q["options"]]
+
+
+NOT_SIGNED_IN = "Claude Code isn't signed in yet."
+SIGN_IN_EXPIRED = ("Claude Code's sign-in has expired. Click Sign in, type /login in the window "
+                   "that opens, then send your message again.")
+EXPIRED_ERRORS = ("Failed to authenticate", "Please run /login", "OAuth session expired",
+                  "OAuth token has expired", "OAuth token revoked", "authentication_error")
+
+
+def sign_in_note(text):
+    """The note for Claude Code's sign-in errors (none signed in, or the sign-in expired and
+    couldn't be refreshed), or None for any other text."""
+    text = str(text or "")
+    if "Not logged in" in text:
+        return NOT_SIGNED_IN
+    if any(s in text for s in EXPIRED_ERRORS):
+        return SIGN_IN_EXPIRED
+    return None
 
 
 def describe_tool(name, args):
@@ -409,6 +432,7 @@ class ClaudePanel(wx.Frame):
         self.started = 0.0
         self.last_text = ""
         self.got_result = False
+        self.signed_out = False  # the sign-in note was shown for this message
         self.held_text = ""
         self.attached = []  # files attached to the next message
         self.limits = []  # plan limits from Claude Code's last rate_limit_event
@@ -1075,6 +1099,7 @@ class ClaudePanel(wx.Frame):
         self.started = time.time()
         self.last_text = ""
         self.got_result = False
+        self.signed_out = False
         self.activity, self.activity_sent = ("waiting", ""), time.time()
         self.thinking_tokens = 0
         self.thought = ""
@@ -1114,7 +1139,10 @@ class ClaudePanel(wx.Frame):
             try:
                 msg = json.loads(line)
             except ValueError:
-                wx.CallAfter(self.safe, self.emit, "note", level="info", text=line)
+                if sign_in_note(line):
+                    wx.CallAfter(self.safe, self.ask_sign_in, line)
+                else:
+                    wx.CallAfter(self.safe, self.emit, "note", level="info", text=line)
                 continue
             wx.CallAfter(self.safe, self.handle, msg)
         proc.wait()
@@ -1184,7 +1212,7 @@ class ClaudePanel(wx.Frame):
                         detail = " ".join(b.get("text", "") for b in detail if isinstance(b, dict))
                     detail = str(detail)[:200]
                 name, image = self.image_reads.pop(block.get("tool_use_id"), ("tool", ""))
-                slip = failed and name in OWN_TOOLS
+                slip = failed and (name in OWN_TOOLS or bool(REFUSED.search(detail)))
                 self.say("tool_done", id=block.get("tool_use_id"), error=failed and not slip,
                          **({"slip": True} if slip else {}), text=detail)
                 written = self.review_writes.pop(block.get("tool_use_id"), None)
@@ -1205,9 +1233,8 @@ class ClaudePanel(wx.Frame):
                 return
             result = str(msg.get("result") or msg.get("subtype"))
             report.note_event("result", f"{msg.get('subtype', '')} error={bool(msg.get('is_error'))}")
-            if "Not logged in" in result:
-                self.emit("note", level="warn", text="Claude Code isn't signed in yet.",
-                          action={"label": "Sign in", "type": "terminal"})
+            if sign_in_note(result):
+                self.ask_sign_in(result)
             elif msg.get("is_error") and self.summaries_on and "thinking" in result.lower():
                 self.summaries = False  # until the panel restarts
                 self.emit("note", level="warn", text="This model can't show its thinking live, so the "
@@ -1232,6 +1259,14 @@ class ClaudePanel(wx.Frame):
                 self.fresh = True
                 self.emit("note", level="info", text="This chat got long. To save tokens, your next "
                           "message continues it with only your last prompts and the project.")
+
+    def ask_sign_in(self, text):
+        """Claude Code isn't signed in, or its sign-in expired: once per message, offer the
+        terminal, where /login signs in again (the panel's runs can't open a browser)."""
+        if not self.signed_out:
+            self.signed_out = True
+            self.emit("note", level="warn", text=sign_in_note(text),
+                      action={"label": "Sign in", "type": "terminal"})
 
     def set_activity(self, phase, name=""):
         """Tell the page what Claude is doing: on a change, and every ALIVE_EVERY seconds

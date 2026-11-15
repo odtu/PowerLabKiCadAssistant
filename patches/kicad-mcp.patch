@@ -18231,7 +18231,7 @@ index 0000000..64ede47
 +        "solderMaskMinWidth": 0.13,
 +        "minSilkTextHeight": 1.0,
 +        "minSilkThickness": 0.15,
-+        "defaultTrackWidth": 0.18,
++        "defaultTrackWidth": 0.2,
 +        "defaultClearance": 0.25,
 +        "defaultViaDiameter": 0.7,
 +        "defaultViaDrill": 0.3,

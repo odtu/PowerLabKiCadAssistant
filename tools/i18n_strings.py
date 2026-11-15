@@ -109,7 +109,7 @@ def _python_strings():
     for node in tree.body:
         if isinstance(node, ast.Assign) and isinstance(getattr(node.targets[0], "id", None), str):
             consts[node.targets[0].id] = node.value
-    for name in ("BOARD_CHANGED", "SCHEMATIC_CHANGED"):
+    for name in ("BOARD_CHANGED", "SCHEMATIC_CHANGED", "NOT_SIGNED_IN", "SIGN_IN_EXPIRED"):
         texts.append(_template(consts[name]))
     for row in consts["MODELS"].elts:  # (id, label, short, hint)
         texts += [_template(e) for e in row.elts[1:]]

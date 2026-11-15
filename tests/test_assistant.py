@@ -119,6 +119,31 @@ class UnreachableHintTests(unittest.TestCase):
         self.assertIn("kicad_processes: 2 running, 1 without a window", diag)
 
 
+class SignInTests(unittest.TestCase):
+    """An expired Claude Code sign-in showed as an error with Report, not with Sign in."""
+
+    def test_sign_in_errors_offer_sign_in(self):
+        from powerlab_assistant import panel
+        self.assertIn("isn't signed in", panel.sign_in_note("Not logged in · Please run /login"))
+        for text in ("Failed to authenticate: OAuth session expired and could not be refreshed",
+                     "Failed to authenticate. API Error: 401 {\"type\":\"error\",\"error\":"
+                     "{\"type\":\"authentication_error\",\"message\":\"OAuth token has expired.\"}}",
+                     "OAuth token revoked · Please run /login"):
+            self.assertIn("/login", panel.sign_in_note(text), text)
+        for text in ("API Error: 529 Overloaded", "", None, "error_max_turns"):
+            self.assertIsNone(panel.sign_in_note(text))
+
+    def test_note_shown_once_per_message(self):
+        from powerlab_assistant import panel
+        notes = []
+        fake = types.SimpleNamespace(signed_out=False,
+                                     emit=lambda kind, **kw: notes.append(kw))
+        for _ in range(2):
+            panel.ClaudePanel.ask_sign_in(fake, "Failed to authenticate: OAuth session expired")
+        self.assertEqual(len(notes), 1)
+        self.assertEqual(notes[0]["action"]["type"], "terminal")
+
+
 class SkillToolsEnvTests(unittest.TestCase):
     """The tools the panel's Claude sessions get, and the ones they don't."""
 
@@ -814,6 +839,14 @@ class ChatHistoryTests(unittest.TestCase):
                  ("Grep", {"pattern": "(?!x)"}, "rg: regex parse error: look-around is not supported", "slip"),
                  ("Grep", {"pattern": "x", "n": True}, "<tool_use_error>InputValidationError: Grep failed "
                   "due to the following issue: An unexpected parameter `n` was provided</tool_use_error>", "slip"),
+                 # #109: a shell command the panel doesn't allow (git status) is refused by
+                 # Claude Code's permission check; that's the panel's rule working, not a fault.
+                 ("Bash", {"command": "git status --short; git log -1"}, "This Bash command contains "
+                  "multiple operations. The following parts require approval: git status --short", "slip"),
+                 ("Bash", {"command": "ls"}, "This command requires approval", "slip"),
+                 ("PowerShell", {"command": "Get-ChildItem"}, "Claude requested permissions to use "
+                  "PowerShell, but you haven't granted it yet.", "slip"),
+                 ("Bash", {"command": "kicad-cli pcb drc x.kicad_pcb"}, "Error: file not found", "error"),
                  ("mcp__kicad__add_via", {}, "No board is loaded", "error")]
         for i, (tool, args, text, word) in enumerate(steps):
             panel.handle({"type": "assistant", "message": {"content": [

@@ -171,6 +171,7 @@
  "Library updated. If a changed part doesn't look updated yet, restart KiCad.": "کتابخانه به‌روز شد. اگر قطعهٔ تغییریافته هنوز به‌روز به نظر نمی‌رسد، KiCad را دوباره راه‌اندازی کنید.",
  "KiCad didn't finish saving. Save it there, then send again.": "KiCad ذخیره‌سازی را تمام نکرد. آن‌جا ذخیره کنید، سپس دوباره بفرستید.",
  "Claude Code isn't signed in yet.": "Claude Code هنوز وارد حساب نشده است.",
+ "Claude Code's sign-in has expired. Click Sign in, type /login in the window that opens, then send your message again.": "ورود Claude Code منقضی شده است. روی «ورود» کلیک کنید، در پنجره‌ای که باز می‌شود /login را تایپ کنید، سپس پیامتان را دوباره بفرستید.",
  "Sign in": "ورود",
  "This chat got long. To save tokens, your next message continues it with only your last prompts and the project.": "این گفتگو طولانی شده است. برای صرفه‌جویی در توکن، پیام بعدی شما آن را فقط با آخرین درخواست‌هایتان و پروژه ادامه می‌دهد.",
  "This model can't show its thinking live, so the panel stopped asking for it. Send your message again.": "این مدل نمی‌تواند تفکرش را زنده نشان دهد، پس پنل دیگر آن را درخواست نکرد. پیامتان را دوباره بفرستید.",
