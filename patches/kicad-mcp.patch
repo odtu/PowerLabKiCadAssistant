@@ -8408,10 +8408,10 @@ index 0000000..737f268
 +"""PowerLab router 2: negotiated routing, block by block (see router.py)."""
 diff --git a/python/commands/powerlab_router2/board.py b/python/commands/powerlab_router2/board.py
 new file mode 100644
-index 0000000..2d03d6a
+index 0000000..b8d9d03
 --- /dev/null
 +++ b/python/commands/powerlab_router2/board.py
-@@ -0,0 +1,672 @@
+@@ -0,0 +1,714 @@
 +"""The board side of PowerLab router 2 (pcbnew): what is fixed, what is to be joined, the
 +ways into the pads, and the exact check.
 +
@@ -8434,7 +8434,7 @@ index 0000000..2d03d6a
 +import pcbnew
 +
 +from commands.powerlab_router.rules import Rules, _wild, net_name_patterns
-+from commands.powerlab_router2.geom import DIRS, Grid, Patch
++from commands.powerlab_router2.geom import DIRS, Grid, Patch, seg_dist
 +
 +MM, T = pcbnew.FromMM, pcbnew.ToMM
 +ERR = MM(0.005)
@@ -8490,6 +8490,13 @@ index 0000000..2d03d6a
 +
 +def uuid(item):
 +    return item.m_Uuid.AsString()
++
++
++def _seg_gap(a, b):
++    """Edge-to-edge distance (mm) of two straight tracks."""
++    p1, p2 = xy(a.GetStart()), xy(a.GetEnd())
++    q1, q2 = xy(b.GetStart()), xy(b.GetEnd())
++    return seg_dist(p1, p2, q1, q2) - T(a.GetWidth()) / 2 - T(b.GetWidth()) / 2
 +
 +
 +def xy(p):
@@ -8593,6 +8600,7 @@ index 0000000..2d03d6a
 +        self._fine = {}
 +        self._inside = {}
 +        self._gcache = {}  # (uuid, layer, clearance) -> a fixed item's outline grown by it
++        self._net_of = {}  # uuid -> net, for copper shapes that KiCad gives none (net ties)
 +        self.fixed = self._fixed_items()
 +
 +    # --- rules -------------------------------------------------------------------------------
@@ -8615,7 +8623,7 @@ index 0000000..2d03d6a
 +    def props(self, item):
 +        u = uuid(item)
 +        if u not in self._props:
-+            net = item.GetNetname()
++            net = self.net_of(item)
 +            p = {"Type": TYPES.get(item.Type(), "Other"), "NetName": net,
 +                 "NetClass": self.netclass(net).GetName() if net else "Default",
 +                 "Layers": [self.layer_names[L] for L in self.all_layers if item.IsOnLayer(L)], "Footprint": None}
@@ -8668,6 +8676,33 @@ index 0000000..2d03d6a
 +        for z in self.board.Zones():
 +            if not z.GetIsRuleArea() and z.GetNetname() not in self.pour_nets:
 +                out.append(z)
++        out += self._copper_graphics()
++        return out
++
++    def net_of(self, item):
++        """A fixed item's net; a net tie's copper shape has none in KiCad, here its tie's."""
++        return self._net_of.get(uuid(item), item.GetNetname())
++
++    def _copper_graphics(self):
++        """Shapes and text drawn on copper, on the board and in footprints: copper too, though
++        not pads (a net tie's polygon: sf-motion's GLA via went 0.13 mm from NT1's). A net tie's
++        shape belongs to its one routed net (TestPCB2's NT1-3 join GND to ISENSE_x_N, which
++        must still reach their pads); one that joins only pour nets, or none, is no net's."""
++        kinds = (pcbnew.PCB_SHAPE_T, pcbnew.PCB_TEXT_T, pcbnew.PCB_TEXTBOX_T)
++        cu = set(self.all_layers)
++        out = []
++        items = [(d, None) for d in self.board.GetDrawings()]
++        items += [(g, fp) for fp in self.board.GetFootprints() for g in fp.GraphicalItems()]
++        for it, fp in items:
++            if it.Type() not in kinds or not any(it.IsOnLayer(L) for L in cu):
++                continue
++            if it.Type() != pcbnew.PCB_SHAPE_T and hasattr(it, "IsVisible") and not it.IsVisible():
++                continue
++            if fp is not None:
++                nets = {p.GetNetname() for p in fp.Pads()} - self.pour_nets - {""}
++                if len(nets) == 1:
++                    self._net_of[uuid(it)] = next(iter(nets))
++            out.append(it)
 +        return out
 +
 +    def inside(self, by):
@@ -8736,7 +8771,7 @@ index 0000000..2d03d6a
 +        fixed_t, fixed_v = {}, {}
 +        by_net = {}
 +        for it in self.fixed:
-+            by_net.setdefault(it.GetNetname(), []).append(it)
++            by_net.setdefault(self.net_of(it), []).append(it)
 +        for net, items in by_net.items():
 +            tl = [[] for _ in self.layers]
 +            vl = []
@@ -9065,6 +9100,13 @@ index 0000000..2d03d6a
 +                            c = self.clearance(o, key, kind, L)
 +                        if o.Type() == pcbnew.PCB_ZONE_T and L in self.regions:
 +                            continue
++                        if item.Type() == pcbnew.PCB_TRACE_T and o.Type() == pcbnew.PCB_TRACE_T:
++                            # two straight tracks: their distance exactly, as KiCad's DRC takes it.
++                            # The polygons' 2 um allowance below let GLA past GHA 1.5 um short
++                            # (sf-motion, a lane anchored on R15.1's axis)
++                            if o.IsOnLayer(L) and _seg_gap(item, o) < c - 1e-5:
++                                out.append(o)
++                            continue
 +                        ck = None if new else (uuid(o), L, round(c, 4))
 +                        other = self._gcache.get(ck) if ck else None
 +                        if other is None:
@@ -9086,10 +9128,10 @@ index 0000000..2d03d6a
 +        return out
 diff --git a/python/commands/powerlab_router2/congestion.py b/python/commands/powerlab_router2/congestion.py
 new file mode 100644
-index 0000000..1dc4a88
+index 0000000..36377cb
 --- /dev/null
 +++ b/python/commands/powerlab_router2/congestion.py
-@@ -0,0 +1,110 @@
+@@ -0,0 +1,119 @@
 +"""Who is where (PowerLab router 2): the routed nets' copper as counts per cell.
 +
 +Negotiated congestion (PathFinder, McMurchie & Ebeling): every net is routed as if the
@@ -9108,6 +9150,14 @@ index 0000000..1dc4a88
 +from commands.powerlab_router2.geom import cells_on
 +
 +
++# new copper is stamped by cell centre (Grid.patch exact), like fixed copper (board.TRACK_EXACT):
++# Pillow's lines and ellipses missed the shape by up to a cell, either way, so a lane between
++# two new tracks that the board allows could read as taken (TestPCB2: 130 -> 139 joins, sf-motion
++# check_routing findings 18 -> 10, with this, the retry and the exact track check)
++STAMP_EXACT = True
++# and that much more round it (mm): planned to the exact limit, new copper met KiCad's DRC
++# a few um short where the exact check allows 2 um for its polygons
++STAMP_MARGIN = 0.01
 +LEVELS = 5  # priority levels (router.priority_of): the price of a cell depends on whose copper it is
 +
 +
@@ -9126,11 +9176,12 @@ index 0000000..1dc4a88
 +    def _radii(self, kn, Li):
 +        rb, K = self.rb, self.key
 +        L = rb.layers[Li]
-+        r_t = rb.new_clearance(kn, "Track", K, "Track", L) + kn.w / 2 + K.w / 2
++        e = STAMP_MARGIN if STAMP_EXACT else 0.0
++        r_t = rb.new_clearance(kn, "Track", K, "Track", L) + kn.w / 2 + K.w / 2 + e
 +        # a via against a track is where the grid's rasterising fell short (0.003-0.03 mm on
 +        # TestPCB2, and the exact check then dropped the join and those hanging on it): half a
 +        # cell more there
-+        m = rb.grid.pitch / 2
++        m = rb.grid.pitch / 2 + e
 +        r_vt = rb.new_clearance(kn, "Via", K, "Track", L) + kn.vd / 2 + K.w / 2 + m
 +        r_tv = rb.new_clearance(kn, "Track", K, "Via", L) + kn.w / 2 + K.vd / 2 + m
 +        r_vv = max(rb.new_clearance(kn, "Via", K, "Via", L) + kn.vd / 2 + K.vd / 2,
@@ -9148,11 +9199,11 @@ index 0000000..1dc4a88
 +            strokes = [(pts, r_t) for L, pts in geo["pieces"] if L == Li]
 +            strokes += [([a, b], r_t) for L, a, b, *_w in geo.get("stubs", ()) if L == Li]
 +            discs = [(v, r_vt) for v in geo["vias"]]
-+            tl.append(g.patch(strokes, discs))
++            tl.append(g.patch(strokes, discs, exact=STAMP_EXACT))
 +            vstrokes += [(pts, r_tv) for L, pts in geo["pieces"] if L == Li]
 +            vstrokes += [([a, b], r_tv) for L, a, b, *_w in geo.get("stubs", ()) if L == Li]
 +            vdiscs = [(v, r_vv) for v in geo["vias"]]
-+        vp = g.patch(vstrokes, vdiscs)
++        vp = g.patch(vstrokes, vdiscs, exact=STAMP_EXACT)
 +        for Li, p in enumerate(tl):
 +            if p is not None:
 +                p.add_to(self.t[Li])
@@ -9202,10 +9253,10 @@ index 0000000..1dc4a88
 +        return out
 diff --git a/python/commands/powerlab_router2/geom.py b/python/commands/powerlab_router2/geom.py
 new file mode 100644
-index 0000000..9e35c93
+index 0000000..ce1be5d
 --- /dev/null
 +++ b/python/commands/powerlab_router2/geom.py
-@@ -0,0 +1,256 @@
+@@ -0,0 +1,301 @@
 +"""Geometry for PowerLab router 2: the grid, rasterising, octilinear polylines. No pcbnew.
 +
 +The grid has one cell per `pitch` mm; cell (i, j) is the point (x0 + i * pitch, y0 + j * pitch).
@@ -9296,9 +9347,11 @@ index 0000000..9e35c93
 +            into[j0:j1, i0:i1] |= m
 +        return into
 +
-+    def patch(self, strokes, discs):
++    def patch(self, strokes, discs, exact=False):
 +        """A Patch of round-ended strokes [(points mm, radius mm)] and discs [((x, y), radius)],
-+        or None when there's nothing. Used to stamp routed copper grown by a clearance."""
++        or None when there's nothing. Used to stamp routed copper grown by a clearance.
++        `exact`: the cells whose centre lies within the radius (as centres_in does for fixed
++        copper); else Pillow's line and ellipse, which miss the shape by up to a cell, either way."""
 +        pts = [p for s, r in strokes for p in s] + [c for c, r in discs]
 +        if not pts:
 +            return None
@@ -9306,6 +9359,32 @@ index 0000000..9e35c93
 +        i0, j0, i1, j1 = self.box(pts, grow)
 +        if i1 <= i0 or j1 <= j0:
 +            return None
++        if exact:
++            a = np.zeros((j1 - j0, i1 - i0), bool)
++            P = self.pitch
++            segs = [(s[k], s[k + 1], r) for s, r in strokes for k in range(len(s) - 1)]
++            segs += [(s[0], s[0], r) for s, r in strokes if len(s) == 1]
++            segs += [(c, c, r) for c, r in discs]
++            for (ax, ay), (bx, by), r in segs:
++                # the cells of the segment's box grown by r, in this patch
++                ci0 = max(i0, int(math.floor((min(ax, bx) - r - self.x0) / P)))
++                ci1 = min(i1, int(math.ceil((max(ax, bx) + r - self.x0) / P)) + 1)
++                cj0 = max(j0, int(math.floor((min(ay, by) - r - self.y0) / P)))
++                cj1 = min(j1, int(math.ceil((max(ay, by) + r - self.y0) / P)) + 1)
++                if ci1 <= ci0 or cj1 <= cj0:
++                    continue
++                X = self.x0 + np.arange(ci0, ci1) * P
++                Y = self.y0 + np.arange(cj0, cj1) * P
++                X, Y = np.meshgrid(X, Y)
++                dx, dy = bx - ax, by - ay
++                L2 = dx * dx + dy * dy
++                if L2 > 0:
++                    t = np.clip(((X - ax) * dx + (Y - ay) * dy) / L2, 0.0, 1.0)
++                    d2 = (X - ax - t * dx) ** 2 + (Y - ay - t * dy) ** 2
++                else:
++                    d2 = (X - ax) ** 2 + (Y - ay) ** 2
++                a[cj0 - j0:cj1 - j0, ci0 - i0:ci1 - i0] |= d2 < r * r - 1e-9
++            return Patch(i0, j0, a)
 +        im = Image.new("1", (i1 - i0, j1 - j0), 0)
 +        d = ImageDraw.Draw(im)
 +        for s, r in strokes:
@@ -9462,6 +9541,23 @@ index 0000000..9e35c93
 +        xc = xa + (Y - ya) * (xb - xa) / (yb - ya)
 +        m ^= c & (X < xc)
 +    return m
++
++
++def seg_dist(p1, p2, q1, q2):
++    """Distance (mm) between segments p1-p2 and q1-q2; 0 where they cross."""
++    def pt_seg(p, a, b):
++        dx, dy = b[0] - a[0], b[1] - a[1]
++        L2 = dx * dx + dy * dy
++        t = 0.0 if L2 == 0 else max(0.0, min(1.0, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L2))
++        return math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy)
++
++    def cross(o, a, b):
++        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
++    d1, d2 = cross(q1, q2, p1), cross(q1, q2, p2)
++    d3, d4 = cross(p1, p2, q1), cross(p1, p2, q2)
++    if ((d1 > 0) != (d2 > 0)) and ((d3 > 0) != (d4 > 0)) and d1 and d2 and d3 and d4:
++        return 0.0  # they cross
++    return min(pt_seg(p1, q1, q2), pt_seg(p2, q1, q2), pt_seg(q1, p1, p2), pt_seg(q2, p1, p2))
 diff --git a/python/commands/powerlab_router2/plan.py b/python/commands/powerlab_router2/plan.py
 new file mode 100644
 index 0000000..32ef387
@@ -9790,10 +9886,10 @@ index 0000000..32ef387
 +    return p
 diff --git a/python/commands/powerlab_router2/router.py b/python/commands/powerlab_router2/router.py
 new file mode 100644
-index 0000000..827906b
+index 0000000..8defe4f
 --- /dev/null
 +++ b/python/commands/powerlab_router2/router.py
-@@ -0,0 +1,2437 @@
+@@ -0,0 +1,2558 @@
 +"""PowerLab router 2: route like a person plans, then negotiate.
 +
 +The first router (commands/powerlab_router/) routes one connection after another and rips
@@ -9847,6 +9943,8 @@ index 0000000..827906b
 +DOORSTEP = 0.5  # mm beyond a pad's copper that is its net's way in (_doorsteps)
 +NB_SCALE = 8  # node budgets times this with the compiled search
 +DETOUR_LIMIT = (1.5, 1.0)  # check_routing's detour: longer than 1.5 times the span plus 1 mm
++RETRY = True  # the dropped joins are tried once more on the finished copper (_retry_dropped)
++RETRY_VIAS = 2  # vias a join found that way may take
 +GROUP_ORDER = ("power", "switching", "analog", "signal")
 +
 +
@@ -11033,7 +11131,7 @@ index 0000000..827906b
 +        self.routed = {}
 +        timings = {}
 +        # 1. check: what is to be joined, and whether every pin has a way out at all
-+        self.fixed_idx = rb.index([(it, it.GetNetname()) for it in rb.fixed])
++        self.fixed_idx = rb.index([(it, rb.net_of(it)) for it in rb.fixed])
 +        self.labc = self.lab()
 +        self._esc_blocks()
 +        nrs = []
@@ -11242,6 +11340,12 @@ index 0000000..827906b
 +            bad = self._exact(order, only=changed)
 +        removed = self._drop(order, bad)
 +        timings["exact"] = round(time.perf_counter() - t4, 1)
++        # 5. the joins dropped on the way, once more on the finished copper
++        t5 = time.perf_counter()
++        if log:
++            log({"phase": "the dropped joins once more"})
++        self.retried = self._retry_dropped(order, time.time() + max(30.0, self.time_budget * 0.15)) if RETRY else 0
++        timings["retry"] = round(time.perf_counter() - t5, 1)
 +        items = self._commit(order)
 +        timings["total"] = round(time.perf_counter() - t_start, 1)
 +        return self._report(nrs, blocked_pins, rounds, history, dropped, {"rerouted": repaired, "removed": removed, "nudged": self.nudged},
@@ -11351,6 +11455,114 @@ index 0000000..827906b
 +            return shortened
 +        finally:
 +            self.use_hist = True
++
++    def _retry_dropped(self, order, deadline):
++        """Joins dropped on the way (crowded after the negotiation, too close in the exact
++        check) are never offered the room that the second look and the shaping free later. So,
++        most important net first, each net with open joins is routed once more on the finished
++        copper, every other net's copper a wall. Its new joins stay only if none overlaps, none
++        is a detour by check_routing's measure or takes more than RETRY_VIAS vias, the net keeps
++        every join it had and the exact check finds its new and reshaped copper clear; otherwise
++        the net goes back as it was. Why tries were refused: `retry_why`.
++        TestPCB2: the router, run again on its own result, joined 15 of the 27 it had left
++        (global-plan note §7). Returns the joins gained."""
++        # _drop took joins out without unstamping them: stamp what each net really has
++        for nr in order:
++            if any(b.geo is None for b in nr.branches):
++                continue
++            self.unstamp(nr)
++            nr.final_geo = {"pieces": [p for b in nr.branches for p in b.geo["pieces"]],
++                            "vias": [v for b in nr.branches for v in b.geo["vias"]],
++                            "stubs": [s for b in nr.branches for s in b.geo["stubs"]]}
++            self.stamp(nr, nr.final_geo)
++        gained = 0
++        why = self.retry_why = {}
++
++        def note(k, n=1):
++            if k and n:
++                why[k] = why.get(k, 0) + n
++        self.use_hist = False
++        try:
++            for nr in sorted(order, key=lambda n: -n.priority):
++                if time.time() > deadline:
++                    note("out of time")
++                    break
++                if not nr.failed or any(b.geo is None for b in nr.branches):
++                    continue
++                old = (list(nr.branches), list(nr.failed), nr.grid_geo, nr.final_geo,
++                       {id(b): (b.geo, getattr(b, "items", None)) for b in nr.branches})
++
++                def undo(nr=nr, old=old):
++                    self.unstamp(nr)
++                    nr.branches, nr.failed, nr.grid_geo, nr.final_geo = list(old[0]), list(old[1]), old[2], old[3]
++                    for b in nr.branches:
++                        b.geo, b.items = old[4][id(b)]
++                    self.stamp(nr, nr.final_geo)
++                self.unstamp(nr)
++                nr.nodes_used.clear()
++                self.route_net(nr, 1e4, deadline, keep=list(nr.branches), weight=1.0)
++                self.stamp(nr, nr.grid_geo)
++                if self.cut:
++                    undo()
++                    break
++                # only the new joins are judged: the old ones are checked as shaped, and their
++                # search paths (grid_geo) may sit in cells the others' shaping moved into
++                old_ids = {id(x) for x in old[0]}
++                bad_new = [x for x in self._bad_branches(nr)[0] if id(x) not in old_ids]
++                new = [x for x in nr.branches if id(x) not in old_ids and x not in bad_new]
++                # only joins the review wouldn't have to redo: no check_routing detour, at most
++                # RETRY_VIAS vias (sf-motion's SCK came back as 57 mm and 5 vias for a 21 mm span)
++                long_ = [x for x in new if self._length(x) > DETOUR_LIMIT[0] * self._span(x) + DETOUR_LIMIT[1]
++                         or len(x.grid_geo["vias"]) > RETRY_VIAS]
++                if bad_new or long_:
++                    note("overlaps" if bad_new else None, len(bad_new))
++                    note("long way round", len(long_))
++                    gone = self._with_dependents(nr, bad_new + long_)
++                    for x in gone:
++                        nr.failed.append((x.island, "crowded: no way of its own after negotiating" if x in bad_new
++                                          else "only a long way round on the finished copper"))
++                    nr.branches = [x for x in nr.branches if x not in gone]
++                    nr.grid_geo = self._grid_geo(nr)
++                if any(id(x) not in {id(y) for y in nr.branches} for x in old[0]):
++                    note("an old join went")
++                    undo()
++                    continue
++                if len(nr.branches) <= len(old[0]):
++                    note("no new way" if not (bad_new or long_) else None)
++                    undo()
++                    continue
++                self._shape_net(nr)
++                changed = [x for x in nr.branches if id(x) not in old_ids or x.geo != old[4][id(x)][0]]
++                for x in changed:
++                    x.items = self._items(nr, x)
++                others = [(it, n.net) for n in order if n is not nr for x in n.branches
++                          for it in (getattr(x, "items", None) or [])]
++                mine = [(it, nr.net) for x in nr.branches for it in x.items]
++                idx = self.rb.index(others + mine + [(it, self.rb.net_of(it)) for it in self.rb.fixed])
++                clear = True
++                for x in changed:
++                    for it in x.items:
++                        kind = "Via" if it.Type() == pcbnew.PCB_VIA_T else "Track"
++                        if [h for h in self.rb.hits(nr.net, self._item_key(nr, it), it, kind, idx) if h is not None]:
++                            clear = False
++                            break
++                    if not clear:
++                        break
++                if not clear:
++                    note("too close (exact check)")
++                    undo()
++                    continue
++                note("gained", len(nr.branches) - len(old[0]))
++                gained += len(nr.branches) - len(old[0])
++        finally:
++            self.use_hist = True
++        return gained
++
++    def _span(self, b):
++        """A join's direct way: its start pad's centre to its end (pad centre, or the tee)."""
++        a = b.start.centre
++        e = b.end.centre if b.end is not None else self.rb.grid.at(b.path[-1][0], b.path[-1][1])
++        return math.dist(a, e)
 +
 +    def _drop_overlapping(self, nr, why):
 +        """Take out the net's branches that still sit in another net's copper."""
@@ -11661,7 +11873,7 @@ index 0000000..827906b
 +                for it in b.items:
 +                    new.append((it, nr.net))
 +                    owner[id(it)] = (nr, b)
-+        idx = rb.index([(it, n) for it, n in new] + [(it, it.GetNetname()) for it in rb.fixed])
++        idx = rb.index([(it, n) for it, n in new] + [(it, rb.net_of(it)) for it in rb.fixed])
 +        keys = {id(it): self._item_key(owner[id(it)][0], it) for it, _n in new}
 +        key_of = lambda o: keys.get(id(o))  # noqa: E731
 +        bad = {}
@@ -12006,7 +12218,7 @@ index 0000000..827906b
 +                for it in x.items]
 +        kept = [(it, nr.net) for nr, br, fl, gg, fg, items, gone in saved for x in nr.branches
 +                if id(x) in items for it in x.items]
-+        idx = self.rb.index(others + kept + mine + [(it, it.GetNetname()) for it in self.rb.fixed])
++        idx = self.rb.index(others + kept + mine + [(it, self.rb.net_of(it)) for it in self.rb.fixed])
 +        for nr, *_ in saved:
 +            for x in new[id(nr)]:
 +                for it in x.items:
@@ -12077,6 +12289,8 @@ index 0000000..827906b
 +            "negotiation": {"rounds": rounds, "overlaps_per_round": [h[0] for h in history],
 +                            "dropped_after": dropped,
 +                            "shortened_on_second_look": self.shortened,
++                            "gained_on_retry": getattr(self, "retried", 0),
++                            "retry": getattr(self, "retry_why", {}),
 +                            "ways_through_others_at_first_price": self.forced},
 +            "exact_check": bad,
 +            "shaped_plain": self.plain,
@@ -12199,6 +12413,9 @@ index 0000000..827906b
 +        return f"pad {_name(o)} ({o.GetNetname()})"
 +    if o.Type() == pcbnew.PCB_ZONE_T:
 +        return f"a {o.GetNetname()} zone"
++    if o.Type() in (pcbnew.PCB_SHAPE_T, pcbnew.PCB_TEXT_T, pcbnew.PCB_TEXTBOX_T):
++        fp = o.GetParentFootprint()
++        return f"copper drawn in {fp.GetReference()}" if fp else "copper drawn on the board"
 +    return f"a {o.GetNetname()} {'via' if o.Type() == pcbnew.PCB_VIA_T else 'track'}"
 +
 +
@@ -18087,7 +18304,7 @@ index e739f90..ea1ef9b 100644
      {
 diff --git a/python/utils/design_rules_project.py b/python/utils/design_rules_project.py
 new file mode 100644
-index 0000000..64ede47
+index 0000000..ce4c4f0
 --- /dev/null
 +++ b/python/utils/design_rules_project.py
 @@ -0,0 +1,598 @@
