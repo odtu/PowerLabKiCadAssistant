@@ -9897,10 +9897,10 @@ index 0000000..32ef387
 +    return p
 diff --git a/python/commands/powerlab_router2/router.py b/python/commands/powerlab_router2/router.py
 new file mode 100644
-index 0000000..c84f2f3
+index 0000000..79d7e73
 --- /dev/null
 +++ b/python/commands/powerlab_router2/router.py
-@@ -0,0 +1,2619 @@
+@@ -0,0 +1,2683 @@
 +"""PowerLab router 2: route like a person plans, then negotiate.
 +
 +The first router (commands/powerlab_router/) routes one connection after another and rips
@@ -9965,7 +9965,8 @@ index 0000000..c84f2f3
 +                 margins=(3.0, 10.0, None), magnetics=2.0, escape=1.0, weight=1.3, fast=True, spokes=1.0,
 +                 force=False, door=0.0, spoke_corridor=0.0, escalated=3.0, bus_pull=0.6, levels=True,
 +                 loop_pairs=False, escape_vias=False, escape_via_cost=0.0, against=1.0, top_axis="v",
-+                 pour_layer=2.0, fan_all=True, fan_straight=0.3, lane_hold=5.0, hold_fine_only=False):
++                 pour_layer=2.0, fan_all=True, fan_straight=0.3, lane_hold=5.0, hold_fine_only=False, lane_hold_top=0.0,
++                 hold_vias=False):
 +        self.turn, self.via, self.diagonal, self.weight, self.fast = turn, via, diagonal, weight, fast
 +        # preferred directions, as by hand on two layers: the top runs one way (top_axis, "v" or
 +        # "h"), the bottom the other, inner layers alternate. A step across a layer's direction
@@ -10000,6 +10001,17 @@ index 0000000..c84f2f3
 +        # cut-off pour 788 -> 385 mm2, gate loops 126 -> 84 mm2, one more important join open.
 +        # 2 gained less; 10 no more, with check_routing findings clearly up
 +        self.lane_hold, self.hold_fine_only = lane_hold, hold_fine_only
++        # per mm on the lanes of the most important nets' pins (priority 3: gates, switch nodes,
++        # PWM), where it is more than lane_hold; 0: as lane_hold. sf-motion's GLB hooked across
++        # SHB's exit at U2 (5 per mm let it), so SHB's driver pin never got out, and the
++        # high-side gate loops were 35-69 mm2 against 5-7 by hand
++        self.lane_hold_top = lane_hold_top
++        # the holds price other nets' vias in a lane too (per via, as per mm of track). sf-motion,
++        # 3 seeds at 5: gate loops smaller in every seed (sum 147-163 -> 119-143 mm2), joins
++        # within the noise; with lane_hold_top 100 SHB got out of U2.16 in every seed, but then
++        # GLB didn't: a 0.5 mm row's neighbours can't both fan at 45 degrees from one turn line
++        # (0.354 mm apart, 0.3556 needed), which the hand routing staggers. Off until TestPCB2
++        self.hold_vias = hold_vias
 +        self.layers, self.inner = list(layers), inner
 +        self.present, self.present_growth, self.history = present, present_growth, history
 +        self.rounds, self.nodes, self.margins = rounds, nodes, margins
@@ -10465,13 +10477,22 @@ index 0000000..c84f2f3
 +        per layer, and each net's own patch to take back out in its window."""
 +        rb, g = self.rb, self.rb.grid
 +        self.hold = [g.zeros(np.uint16) for _ in rb.layers]
++        self.hold_top = [g.zeros(np.uint16) for _ in rb.layers]
 +        self.hold_own = {}
++        # the same strips for other nets' vias, grown by a via instead of a track: a via is a
++        # wall across a fine-pitch lane (sf-motion's GLB dropped through one 0.24 mm from
++        # SHB's exit at U2.16, and a hold on tracks alone never saw it)
++        self.hold_v = g.zeros(np.uint16)
++        self.hold_v_top = g.zeros(np.uint16)
++        self.hold_v_own = {}
 +        if not self.costs.lane_hold:
 +            return
++        top = self.costs.lane_hold_top > self.costs.lane_hold
 +        for nr in nrs:
 +            if len(nr.islands) < 2:
 +                continue
 +            strokes = [[] for _ in rb.layers]
++            vstrokes = []
 +            for isl in nr.islands:
 +                for p in isl:
 +                    if self.costs.hold_fine_only and not rb.is_fine(p):
@@ -10487,28 +10508,65 @@ index 0000000..c84f2f3
 +                    L = rb.layers[best.layer]
 +                    r = nr.key.w + rb.new_clearance(nr.key, "Track", nr.key, "Track", L)
 +                    strokes[best.layer].append(([best.centre, best.exit, e], r))
++                    rv = nr.key.w / 2 + nr.key.vd / 2 + rb.new_clearance(nr.key, "Track", nr.key, "Via", L)
++                    vstrokes.append(([best.exit, e], rv))
 +            own = []
++            dst = self.hold_top if top and nr.priority >= 3 else self.hold
 +            for Li, st in enumerate(strokes):
 +                pt = g.patch(st, [], exact=True) if st else None
 +                if pt is not None:
-+                    pt.add_to(self.hold[Li])
++                    pt.add_to(dst[Li])
 +                own.append(pt)
-+            self.hold_own[nr.net] = own
++            self.hold_own[nr.net] = (own, dst is self.hold_top)
++            pv = g.patch(vstrokes, [], exact=True) if vstrokes else None
++            if pv is not None:
++                pv.add_to(self.hold_v_top if dst is self.hold_top else self.hold_v)
++            self.hold_v_own[nr.net] = pv
 +
 +    def _hold_cost(self, nr, Li, sl):
-+        if not self.costs.lane_hold:
++        if not self.costs.lane_hold or getattr(self, "no_holds", False):
 +            return 0.0
 +        j0, j1, i0, i1 = sl[0].start, sl[0].stop, sl[1].start, sl[1].stop
-+        a = self.hold[Li][sl].astype(np.float32)
-+        own = self.hold_own.get(nr.net, [None] * len(self.hold))[Li]
-+        if own is not None:
-+            pj0, pi0 = own.j0, own.i0
-+            ph, pw = own.a.shape
-+            a0, b0 = max(j0, pj0), max(i0, pi0)
-+            a1, b1 = min(j1, pj0 + ph), min(i1, pi0 + pw)
-+            if a1 > a0 and b1 > b0:
-+                a[a0 - j0:a1 - j0, b0 - i0:b1 - i0] -= own.a[a0 - pj0:a1 - pj0, b0 - pi0:b1 - pi0]
-+        return self.costs.lane_hold * np.minimum(np.maximum(a, 0.0), 1.0)
++        mine, in_top = self.hold_own.get(nr.net, ([None] * len(self.hold), False))
++        own = mine[Li]
++
++        def others(arr, has_own):
++            a = arr[Li][sl].astype(np.float32)
++            if own is not None and has_own:
++                pj0, pi0 = own.j0, own.i0
++                ph, pw = own.a.shape
++                a0, b0 = max(j0, pj0), max(i0, pi0)
++                a1, b1 = min(j1, pj0 + ph), min(i1, pi0 + pw)
++                if a1 > a0 and b1 > b0:
++                    a[a0 - j0:a1 - j0, b0 - i0:b1 - i0] -= own.a[a0 - pj0:a1 - pj0, b0 - pi0:b1 - pi0]
++            return np.minimum(np.maximum(a, 0.0), 1.0)
++        c = self.costs.lane_hold * others(self.hold, not in_top)
++        if self.costs.lane_hold_top > self.costs.lane_hold:
++            c = np.maximum(c, self.costs.lane_hold_top * others(self.hold_top, in_top))
++        return c
++
++    def _hold_via_cost(self, nr, sl):
++        """Per via in another pin's lane hold: `lane_hold` (`lane_hold_top` on a priority-3 pin's)."""
++        if not self.costs.lane_hold or getattr(self, "no_holds", False):
++            return 0.0
++        j0, j1, i0, i1 = sl[0].start, sl[0].stop, sl[1].start, sl[1].stop
++        own = self.hold_v_own.get(nr.net)
++        _m, in_top = self.hold_own.get(nr.net, (None, False))
++
++        def others(arr, has_own):
++            a = arr[sl].astype(np.float32)
++            if own is not None and has_own:
++                pj0, pi0 = own.j0, own.i0
++                ph, pw = own.a.shape
++                a0, b0 = max(j0, pj0), max(i0, pi0)
++                a1, b1 = min(j1, pj0 + ph), min(i1, pi0 + pw)
++                if a1 > a0 and b1 > b0:
++                    a[a0 - j0:a1 - j0, b0 - i0:b1 - i0] -= own.a[a0 - pj0:a1 - pj0, b0 - pi0:b1 - pi0]
++            return np.minimum(np.maximum(a, 0.0), 1.0)
++        c = self.costs.lane_hold * others(self.hold_v, not in_top)
++        if self.costs.lane_hold_top > self.costs.lane_hold:
++            c = np.maximum(c, self.costs.lane_hold_top * others(self.hold_v_top, in_top))
++        return c
 +
 +    def _door_cost(self, nr, Li, sl):
 +        if not self.costs.door:
@@ -10599,6 +10657,8 @@ index 0000000..c84f2f3
 +            vc = vc + 0.5 * sum(h[sl] for h in self.hist)
 +        if self.costs.escape_via_cost and not self.costs.escape_vias:
 +            vc = vc + self.costs.escape_via_cost * (minus(self.esc_via, self.esc_via_own.get(nr.net)) > 0)
++        if self.costs.hold_vias:
++            vc = vc + self._hold_via_cost(nr, sl)
 +        win.via_cost_a[...] = vc
 +        return win
 +
@@ -10792,6 +10852,9 @@ index 0000000..c84f2f3
 +                    limit = DETOUR * lower * c.escalated + 4 * c.via + 3.0
 +                ok, use_hist = False, self.use_hist
 +                self.use_hist = False
++                # nor the other pins' lane holds: at lane_hold_top 100 crossing SHB's strip cost
++                # ~70, and GLB's 8 mm join at sf-motion's U2 was written off as placement's
++                self.no_holds = True
 +                try:
 +                    for margin in c.margins:
 +                        win0 = self._win(nr, self._window(nr, cells, margin), 0.0)
@@ -10806,6 +10869,7 @@ index 0000000..c84f2f3
 +                            why = "closed in by fixed copper"
 +                finally:
 +                    self.use_hist = use_hist
++                    self.no_holds = False
 +                if not ok:
 +                    if why == "no path":
 +                        why = f"no way within {DETOUR:g}x its direct length ({lower:.1f} mm): placement, or another layer"
