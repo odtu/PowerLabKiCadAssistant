@@ -9897,10 +9897,10 @@ index 0000000..32ef387
 +    return p
 diff --git a/python/commands/powerlab_router2/router.py b/python/commands/powerlab_router2/router.py
 new file mode 100644
-index 0000000..79d7e73
+index 0000000..7de126d
 --- /dev/null
 +++ b/python/commands/powerlab_router2/router.py
-@@ -0,0 +1,2683 @@
+@@ -0,0 +1,2688 @@
 +"""PowerLab router 2: route like a person plans, then negotiate.
 +
 +The first router (commands/powerlab_router/) routes one connection after another and rips
@@ -9966,7 +9966,7 @@ index 0000000..79d7e73
 +                 force=False, door=0.0, spoke_corridor=0.0, escalated=3.0, bus_pull=0.6, levels=True,
 +                 loop_pairs=False, escape_vias=False, escape_via_cost=0.0, against=1.0, top_axis="v",
 +                 pour_layer=2.0, fan_all=True, fan_straight=0.3, lane_hold=5.0, hold_fine_only=False, lane_hold_top=0.0,
-+                 hold_vias=False):
++                 hold_vias=True):
 +        self.turn, self.via, self.diagonal, self.weight, self.fast = turn, via, diagonal, weight, fast
 +        # preferred directions, as by hand on two layers: the top runs one way (top_axis, "v" or
 +        # "h"), the bottom the other, inner layers alternate. A step across a layer's direction
@@ -10010,7 +10010,12 @@ index 0000000..79d7e73
 +        # 3 seeds at 5: gate loops smaller in every seed (sum 147-163 -> 119-143 mm2), joins
 +        # within the noise; with lane_hold_top 100 SHB got out of U2.16 in every seed, but then
 +        # GLB didn't: a 0.5 mm row's neighbours can't both fan at 45 degrees from one turn line
-+        # (0.354 mm apart, 0.3556 needed), which the hand routing staggers. Off until TestPCB2
++        # (0.354 mm apart, 0.3556 needed), which the hand routing staggers. TestPCB2, 3 seeds:
++        # bank (tools/route_bank.py) 3605 -> 3751, gate loops 79-115 -> 69-82 mm2, new DRC 1-3 -> 1,
++        # joins the same; sf-motion bank 1855 -> 1928. On since 2026-11-21.
++        # Staggering those turns by a few um (a thinner stamp near fine-pitch pins and _nudge
++        # between two new tracks) was tried and never fired: SHB is boxed in by GLB and GHB
++        # turning flat right after their 45 degree exits, not by the 2 um (bench notes).
 +        self.hold_vias = hold_vias
 +        self.layers, self.inner = list(layers), inner
 +        self.present, self.present_growth, self.history = present, present_growth, history
