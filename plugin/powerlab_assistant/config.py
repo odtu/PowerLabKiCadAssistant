@@ -128,7 +128,7 @@ def kicad_python(gui=False):
     opens no console; on macOS the framework's python3 runs GUI programs as it is."""
     if IS_MAC:
         apps = [_app_of(kicad_bin() + os.sep)] + _apps()
-        candidates = [config().get("kicad_python", "")] + [os.path.join(a, MAC_PYTHON) for a in apps if a]
+        candidates = [config().get("kicad_python", "")] + [os.path.join(a, *MAC_PYTHON.split("/")) for a in apps if a]
     else:
         folder = kicad_bin()
         candidates = [os.path.join(folder, "pythonw.exe" if gui else "python.exe")] if folder else []

@@ -235,7 +235,8 @@ POSIX_NOTE = [
      "and the folder whose files go in)",
      "Bash tool: `zip -j fab/gerbers.zip fab/gerbers/*` (the zip first, then the files that "
      "go in)"),
-    ("Compress-Archive is blocked, and so are git, ls, dir", "so are git, ls, cat"),
+    ("Compress-Archive is blocked, and so are git, ls, dir and every other command",
+     "git, ls, cat and every other command are blocked"),
     ("Select-String", "find"),
     ("\\", "/"),
 ]

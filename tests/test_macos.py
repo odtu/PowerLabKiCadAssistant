@@ -459,6 +459,7 @@ class MacPanelTests(unittest.TestCase):
         self.assertIn("Bash tool: `zip -j fab/gerbers.zip fab/gerbers/*`", note)
         self.assertIn("documents/<name>.md", note)
         self.assertIn("design-review/design-review.md", note)
+        self.assertIn("git, ls, cat and every other command are blocked", note)
 
     def windows_note(self):
         """PANEL_NOTE as Windows builds it, from panel.py's source."""
