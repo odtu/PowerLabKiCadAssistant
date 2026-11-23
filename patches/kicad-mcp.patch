@@ -8408,10 +8408,10 @@ index 0000000..737f268
 +"""PowerLab router 2: negotiated routing, block by block (see router.py)."""
 diff --git a/python/commands/powerlab_router2/board.py b/python/commands/powerlab_router2/board.py
 new file mode 100644
-index 0000000..c70c9fc
+index 0000000..670b71e
 --- /dev/null
 +++ b/python/commands/powerlab_router2/board.py
-@@ -0,0 +1,725 @@
+@@ -0,0 +1,732 @@
 +"""The board side of PowerLab router 2 (pcbnew): what is fixed, what is to be joined, the
 +ways into the pads, and the exact check.
 +
@@ -8660,6 +8660,12 @@ index 0000000..c70c9fc
 +                c = max(c, T(local))
 +        return c
 +
++    def hole_clear(self, pad):
++        """A pad hole's clearance: the board's, or the pad's (or footprint's) own if larger; DRC
++        takes it for the hole too (moco-sc1's mounting holes ask 0.6 mm, a track ran 0.35 mm off)."""
++        local = pad.GetLocalClearance() or pad.GetParentFootprint().GetLocalClearance()
++        return max(self.hole_clearance, T(local) if local else 0.0)
++
 +    def new_clearance(self, ka, kind_a, kb, kind_b, layer):
 +        """Between new copper of two keys."""
 +        k = (ka.id, kind_a, kb.id, kind_b, layer)
@@ -8681,7 +8687,8 @@ index 0000000..c70c9fc
 +
 +    def net_of(self, item):
 +        """A fixed item's net; a net tie's copper shape has none in KiCad, here its tie's."""
-+        return self._net_of.get(uuid(item), item.GetNetname())
++        # copper text in a footprint or on the board has no net at all (moco-sc1's logo text)
++        return self._net_of.get(uuid(item), item.GetNetname() if hasattr(item, "GetNetname") else "")
 +
 +    def _copper_graphics(self):
 +        """Shapes and text drawn on copper, on the board and in footprints: copper too, though
@@ -8798,10 +8805,10 @@ index 0000000..c70c9fc
 +                if it.Type() == pcbnew.PCB_PAD_T and (it.HasHole() or npth):
 +                    for i in range(len(self.layers)):
 +                        hole = pcbnew.SHAPE_POLY_SET()
-+                        it.TransformHoleToPolygon(hole, MM(self.hole_clearance + w / 2), ERR, pcbnew.ERROR_OUTSIDE)
++                        it.TransformHoleToPolygon(hole, MM(self.hole_clear(it) + w / 2), ERR, pcbnew.ERROR_OUTSIDE)
 +                        tl[i] += polys(hole)
 +                    hole = pcbnew.SHAPE_POLY_SET()
-+                    by = max(self.hole_clearance + vd / 2, self.hole_to_hole + key.drill / 2)
++                    by = max(self.hole_clear(it) + vd / 2, self.hole_to_hole + key.drill / 2)
 +                    it.TransformHoleToPolygon(hole, MM(by), ERR, pcbnew.ERROR_OUTSIDE)
 +                    vl += polys(hole)
 +                if it.Type() == pcbnew.PCB_VIA_T:
@@ -9094,7 +9101,7 @@ index 0000000..c70c9fc
 +                            hole = self._gcache.get(hk)
 +                            if hole is None:
 +                                hole = pcbnew.SHAPE_POLY_SET()
-+                                o.TransformHoleToPolygon(hole, MM(self.hole_clearance - 0.002), ERR, pcbnew.ERROR_OUTSIDE)
++                                o.TransformHoleToPolygon(hole, MM(self.hole_clear(o) - 0.002), ERR, pcbnew.ERROR_OUTSIDE)
 +                                self._gcache[hk] = hole
 +                            if mine.Collide(hole):
 +                                out.append(o)
@@ -9139,10 +9146,10 @@ index 0000000..c70c9fc
 +        return out
 diff --git a/python/commands/powerlab_router2/congestion.py b/python/commands/powerlab_router2/congestion.py
 new file mode 100644
-index 0000000..36377cb
+index 0000000..7f2c976
 --- /dev/null
 +++ b/python/commands/powerlab_router2/congestion.py
-@@ -0,0 +1,119 @@
+@@ -0,0 +1,138 @@
 +"""Who is where (PowerLab router 2): the routed nets' copper as counts per cell.
 +
 +Negotiated congestion (PathFinder, McMurchie & Ebeling): every net is routed as if the
@@ -9169,6 +9176,12 @@ index 0000000..36377cb
 +# and that much more round it (mm): planned to the exact limit, new copper met KiCad's DRC
 +# a few um short where the exact check allows 2 um for its polygons
 +STAMP_MARGIN = 0.01
++# along fine-pitch fan runs (Router._fan_zone), tracks are stamped this much thinner (mm): two 45
++# degree tracks from neighbouring pins of a 0.5 mm row lie on grid diagonals 0.3536 mm apart,
++# and a 0.2 mm track with 0.15 clearance (+ STAMP_MARGIN) needs 0.366, so on the 0.1 mm grid
++# the row could never run as a bundle (the hand staggers the turns by a few um). The router
++# staggers the exact turn points (Router._stagger) so the copper keeps the clearance
++FINE_SLACK = 0.016
 +LEVELS = 5  # priority levels (router.priority_of): the price of a cell depends on whose copper it is
 +
 +
@@ -9210,7 +9223,20 @@ index 0000000..36377cb
 +            strokes = [(pts, r_t) for L, pts in geo["pieces"] if L == Li]
 +            strokes += [([a, b], r_t) for L, a, b, *_w in geo.get("stubs", ()) if L == Li]
 +            discs = [(v, r_vt) for v in geo["vias"]]
-+            tl.append(g.patch(strokes, discs, exact=STAMP_EXACT))
++            p = g.patch(strokes, discs, exact=STAMP_EXACT)
++            zone = getattr(self.rb, "fine_zone", None)
++            if p is not None and FINE_SLACK and zone is not None and strokes:
++                zv = p.view(zone)
++                if zv.any():
++                    # the thin stamp where the zone is: same box, so it lines up
++                    thin = g.patch([(pts, r - FINE_SLACK) for pts, r in strokes], discs, exact=STAMP_EXACT)
++                    t = np.zeros_like(p.a)
++                    if thin is not None:
++                        h, w = thin.a.shape
++                        oj, oi = thin.j0 - p.j0, thin.i0 - p.i0
++                        t[oj:oj + h, oi:oi + w] = thin.a
++                    p.a = np.where(zv, t, p.a)
++            tl.append(p)
 +            vstrokes += [(pts, r_tv) for L, pts in geo["pieces"] if L == Li]
 +            vstrokes += [([a, b], r_tv) for L, a, b, *_w in geo.get("stubs", ()) if L == Li]
 +            vdiscs = [(v, r_vv) for v in geo["vias"]]
@@ -9902,10 +9928,10 @@ index 0000000..dd6f89b
 +    return p
 diff --git a/python/commands/powerlab_router2/router.py b/python/commands/powerlab_router2/router.py
 new file mode 100644
-index 0000000..7de126d
+index 0000000..56c6bfe
 --- /dev/null
 +++ b/python/commands/powerlab_router2/router.py
-@@ -0,0 +1,2688 @@
+@@ -0,0 +1,2877 @@
 +"""PowerLab router 2: route like a person plans, then negotiate.
 +
 +The first router (commands/powerlab_router/) routes one connection after another and rips
@@ -9943,6 +9969,7 @@ index 0000000..7de126d
 +from commands.powerlab_router2 import search as S
 +from commands.powerlab_router2 import shape
 +from commands.powerlab_router2.board import RouterBoard, grown, plane_layers, polys, uuid, xy
++from commands.powerlab_router2 import congestion as CG
 +from commands.powerlab_router2.congestion import Occupancy
 +from commands.powerlab_router2.geom import DIRS, cells_on, union_patch
 +
@@ -9962,6 +9989,9 @@ index 0000000..7de126d
 +RETRY = True  # the dropped joins are tried once more on the finished copper (_retry_dropped)
 +RETRY_VIAS = 2  # vias a join found that way may take
 +GROUP_ORDER = ("power", "switching", "analog", "signal")
++FAN_REACH = 4.0  # mm along a fan run's 45 degree line where neighbours may lie 0.354 mm apart (_fan_zone)
++FAN_HALF = 0.5  # mm either side of it
++STAGGER_STEP = 0.01  # mm along the pad's axis per pin of a fan run (_stagger): its 45 degree line 7 um further out
 +
 +
 +class Costs:
@@ -9971,7 +10001,7 @@ index 0000000..7de126d
 +                 force=False, door=0.0, spoke_corridor=0.0, escalated=3.0, bus_pull=0.6, levels=True,
 +                 loop_pairs=False, escape_vias=False, escape_via_cost=0.0, against=1.0, top_axis="v",
 +                 pour_layer=2.0, fan_all=True, fan_straight=0.3, lane_hold=5.0, hold_fine_only=False, lane_hold_top=0.0,
-+                 hold_vias=True):
++                 hold_vias=True, fan_stagger=True):
 +        self.turn, self.via, self.diagonal, self.weight, self.fast = turn, via, diagonal, weight, fast
 +        # preferred directions, as by hand on two layers: the top runs one way (top_axis, "v" or
 +        # "h"), the bottom the other, inner layers alternate. A step across a layer's direction
@@ -10022,6 +10052,10 @@ index 0000000..7de126d
 +        # between two new tracks) was tried and never fired: SHB is boxed in by GLB and GHB
 +        # turning flat right after their 45 degree exits, not by the 2 um (bench notes).
 +        self.hold_vias = hold_vias
++        # a fine-pitch row's neighbours fanning the same way turn a cell apart (_stagger), so
++        # their 45 degree runs fit side by side on the grid: at 0.5 mm pitch two 45 degree lines
++        # from one turn line are 0.354 mm apart, and a 0.2 mm track with 0.15 clearance needs 0.356
++        self.fan_stagger = fan_stagger
 +        self.layers, self.inner = list(layers), inner
 +        self.present, self.present_growth, self.history = present, present_growth, history
 +        self.rounds, self.nodes, self.margins = rounds, nodes, margins
@@ -10270,6 +10304,7 @@ index 0000000..7de126d
 +            self.lf[Li] = self.costs.escalated
 +        self.occ = {}
 +        self._lanes = {}
++        self._lanes_final = {}
 +        self.fixed_idx = None
 +        ds = board.GetDesignSettings()
 +        self.neck = max(T(ds.m_TrackMinWidth), 0.15)  # neck-downs at fine-pitch pins
@@ -10517,6 +10552,8 @@ index 0000000..7de126d
 +                    e = (best.exit[0] + 2 * g.pitch * dx / n, best.exit[1] + 2 * g.pitch * dy / n)
 +                    L = rb.layers[best.layer]
 +                    r = nr.key.w + rb.new_clearance(nr.key, "Track", nr.key, "Track", L)
++                    if self.costs.fan_stagger and rb.is_fine(p):
++                        r -= CG.FINE_SLACK  # a neighbour's 45 degree run beside it is no trespass
 +                    strokes[best.layer].append(([best.centre, best.exit, e], r))
 +                    rv = nr.key.w / 2 + nr.key.vd / 2 + rb.new_clearance(nr.key, "Track", nr.key, "Via", L)
 +                    vstrokes.append(([best.exit, e], rv))
@@ -10698,6 +10735,18 @@ index 0000000..7de126d
 +        return out if out is not None else 0.0
 +
 +    def lanes(self, nr, pad):
++        # the whole answer per pad, net, inner-layer state and stagger (attempt() asks for every
++        # target pad's lanes on every search)
++        # (PAD has no hash: keyed by the wrapper's id, which the entry keeps alive)
++        fk = (id(pad), nr.net, nr.inner, self.costs.fan_stagger and getattr(self, "_pad_nr", None) is not None)
++        hit = self._lanes_final.get(fk)
++        if hit is not None and hit[0] is pad:
++            return hit[1]
++        out = self._lanes_uncached(nr, pad)
++        self._lanes_final[fk] = (pad, out)
++        return out
++
++    def _lanes_uncached(self, nr, pad):
 +        k = (uuid(pad), nr.key.id)
 +        if k not in self._lanes:
 +            rb = self.rb
@@ -10725,7 +10774,167 @@ index 0000000..7de126d
 +                tx = sum(q[0] for q in others) / len(others)
 +                ty = sum(q[1] for q in others) / len(others)
 +                out = self._fan(nr, pad, out, target=(tx, ty), straight=self.costs.fan_straight)
++        if self.costs.fan_stagger and self.rb.is_fine(pad) and getattr(self, "_pad_nr", None):
++            out = [self._stagger(nr, pad, l) for l in out]
 +        return out
++
++    def _fan_target(self, nr, pad):
++        others = [xy(q.GetPosition()) for isl in nr.islands for q in isl if uuid(q) != uuid(pad)
++                  and q.GetParentFootprint().GetReference() != pad.GetParentFootprint().GetReference()]
++        if not others:
++            return None
++        return (sum(q[0] for q in others) / len(others), sum(q[1] for q in others) / len(others))
++
++    def _fan_dirs(self, nr, pad, d, layer):
++        """(straight, diag) of `pad`'s fanned lane leaving in direction d on `layer`, or None."""
++        for l in self.lanes_base(nr, pad):
++            if l.layer == layer and len(l.dirs) == 2 and d in l.dirs:
++                diag = next(k for k in l.dirs if k != d)
++                return d, diag, l
++        return None
++
++    def lanes_base(self, nr, pad):
++        """lanes() without the stagger."""
++        keep = self.costs.fan_stagger
++        self.costs.fan_stagger = False
++        try:
++            return self.lanes(nr, pad)
++        finally:
++            self.costs.fan_stagger = keep
++
++    def _fan_zone(self):
++        """Where tracks are stamped FINE_SLACK thinner (congestion): along each fan run's 45
++        degree line from its pin's exit, FAN_REACH mm on, FAN_HALF either side: where a
++        neighbour's line runs 0.354 mm off and the exact turn points (_stagger) keep the copper
++        clear. A disc round every fine-pitch pad reached too little of the bundle at 1.5 mm
++        (the runs jogged a cell where it ended) and, at 4 mm, let other tracks' few-um
++        shortfalls through for the exact check to reroute (sf-motion: 12 reroutes, +24 vias)."""
++        rb, g = self.rb, self.rb.grid
++        strokes = []
++        for (u, _kid, Li, _cell, _w), l in self._stag.items():
++            if (u, Li) not in self._rank or len(l.dirs) != 2:
++                continue
++            d = min(l.dirs, key=l.dirs.get)
++            dx, dy = DIRS[d]
++            n = math.hypot(dx, dy)
++            e = (l.exit[0] + FAN_REACH * dx / n, l.exit[1] + FAN_REACH * dy / n)
++            strokes.append(([l.exit, e], FAN_HALF))
++        zone = g.zeros()
++        pz = g.patch(strokes, [], exact=True) if strokes else None
++        if pz is not None:
++            pz.view(zone)[...] |= pz.a
++        rb.fine_zone = zone
++
++    def _row_next(self, pad, st, lat, sign):
++        """The next pin of `pad`'s row (same part, same distance along `st`) in direction
++        sign * lat, within FINE_PITCH, or None."""
++        c = xy(pad.GetPosition())
++        sx, sy = DIRS[st]
++        best, out = None, None
++        for q in pad.GetParentFootprint().Pads():
++            if uuid(q) == uuid(pad):
++                continue
++            v = (xy(q.GetPosition())[0] - c[0], xy(q.GetPosition())[1] - c[1])
++            if abs(v[0] * sx + v[1] * sy) > 0.05:
++                continue
++            a = sign * (v[0] * lat[0] + v[1] * lat[1])
++            if 0.05 < a < 0.8 and (best is None or a < best):
++                best, out = a, q
++        return out
++
++    def _same_fan(self, q, st, d, layer):
++        """(net, base lane) of pin q when it is routed and fans like (st, d), else None."""
++        qnr = self._pad_nr.get(uuid(q))
++        if qnr is None:
++            return None
++        fd = self._fan_dirs(qnr, q, st, layer)
++        if fd is None or fd[1] != d:
++            return None
++        return qnr, fd[2]
++
++    def _stagger(self, nr, pad, lane, depth=0):
++        """A fanned lane at a fine-pitch row, its exit moved along the pad's axis by whole
++        cells so that its 45 degree run clears the run of the neighbour ahead (the next pin in
++        the direction it turns to) when that neighbour fans the same way: a staircase, as a
++        hand-drawn bundle. The pin at the front of a run of such pins turns as close to the row
++        as its stub allows, each pin behind it the least further out that clears the one ahead
++        (at 0.5 mm pitch one cell per pin), so a run of five fits where the parts round the IC
++        leave room (sf-motion's U2: the turn line at 0.25 mm past the pads by hand). A lane
++        that can't be placed so stays as it was."""
++        key = (uuid(pad), nr.key.id, lane.layer, lane.cell, lane.width)
++        cache = self._stag
++        if key in cache:
++            return cache[key]
++        cache[key] = lane  # no loops
++        if len(lane.dirs) != 2 or depth > 30:
++            return lane
++        d = min(lane.dirs, key=lane.dirs.get)  # the cheap one is the 45 degree turn
++        st = max(lane.dirs, key=lane.dirs.get)
++        if st % 2 or d % 2 == 0:
++            return lane
++        sx, sy = DIRS[st]
++        dx, dy = DIRS[d]
++        lat = (dx - sx, dy - sy)  # the way the run turns to, across the row
++        ahead = self._row_next(pad, st, lat, 1)
++        fa = self._same_fan(ahead, st, d, lane.layer) if ahead is not None else None
++        if fa is None:
++            behind = self._row_next(pad, st, lat, -1)
++            if behind is None or self._same_fan(behind, st, d, lane.layer) is None:
++                return lane  # not in a run: the lane as it was
++        g = self.rb.grid
++        L = self.rb.layers[lane.layer]
++        w = lane.width or nr.key.w
++        try:
++            extent = max((q[0] - lane.centre[0]) * sx + (q[1] - lane.centre[1]) * sy
++                         for o, _h in polys(grown(pad, L, 0.0)) for q in o)
++        except Exception:
++            return lane
++        length = (lane.exit[0] - lane.centre[0]) * sx + (lane.exit[1] - lane.centre[1]) * sy
++        kmin = math.ceil((extent + w / 2 + g.pitch - length) / g.pitch - 1e-9)
++
++        def inv(cell):
++            return dy * cell[0] - dx * cell[1]
++        if fa is not None:
++            qnr, qbase = fa
++            ql = self._stagger(qnr, ahead, qbase, depth + 1)
++            need = (w / 2 + qnr.key.w / 2 + self.rb.new_clearance(nr.key, "Track", qnr.key, "Track", L)
++                    + CG.STAMP_MARGIN - CG.FINE_SLACK) * math.sqrt(2.0) / g.pitch
++            far = (lane.cell[0] + 8 * sx, lane.cell[1] + 8 * sy)
++            side = 1 if inv(far) >= inv(ql.cell) else -1  # further out is the clear side
++            ok = lambda cell: side * (inv(cell) - inv(ql.cell)) >= need - 1e-9  # noqa: E731
++        else:
++            ok = lambda cell: True  # noqa: E731
++        rank = self._rank.get((uuid(ahead), lane.layer), -1) + 1 if fa is not None else 0
++        self._rank[(uuid(pad), lane.layer)] = rank
++        blocked = self._blocked_fn(nr)
++        kk = nr.key if w >= nr.key.w - 1e-6 else self.rb.neck_key(nr.key, w)
++        for k in range(min(kmin, 0), 9):
++            cell = (lane.cell[0] + k * sx, lane.cell[1] + k * sy)
++            if not ok(cell):
++                continue
++            if not g.inside(*cell) or blocked(lane.layer, *cell):
++                if k > 0:
++                    return lane  # further out is walled off
++                continue
++            # the exact turn point: STAGGER_STEP further out per pin from the run's front, so
++            # the 45 degree lines (anchored there, shape.fit_runs) clear each other in copper
++            # where the grid puts them on one column
++            ex = (lane.exit[0] + (k * g.pitch + rank * STAGGER_STEP) * sx,
++                  lane.exit[1] + (k * g.pitch + rank * STAGGER_STEP) * sy)
++            if math.dist(ex, lane.exit) < 1e-9:
++                return lane
++            t = self.rb.track(nr.net, L, lane.centre, ex, w)
++            if [h for h in self.rb.hits(nr.net, kk, t, "Track", self.fixed_idx) if h is not None]:
++                if k > 0:
++                    return lane
++                continue
++            from commands.powerlab_router2.board import Lane
++            nl = Lane(lane.pad, lane.layer, lane.centre, ex, cell, dict(lane.dirs), max(0.0, lane.cost + k * g.pitch),
++                      lane.stub, lane.width)
++            cache[key] = nl
++            self.staggered += 1
++            return nl
++        return lane
 +
 +    def _fan(self, nr, pad, lanes, target=None, straight=1.0):
 +        """A bus member's lanes at a fine-pitch pin row: straight out of the row to the lane's
@@ -11337,12 +11546,18 @@ index 0000000..7de126d
 +                nr.bus_groups_key = len(self.bus_groups)
 +        for nr in nrs:
 +            self.occupancy(nr.key)
++        self._pad_nr = {uuid(p): nr for nr in nrs for isl in nr.islands for p in isl}
++        self._stag = {}
++        self._rank = {}
++        self.staggered = 0
 +        blocked_pins = []
 +        for nr in nrs:
 +            for isl in nr.islands:
 +                for p in isl:
 +                    if not self.lanes(nr, p):
 +                        blocked_pins.append({"net": nr.net, "pin": _name(p), "at": _at(xy(p.GetPosition()))})
++        if self.costs.fan_stagger and CG.FINE_SLACK:
++            self._fan_zone()
 +        self._doorsteps(nrs)
 +        self._escape_strips(nrs)
 +        self._lane_holds(nrs)
