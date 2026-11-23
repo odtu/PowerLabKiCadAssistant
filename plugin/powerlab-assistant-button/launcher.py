@@ -6,27 +6,25 @@ panel itself is started on KiCad's bundled Python (scripting/plugins/powerlab_as
 This uses that package's launch.py, which needs no wx.
 """
 
-import json
 import os
 import sys
 
 # This file lives in <KiCad documents>/10.0/plugins/<this plugin>/
 VERSION_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SCRIPTING = os.path.join(VERSION_DIR, "scripting", "plugins")
-CONFIG = os.path.join(os.environ.get("APPDATA", ""), "PowerLabKiCadAssistant", "config.json")
 
 
 def kicad_python():
-    try:
-        with open(CONFIG, encoding="utf-8-sig") as f:  # written by PowerShell, with a BOM
-            configured = json.load(f).get("kicad_bin", "")
-    except (OSError, ValueError):
-        configured = ""
-    for folder in (configured, r"C:\Program Files\KiCad\10.0\bin", sys.base_prefix):
-        exe = os.path.join(folder, "pythonw.exe") if folder else ""
-        if exe and os.path.isfile(exe) and os.path.isdir(os.path.join(folder, "Lib", "site-packages", "wx")):
-            return exe
-    raise SystemExit("KiCad 10's Python was not found. Run install.ps1 again.")
+    """KiCad 10's own Python, which has wx (the installer records where it is)."""
+    from powerlab_assistant import config
+
+    python = config.kicad_python(gui=True)
+    if config.IS_WINDOWS and python:  # the Windows one must have wx next to it
+        if not os.path.isdir(os.path.join(os.path.dirname(python), "Lib", "site-packages", "wx")):
+            python = ""
+    if not python:
+        raise SystemExit("KiCad 10's Python was not found. Run the installer again.")
+    return python
 
 
 if __name__ == "__main__":

@@ -15,8 +15,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The panel runs on Windows; Linux is where the auto-fix workflow runs Claude.
-        os: [windows-latest, ubuntu-latest]
+        # The panel runs on Windows and macOS; Linux is where the auto-fix workflow runs Claude.
+        os: [windows-latest, ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5

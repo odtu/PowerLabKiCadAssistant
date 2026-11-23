@@ -98,10 +98,15 @@ class UnreachableHintTests(unittest.TestCase):
     """Issue #7: a windowless leftover kicad.exe holds the API connection."""
 
     def test_stale_background_kicad_is_named(self):
-        hint = sources.unreachable_hint([(11884, False), (28252, True)])
+        with mock.patch.object(config, "IS_MAC", False):
+            hint = sources.unreachable_hint([(11884, False), (28252, True)])
         self.assertIn("11884", hint)
         self.assertIn("Task Manager", hint)
         self.assertNotIn("28252", hint)  # the KiCad the user is working in
+        with mock.patch.object(config, "IS_MAC", True):  # macOS has no Task Manager
+            hint = sources.unreachable_hint([(11884, False), (28252, True)])
+        self.assertIn("Activity Monitor", hint)
+        self.assertIn("11884", hint)
 
     def test_single_kicad_points_to_api_setting(self):
         self.assertIn("Enable KiCad API", sources.unreachable_hint([(28252, True)]))
@@ -1053,7 +1058,7 @@ class DesignReviewTests(unittest.TestCase):
         self.assertIn("data:image/png;base64,", page)  # works on its own
         self.assertNotIn("data-path", page)
 
-    @unittest.skipUnless(sys.platform == "win32", "needs Microsoft Edge")
+    @unittest.skipUnless(sys.platform in ("win32", "darwin"), "needs Microsoft Edge (or Chrome on macOS)")
     def test_pdf_is_printed_with_edge(self):
         if not self.review.find_edge():
             self.skipTest("Microsoft Edge not found")
@@ -1414,6 +1419,10 @@ class TwoKiCadsTests(unittest.TestCase):
             self.addCleanup(lambda: setattr(sources.instances, "SOCKET_DIR", old[0]))
             sources.instances.SOCKET_DIR = os.path.join(tmp, "kicad")
             sources.instances.SHARED = os.path.join(tmp, "kicad", "api.sock")
+            # Windows only (named pipes); test_macos covers the others
+            patcher = mock.patch.object(sources.instances, "NEEDS_PLACEHOLDER", True)
+            patcher.start()
+            self.addCleanup(patcher.stop)
             sources.instances.ensure_placeholder()
             self.assertTrue(os.path.isfile(sources.instances.SHARED))
             sources.instances.ensure_placeholder()  # already there: left alone
@@ -1929,7 +1938,9 @@ class McpPatchTests(unittest.TestCase):
         self.assertEqual(out[:2], pts[:2])
         self.assertEqual(out[-2:], pts[-2:])
         self.assertLess(len(out), len(pts))
-        self.assertLess(module._length(out), module._length(pts))
+        # a staircase of 45 degree steps is as long as one dogleg: fewer corners, never longer
+        # (the two lengths can differ in the last bit, either way, between Python versions)
+        self.assertLessEqual(module._length(out), module._length(pts) + 1e-9)
         dirs = [module._unit(a, b) for a, b in zip(out, out[1:])]
         self.assertTrue(all(module._turn_ok(u, v) for u, v in zip(dirs, dirs[1:])))
         for a, b in zip(out, out[1:]):
@@ -2859,8 +2870,10 @@ class McpPatchTests(unittest.TestCase):
             import pcbnew
         except ImportError:
             self.skipTest("needs KiCad's Python")
-        cli = os.path.join(os.path.dirname(sys.executable), "kicad-cli.exe")
-        if not os.path.isfile(cli):
+        if not hasattr(pcbnew, "BOARD"):  # the stand-in from the top of this file
+            self.skipTest("needs KiCad's Python")
+        cli = os.path.join(config.kicad_bin(), "kicad-cli" + config.EXE)  # bin\, or KiCad.app/Contents/MacOS
+        if not config.kicad_bin() or not os.path.isfile(cli):
             self.skipTest("needs kicad-cli")
         module = types.ModuleType("route_cleanup")
         exec(self.new_file("python/commands/route_cleanup.py"), module.__dict__)

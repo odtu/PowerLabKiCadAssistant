@@ -27,9 +27,9 @@ class AssistantButton(pcbnew.ActionPlugin):
         if not find_claude():
             wx.MessageBox(INSTALL_HELP, "PowerLab Assistant", wx.OK | wx.ICON_WARNING)
             return
-        python = os.path.join(config.kicad_bin(), "pythonw.exe") if config.kicad_bin() else ""
-        if not os.path.isfile(python):
-            wx.MessageBox("KiCad 10's Python was not found. Run install.ps1 again.",
+        python = config.kicad_python(gui=True)
+        if not python:
+            wx.MessageBox("KiCad 10's Python was not found. Run the installer again.",
                           "PowerLab Assistant", wx.OK | wx.ICON_WARNING)
             return
         from .launch import toggle

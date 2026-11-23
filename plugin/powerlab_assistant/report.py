@@ -29,7 +29,7 @@ def note_event(kind, detail=""):
 
 
 def scrub(text):
-    """Remove paths, the Windows user name and e-mail addresses."""
+    """Remove paths, the user name and e-mail addresses."""
     if not text:
         return ""
     known = [
@@ -38,6 +38,7 @@ def scrub(text):
         (config.kicad_bin(), "<kicad>"),
         (os.environ.get("LOCALAPPDATA", ""), "<localappdata>"),
         (os.environ.get("APPDATA", ""), "<appdata>"),
+        (os.path.dirname(config.CONFIG_DIR), "<appdata>"),  # macOS: ~/Library/Application Support
         (os.path.expanduser("~"), "<home>"),
     ]
     for path, label in sorted(known, key=lambda kv: -len(kv[0])):
@@ -50,7 +51,7 @@ def scrub(text):
     text = re.sub(r"(?<![<\w])[A-Za-z]:[\\/][^\s\"'<>|,;)]*", "<path>", text)  # other drive paths
     text = re.sub(r"\\\\[^\s\"'<>|]+", "<path>", text)  # UNC paths
     text = re.sub(r"[\w.+-]+@[\w-]+\.[\w.-]+", "<email>", text)
-    user = os.environ.get("USERNAME", "")
+    user = os.environ.get("USERNAME", "") or os.environ.get("USER", "")
     if len(user) > 2:
         text = re.sub(re.escape(user), "<user>", text, flags=re.IGNORECASE)
     return text

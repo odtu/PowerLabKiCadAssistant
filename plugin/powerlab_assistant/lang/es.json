@@ -191,5 +191,6 @@
  "Export Gerbers and drill files for PCBWay": "Exporta los Gerbers y los archivos de taladrado para PCBWay",
  "Your edited library files are kept in {backup}.": "Tus archivos de biblioteca editados se guardan en {backup}.",
  "The library update changes files you've edited here ({names}). Share your edits first, or set them aside: they're copied to a backup folder next to the library and the update goes ahead.": "La actualización de la biblioteca cambia archivos que has editado aquí ({names}). Comparte primero tus cambios o apártalos: se copian a una carpeta de copia de seguridad junto a la biblioteca y la actualización continúa.",
- "Set aside and update": "Apartar y actualizar"
+ "Set aside and update": "Apartar y actualizar",
+ "Claude changed the schematic. Use File → Revert in KiCad to see it. To let the panel reload it for you, turn on KiCad in System Settings → Privacy & Security → Accessibility.": "Claude cambió el esquema. Use File → Revert en KiCad para verlo. Para que el panel lo recargue por usted, active KiCad en System Settings → Privacy & Security → Accessibility."
 }

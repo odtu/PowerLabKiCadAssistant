@@ -191,5 +191,6 @@
  "Export Gerbers and drill files for PCBWay": "PCBWay için Gerber ve delik (drill) dosyalarını dışa aktar",
  "Your edited library files are kept in {backup}.": "Düzenlediğin kütüphane dosyaları {backup} klasöründe saklanıyor.",
  "The library update changes files you've edited here ({names}). Share your edits first, or set them aside: they're copied to a backup folder next to the library and the update goes ahead.": "Kütüphane güncellemesi burada düzenlediğin dosyaları ({names}) değiştiriyor. Önce düzenlemelerini paylaş ya da kenara ayır: kütüphanenin yanındaki bir yedek klasörüne kopyalanırlar ve güncelleme devam eder.",
- "Set aside and update": "Kenara ayır ve güncelle"
+ "Set aside and update": "Kenara ayır ve güncelle",
+ "Claude changed the schematic. Use File → Revert in KiCad to see it. To let the panel reload it for you, turn on KiCad in System Settings → Privacy & Security → Accessibility.": "Claude şematiği değiştirdi. Görmek için KiCad'de File → Revert kullanın. Panelin sizin yerinize yeniden yüklemesi için System Settings → Privacy & Security → Accessibility altında KiCad'i açın."
 }

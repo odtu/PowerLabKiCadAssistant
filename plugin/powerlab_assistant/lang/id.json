@@ -191,5 +191,6 @@
  "Export Gerbers and drill files for PCBWay": "Ekspor file Gerber dan drill untuk PCBWay",
  "Your edited library files are kept in {backup}.": "Berkas pustaka yang Anda ubah disimpan di {backup}.",
  "The library update changes files you've edited here ({names}). Share your edits first, or set them aside: they're copied to a backup folder next to the library and the update goes ahead.": "Pembaruan pustaka mengubah berkas yang Anda ubah di sini ({names}). Bagikan perubahan Anda terlebih dahulu, atau sisihkan: berkas disalin ke folder cadangan di samping pustaka dan pembaruan dilanjutkan.",
- "Set aside and update": "Sisihkan dan perbarui"
+ "Set aside and update": "Sisihkan dan perbarui",
+ "Claude changed the schematic. Use File → Revert in KiCad to see it. To let the panel reload it for you, turn on KiCad in System Settings → Privacy & Security → Accessibility.": "Claude mengubah skematik. Gunakan File → Revert di KiCad untuk melihatnya. Agar panel memuat ulang untuk Anda, aktifkan KiCad di System Settings → Privacy & Security → Accessibility."
 }

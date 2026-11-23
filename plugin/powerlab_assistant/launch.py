@@ -41,7 +41,7 @@ def toggle_running_panel(editor, kicad_pid):
 
 def start_panel(python, editor, kicad_pid):
     env = dict(os.environ)  # keeps KICAD_API_SOCKET / KICAD_API_TOKEN when KiCad set them
-    for var in ("PYTHONHOME", "PYTHONPATH"):
+    for var in ("PYTHONHOME", "PYTHONPATH", "PYTHONEXECUTABLE", "__PYVENV_LAUNCHER__"):
         env.pop(var, None)
     env["POWERLAB_ASSISTANT_STANDALONE"] = "1"
     env["POWERLAB_ASSISTANT_EDITOR"] = editor
@@ -49,8 +49,12 @@ def start_panel(python, editor, kicad_pid):
     # KiCad's Python ignores PYTHONPATH, so put the package on the path in code.
     bootstrap = (f"import sys; sys.path.insert(0, {os.path.dirname(PACKAGE)!r}); "
                  "from powerlab_assistant.standalone import main; main()")
-    subprocess.Popen([python, "-c", bootstrap], env=env, cwd=os.path.expanduser("~"),
-                     creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP)
+    if os.name == "nt":
+        detach = {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
+    else:  # its own session: the panel outlives the button's process (and its venv Python)
+        detach = {"start_new_session": True, "stdin": subprocess.DEVNULL,
+                  "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+    subprocess.Popen([python, "-c", bootstrap], env=env, cwd=os.path.expanduser("~"), **detach)
 
 
 def toggle(python, editor, kicad_pid):
