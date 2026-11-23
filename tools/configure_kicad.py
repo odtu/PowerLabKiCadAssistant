@@ -1,10 +1,11 @@
 """Point KiCad 10 at a git clone of the METU Power Lab library, and (optionally)
 turn on KiCad's API server for the schematic panel.
 
-Run by install.ps1 with KiCad's Python while KiCad is closed (KiCad rewrites its
-settings on exit). Every file it touches is backed up first.
+Run by install.ps1 (Windows) or install.sh (macOS) with KiCad's Python while KiCad is
+closed (KiCad rewrites its settings on exit). Every file it touches is backed up first.
 
     python configure_kicad.py --library D:\\path\\to\\PowerLabKiCadLibraries [--enable-api] [--dry-run]
+    python configure_kicad.py --library ~/Documents/PowerLabKiCadLibraries --enable-api --python <KiCad's python3>
 """
 
 import argparse
@@ -15,9 +16,13 @@ import shutil
 import sys
 import time
 
-APPDATA = os.environ.get("APPDATA", os.path.expanduser("~"))  # Windows; fallback keeps tests importable on Linux
-KICAD_CONFIG = os.path.join(APPDATA, "kicad", "10.0")
-BACKUP_ROOT = os.path.join(APPDATA, "PowerLabKiCadAssistant", "backup")
+if sys.platform == "darwin":
+    KICAD_CONFIG = os.path.expanduser("~/Library/Preferences/kicad/10.0")
+    BACKUP_ROOT = os.path.expanduser("~/Library/Application Support/PowerLabKiCadAssistant/backup")
+else:
+    APPDATA = os.environ.get("APPDATA", os.path.expanduser("~"))  # Windows; fallback keeps tests importable on Linux
+    KICAD_CONFIG = os.path.join(APPDATA, "kicad", "10.0")
+    BACKUP_ROOT = os.path.join(APPDATA, "PowerLabKiCadAssistant", "backup")
 LIB_PREFIX = "METUPowerLab_"
 TABLES = (
     ("sym-lib-table", "symbols", ".kicad_sym", "METUPOWERLAB_SYMBOLS"),
@@ -37,7 +42,12 @@ def backup(paths, dry):
     return folder
 
 
-def set_path_variables(common, library, enable_api, kicad_bin):
+def plugin_python(kicad_bin, python=""):
+    """The Python KiCad runs plugins with: the one given, else Windows' pythonw.exe in bin."""
+    return python or os.path.join(kicad_bin, "pythonw.exe")
+
+
+def set_path_variables(common, library, enable_api, kicad_bin, python=""):
     with open(common, encoding="utf-8") as f:
         data = json.load(f)
     changes = []
@@ -52,8 +62,9 @@ def set_path_variables(common, library, enable_api, kicad_bin):
     if enable_api:
         api = data.setdefault("api", {})
         api["enable_server"] = True
-        api["interpreter_path"] = os.path.join(kicad_bin, "pythonw.exe")
-        changes.append("KiCad API server on; plugin Python = KiCad 10's pythonw.exe")
+        api["interpreter_path"] = plugin_python(kicad_bin, python)
+        changes.append("KiCad API server on; plugin Python = KiCad 10's "
+                       + os.path.basename(api["interpreter_path"]))
     return data, changes
 
 
@@ -96,6 +107,7 @@ def main():
     ap.add_argument("--library", default="")
     ap.add_argument("--enable-api", action="store_true")
     ap.add_argument("--kicad-bin", default=os.path.dirname(sys.executable))
+    ap.add_argument("--python", default="", help="KiCad's Python for plugins (default: bin's pythonw.exe)")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
@@ -109,7 +121,7 @@ def main():
     folder = backup([common, *tables], args.dry_run)
     print(f"Backup: {folder}")
 
-    data, changes = set_path_variables(common, library, args.enable_api, args.kicad_bin)
+    data, changes = set_path_variables(common, library, args.enable_api, args.kicad_bin, args.python)
     results = []
     for (table, sub, suffix, var), path in zip(TABLES, tables):
         text, repointed, missing = update_table(path, library, sub, suffix, var)

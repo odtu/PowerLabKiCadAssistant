@@ -3,7 +3,8 @@
 The powerlab-design-review skill has Claude write design-review/design-review.md in the
 project folder. When that run ends, the panel turns the file into HTML (its images
 embedded) for the chat, and prints the same HTML to design-review.pdf next to it with
-Microsoft Edge, which every Windows 10 and 11 has, run headless. Nothing leaves the computer.
+Microsoft Edge, which every Windows 10 and 11 has, run headless (on macOS: Edge, Chrome,
+Chromium or Brave, whichever is installed). Nothing leaves the computer.
 """
 
 import base64
@@ -13,6 +14,7 @@ import pathlib
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 
 from .common import CREATE_NO_WINDOW
@@ -23,11 +25,21 @@ IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
                ".gif": "image/gif", ".webp": "image/webp"}
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 PDF_TIMEOUT = 120  # seconds; a report with a dozen board views prints in a few
-EDGE_CANDIDATES = [
-    os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"),
-    os.path.expandvars(r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe"),
-    os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\Edge\Application\msedge.exe"),
-]
+if sys.platform == "darwin":
+    # Chromium browsers print the same way (--headless --print-to-pdf); in the app bundles
+    # in /Applications or ~/Applications.
+    EDGE_CANDIDATES = [os.path.join(root, app, "Contents", "MacOS", exe)
+                       for root in ("/Applications", os.path.expanduser("~/Applications"))
+                       for app, exe in (("Microsoft Edge.app", "Microsoft Edge"),
+                                        ("Google Chrome.app", "Google Chrome"),
+                                        ("Chromium.app", "Chromium"),
+                                        ("Brave Browser.app", "Brave Browser"))]
+else:
+    EDGE_CANDIDATES = [
+        os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"),
+        os.path.expandvars(r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe"),
+        os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\Edge\Application\msedge.exe"),
+    ]
 SEVERITIES = ("critical", "high", "medium", "low", "cosmetic")
 
 IMAGE_LINE = re.compile(r"^\s*!\[([^\]]*)\]\(([^)]+)\)\s*$")

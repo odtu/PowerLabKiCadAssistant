@@ -4,20 +4,20 @@ KiCadSource serves both editors from the one standalone panel, talking to KiCad 
 IPC API (Preferences > Plugins > Enable KiCad API).
 """
 
-import ctypes
 import glob
 import json
 import os
 import re
+import threading
 import time
 from dataclasses import dataclass, field
 
-from . import instances
+from . import config, instances
 from .library import library_context
 
-if os.name == "nt":
+if os.name == "nt" or config.IS_MAC:
     from . import kicad_window
-else:  # the panel only runs on Windows; this keeps the module importable for tests on Linux CI
+else:  # the panel runs on Windows and macOS; this keeps the module importable for tests on Linux CI
     kicad_window = None
 
 
@@ -46,10 +46,11 @@ def unreachable_hint(processes, shared_by=0):
         return RESTART_HINT
     stale = [pid for pid, visible in processes if not visible]
     if len(processes) > 1 and stale:
+        where = ("Activity Monitor (search for kicad, that process ID, then Quit > Force Quit)"
+                 if config.IS_MAC else "Task Manager > Details > kicad.exe (that process ID)")
         return (f"KiCad isn't answering because another KiCad is still running in the background "
                 f"without a window (process {', '.join(map(str, stale))}) and is holding KiCad's "
-                "connection. End it in Task Manager > Details > kicad.exe (that process ID), "
-                "then restart KiCad.")
+                f"connection. End it in {where}, then restart KiCad.")
     if not processes:
         return "KiCad isn't running. Start KiCad and open the schematic or the board, then try again."
     return ("Can't reach KiCad. Turn on Preferences > Plugins > Enable KiCad API, then restart "
@@ -73,10 +74,15 @@ def short_list(names, limit=6):
 
 
 def clipboard_sequence():
-    return ctypes.windll.user32.GetClipboardSequenceNumber()
+    """Changes whenever anything is copied (0 where it can't be read)."""
+    sequence = getattr(kicad_window, "clipboard_sequence", None)
+    return sequence() if sequence else 0
 
 
 def read_clipboard_text():
+    own = getattr(kicad_window, "clipboard_text", None)
+    if own:  # macOS: safe off the GUI thread
+        return own()
     import wx
 
     if not wx.TheClipboard.Open():
@@ -133,12 +139,16 @@ class KiCadSource:
         ("Export Gerbers for PCBWay", "Export Gerbers and drill files for PCBWay"),
     ]
 
+    lock = threading.RLock()  # each instance gets its own in __init__
+
     def __init__(self, editor="schematic", pid=0):
         self.editor = editor  # the editor the user worked in last ("pcb" or "schematic")
         self.pid = pid  # the KiCad process this panel belongs to; 0: whichever KiCad answers
         self.socket = None  # its API's ipc:// address, None while it has none
         self.token = None  # first connect: the token KiCad put in the launch environment
         self.down_until = 0.0
+        # On macOS the panel polls KiCad off the GUI thread; one call on the connection at a time.
+        self.lock = threading.RLock()
         self.connect()
         self.clip_seq = clipboard_sequence()  # ignore whatever was copied before the panel opened
         self.selected = []  # in the schematic editor
@@ -172,6 +182,10 @@ class KiCadSource:
         stale, so reconnect once with a fresh one; while KiCad is unreachable, fail fast
         for a few seconds instead of stalling the panel on every poll. KiCad's own errors
         (e.g. an editor that isn't open) are passed on as they are."""
+        with self.lock:
+            return self._call(fn)
+
+    def _call(self, fn):
         from kipy.errors import ApiError
 
         if time.time() < self.down_until:
@@ -231,7 +245,7 @@ class KiCadSource:
     def project_dir(self, sch_name):
         """The API doesn't say where the schematic lives; KiCad's recent-projects list does."""
         try:
-            with open(os.path.join(os.environ["APPDATA"], "kicad", "10.0", "kicad.json"), encoding="utf-8") as f:
+            with open(os.path.join(config.KICAD_CONFIG, "kicad.json"), encoding="utf-8") as f:
                 history = json.load(f).get("system", {}).get("file_history", [])
         except (OSError, ValueError, KeyError):
             return None
@@ -256,6 +270,10 @@ class KiCadSource:
         the user's clipboard back. `owner` is a window of this process; calls done()."""
         import wx
 
+        if not getattr(kicad_window, "DRIVES_COPY", True):  # macOS: the user's own Cmd+C only
+            self.poll_clipboard()
+            done()
+            return
         hwnd = self.editor_window()
         if not hwnd:
             done()
@@ -326,7 +344,10 @@ class KiCadSource:
             "live in the PCB editor.",
             "The message state says which editor the user is working in, which editors are open, "
             "the sheet shown in the schematic editor and what is selected in each editor (the "
-            "schematic selection is read via the editor's Edit > Copy).",
+            + ("schematic selection is read via the editor's Edit > Copy)."
+               if getattr(kicad_window, "DRIVES_COPY", True) else
+               "schematic selection is what the user last copied with Cmd+C in the schematic "
+               "editor; ask them to select and copy parts if it matters)."),
             library_context(),
         ]
         state = [f"The user is working in the {EDITOR_NAMES[self.editor]}."]
@@ -442,6 +463,11 @@ class KiCadSource:
 
     def unreachable_status(self):
         return unreachable_chip(kicad_window.kicad_processes(), self.shared_by())
+
+    def window_access(self):
+        """Why the editor windows can't be driven ("" when they can): on macOS, a missing
+        Accessibility permission."""
+        return getattr(kicad_window, "access_error", "")
 
     def process_summary(self):
         """For problem reports: how many kicad.exe run, and how many have no window."""
