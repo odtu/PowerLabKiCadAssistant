@@ -157,6 +157,9 @@ To remove it later, run `uninstall.ps1`.
 4. Sign in to Claude Code once: run `claude` in Terminal, follow the login, then type `/exit`.
 5. In the **Schematic Editor**, go to **KiCad → Settings → Schematic Editor → Toolbars** and add **IPC/Scripting plugins** to the **Top main** toolbar.
 6. The first time the panel saves or reloads the schematic, macOS asks whether KiCad may control your computer. Allow it (**System Settings → Privacy & Security → Accessibility**): KiCad 10 has no API for that, so the panel clicks **File → Save** and **File → Revert** itself. For that moment KiCad comes to the front, then the focus goes back.
+7. The shield button in the panel's header lists what macOS allows KiCad, and so the panel and Claude: Accessibility, Automation of System Events, and the project and library folders. **Ask** brings up macOS's own question; **Open Settings** opens the right page of System Settings.
+
+   <p align="center"><img src="docs/images/macos-permissions.png" width="60%" alt="The panel's macOS permissions sheet: Accessibility, Automation of System Events, the project folder and the library folder, each allowed"></p>
 
 To remove it later, run `/bin/bash uninstall.sh`.
 

@@ -186,6 +186,182 @@ def osascript_in_background(script):
     return True
 
 
+# ---- Accessibility API (the fast path) --------------------------------------------------
+# Each osascript call takes 130-170 ms (a process, then an Apple event to System Events), and
+# the panel asks for KiCad's window titles every second. Read straight from the Accessibility
+# API they take under a millisecond. It needs the same Accessibility permission System
+# Events' UI scripting does; without it (or when an app doesn't answer), the functions
+# below return None and the callers fall back to AppleScript.
+
+AX_NOT_TRUSTED = -25211  # kAXErrorAPIDisabled
+AX_NO_VALUE = -25212
+UTF8 = 0x08000100
+
+
+class _AXLib:
+    def __init__(self):
+        v = ctypes.c_void_p
+        self.ax = ax = ctypes.cdll.LoadLibrary(
+            "/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices")
+        self.cf = cf = ctypes.cdll.LoadLibrary(
+            "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+        ax.AXIsProcessTrusted.restype = ctypes.c_bool
+        ax.AXIsProcessTrustedWithOptions.restype = ctypes.c_bool
+        ax.AXIsProcessTrustedWithOptions.argtypes = [v]
+        ax.AXUIElementCreateApplication.restype = v
+        ax.AXUIElementCreateApplication.argtypes = [ctypes.c_int]
+        ax.AXUIElementCopyAttributeValue.restype = ctypes.c_int32
+        ax.AXUIElementCopyAttributeValue.argtypes = [v, v, ctypes.POINTER(v)]
+        cf.CFStringCreateWithCString.restype = v
+        cf.CFStringCreateWithCString.argtypes = [v, ctypes.c_char_p, ctypes.c_uint32]
+        cf.CFStringGetLength.restype = ctypes.c_long
+        cf.CFStringGetLength.argtypes = [v]
+        cf.CFStringGetCString.restype = ctypes.c_bool
+        cf.CFStringGetCString.argtypes = [v, ctypes.c_char_p, ctypes.c_long, ctypes.c_uint32]
+        cf.CFArrayGetCount.restype = ctypes.c_long
+        cf.CFArrayGetCount.argtypes = [v]
+        cf.CFArrayGetValueAtIndex.restype = v
+        cf.CFArrayGetValueAtIndex.argtypes = [v, ctypes.c_long]
+        cf.CFGetTypeID.restype = ctypes.c_ulong
+        cf.CFGetTypeID.argtypes = [v]
+        cf.CFStringGetTypeID.restype = ctypes.c_ulong
+        cf.CFRelease.argtypes = [v]
+        cf.CFDictionaryCreate.restype = v
+        cf.CFDictionaryCreate.argtypes = [v, ctypes.POINTER(v), ctypes.POINTER(v), ctypes.c_long, v, v]
+        self.string_type = cf.CFStringGetTypeID()
+        self.true = v.in_dll(cf, "kCFBooleanTrue")
+        self.names = {name: cf.CFStringCreateWithCString(None, name.encode(), UTF8)  # kept for good
+                      for name in ("AXWindows", "AXTitle", "AXFocusedWindow", "AXTrustedCheckOptionPrompt")}
+
+    def text(self, ref):
+        if not ref or self.cf.CFGetTypeID(ref) != self.string_type:
+            return None
+        size = self.cf.CFStringGetLength(ref) * 4 + 1
+        buf = ctypes.create_string_buffer(size)
+        return buf.value.decode("utf-8", "replace") if self.cf.CFStringGetCString(ref, buf, size, UTF8) else None
+
+    def attribute(self, element, name):
+        """(error, value); a value that isn't None must be CFRelease'd."""
+        out = ctypes.c_void_p()
+        err = self.ax.AXUIElementCopyAttributeValue(element, self.names[name], ctypes.byref(out))
+        return err, (out.value if err == 0 else None)
+
+
+_axlib = None
+_ax_lock = threading.Lock()
+
+
+def _ax():
+    global _axlib
+    with _ax_lock:
+        if _axlib is None:
+            _axlib = _AXLib()
+    return _axlib
+
+
+def accessibility_trusted(ask=False):
+    """Whether KiCad (the app the panel runs under) has the Accessibility permission. With
+    ask, macOS shows its "would like to control this computer" prompt if it isn't."""
+    try:
+        lib = _ax()
+        if not ask:
+            return bool(lib.ax.AXIsProcessTrusted())
+        key = ctypes.c_void_p(lib.names["AXTrustedCheckOptionPrompt"])
+        value = ctypes.c_void_p(lib.true.value)
+        options = lib.cf.CFDictionaryCreate(None, ctypes.byref(key), ctypes.byref(value), 1, None, None)
+        try:
+            return bool(lib.ax.AXIsProcessTrustedWithOptions(options))
+        finally:
+            lib.cf.CFRelease(options)
+    except (OSError, AttributeError, ValueError):
+        return False
+
+
+def _not_trusted():
+    global access_error
+    access_error = ("The panel isn't allowed to control KiCad's windows. Turn on KiCad in "
+                    "System Settings > Privacy & Security > Accessibility, then restart KiCad.")
+
+
+def ax_window_titles(pid):
+    """Titles of the process's windows, front first, from the Accessibility API; None if it
+    can't tell (no permission, or the app didn't answer)."""
+    global access_error
+    try:
+        lib = _ax()
+    except (OSError, AttributeError, ValueError):
+        return None
+    app = lib.ax.AXUIElementCreateApplication(int(pid))
+    if not app:
+        return None
+    try:
+        err, windows = lib.attribute(app, "AXWindows")
+        if err == AX_NO_VALUE:
+            return []
+        if err:
+            if err == AX_NOT_TRUSTED:
+                _not_trusted()
+            return None
+        try:
+            found = []
+            for i in range(lib.cf.CFArrayGetCount(windows)):
+                err, title = lib.attribute(lib.cf.CFArrayGetValueAtIndex(windows, i), "AXTitle")
+                if title:
+                    text = lib.text(title)
+                    lib.cf.CFRelease(title)
+                    if text:
+                        found.append(text)
+        finally:
+            lib.cf.CFRelease(windows)
+        access_error = ""
+        return found
+    finally:
+        lib.cf.CFRelease(app)
+
+
+def ax_focused_title(pid):
+    """Title of the process's focused window ("" if none), or None if it can't tell."""
+    try:
+        lib = _ax()
+    except (OSError, AttributeError, ValueError):
+        return None
+    app = lib.ax.AXUIElementCreateApplication(int(pid))
+    if not app:
+        return None
+    try:
+        err, window = lib.attribute(app, "AXFocusedWindow")
+        if err == AX_NO_VALUE:
+            return ""
+        if err:
+            if err == AX_NOT_TRUSTED:
+                _not_trusted()
+            return None
+        try:
+            err, title = lib.attribute(window, "AXTitle")
+            if not title:
+                return ""
+            try:
+                return lib.text(title) or ""
+            finally:
+                lib.cf.CFRelease(title)
+        finally:
+            lib.cf.CFRelease(window)
+    finally:
+        lib.cf.CFRelease(app)
+
+
+def frontmost_pid():
+    """Process id of the frontmost app (NSWorkspace; the panel's wx loop keeps it current),
+    or 0 if it can't tell."""
+    try:
+        objc = _runtime()
+        workspace = objc.send(objc.cls("NSWorkspace"), "sharedWorkspace")
+        app = objc.send(workspace, "frontmostApplication")
+        return objc.send(app, "processIdentifier", restype=ctypes.c_int) if app else 0
+    except (OSError, AttributeError, TypeError):
+        return 0
+
+
 def _process(pid):
     return f'(first process whose unix id is {int(pid)})'
 
@@ -203,9 +379,10 @@ def _names(script_tail, pid):
 
 
 def window_titles(pid):
-    """Titles of the KiCad's windows as KiCad shows them, front first; None if System
-    Events can't tell."""
-    return _names("name of every window", pid)
+    """Titles of the KiCad's windows as KiCad shows them, front first; None if neither the
+    Accessibility API nor System Events can tell."""
+    found = ax_window_titles(pid)
+    return found if found is not None else _names("name of every window", pid)
 
 
 def menu_bar(pid):
@@ -388,7 +565,9 @@ def _stem(title):
 def find_editor(kind="Schematic Editor", pid=0):
     """The '<project> — Schematic Editor' window of the KiCad with that process id (any
     KiCad if 0), or None."""
-    for window in top_windows():
+    # With the pid known, only its windows: listing every process costs a `ps`.
+    candidates = [Window(pid, english, shown) for english, shown in titles(pid)] if pid else top_windows()
+    for window in candidates:
         if window.title.endswith(kind) and (not pid or window.pid == pid):
             return window
     return None
@@ -407,6 +586,13 @@ def bring_to_front(window):
 
 def foreground_title(pid=0):
     """Title of the window the user is working in; "" if it isn't one of that KiCad's."""
+    front = frontmost_pid()
+    if front:
+        if pid and front != pid:
+            return ""  # e.g. the panel itself: no need to ask anything else
+        title = ax_focused_title(front)
+        if title is not None:
+            return english_title(front, title)
     out = osascript(
         'tell application "System Events"\n'
         '  set p to first process whose frontmost is true\n'
@@ -624,6 +810,18 @@ def clipboard_sequence():
         return 0
 
 
+def clipboard_text():
+    """The pasteboard's text ("" if none). NSPasteboard, not wx.TheClipboard: the panel
+    reads it from its background context poll, and wx's clipboard is the GUI thread's."""
+    try:
+        objc = _runtime()
+        text = objc.send(objc.pasteboard(), "stringForType:", objc.string("public.utf8-plain-text"),
+                         argtypes=(ctypes.c_void_p,))
+        return objc.text(text)
+    except (OSError, AttributeError, TypeError):
+        return ""
+
+
 MAX_CLIPBOARD = 64 * 1024 * 1024
 
 
@@ -674,3 +872,95 @@ def restore_clipboard(items, owner=None):
             objc.send(item, "release", restype=None)
     except (OSError, AttributeError, TypeError):
         pass
+
+
+# ---- permissions (the panel's macOS permissions sheet) ----------------------------------
+# The panel and Claude run as KiCad's child processes, so macOS asks and records every
+# permission for KiCad: turning one on in System Settings is turning it on for KiCad.
+
+SETTINGS_PANE = "x-apple.systempreferences:com.apple.preference.security?"
+PANES = {"accessibility": "Privacy_Accessibility", "automation": "Privacy_Automation",
+         "files": "Privacy_FilesAndFolders"}
+SYSTEM_EVENTS = b"com.apple.systemevents"
+AE_DENIED, AE_NOT_ASKED, AE_NOT_RUNNING = -1743, -1744, -600
+
+
+def settings_url(kind):
+    return SETTINGS_PANE + PANES.get(kind, "Privacy")
+
+
+def _fourcc(code):
+    return int.from_bytes(code.encode(), "big")
+
+
+def automation_permission(ask=False):
+    """Whether KiCad may send Apple events to System Events (to click its menus):
+    "granted", "denied", "not_asked" or "unknown". With ask, macOS asks the user if it
+    hasn't yet, and this waits for the answer."""
+
+    class AEDesc(ctypes.Structure):
+        _fields_ = [("descriptorType", ctypes.c_uint32), ("dataHandle", ctypes.c_void_p)]
+
+    try:
+        cs = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/CoreServices.framework/CoreServices")
+        cs.AECreateDesc.argtypes = [ctypes.c_uint32, ctypes.c_char_p, ctypes.c_long, ctypes.POINTER(AEDesc)]
+        cs.AECreateDesc.restype = ctypes.c_int16
+        cs.AEDeterminePermissionToAutomateTarget.argtypes = [ctypes.POINTER(AEDesc), ctypes.c_uint32,
+                                                             ctypes.c_uint32, ctypes.c_bool]
+        cs.AEDeterminePermissionToAutomateTarget.restype = ctypes.c_int32
+        cs.AEDisposeDesc.argtypes = [ctypes.POINTER(AEDesc)]
+    except (OSError, AttributeError):
+        return "unknown"
+    desc = AEDesc()
+    if cs.AECreateDesc(_fourcc("bund"), SYSTEM_EVENTS, len(SYSTEM_EVENTS), ctypes.byref(desc)):
+        return "unknown"
+    try:
+        for attempt in range(2):
+            err = cs.AEDeterminePermissionToAutomateTarget(
+                ctypes.byref(desc), _fourcc("****"), _fourcc("****"), bool(ask))
+            if err != AE_NOT_RUNNING or attempt:
+                break
+            # macOS can only tell once System Events runs; start it in the background.
+            try:
+                subprocess.run(["open", "-g", "-j", "-b", SYSTEM_EVENTS.decode()],
+                               capture_output=True, timeout=10)
+            except (OSError, subprocess.TimeoutExpired):
+                break
+            time.sleep(1)
+        return {0: "granted", AE_DENIED: "denied", AE_NOT_ASKED: "not_asked"}.get(err, "unknown")
+    finally:
+        cs.AEDisposeDesc(ctypes.byref(desc))
+
+
+def folder_access(path):
+    """"granted" if KiCad may read the folder, "denied" if macOS refuses (its Files and
+    Folders permission), None if it doesn't exist. Reading may make macOS ask first."""
+    if not path or not os.path.isdir(path):
+        return None
+    try:
+        os.listdir(path)
+        return "granted"
+    except PermissionError:
+        return "denied"
+    except OSError:
+        return "unknown"
+
+
+def permissions(folders=()):
+    """[{id, state, path?}] for the permissions sheet. folders: [(id, path)] to check."""
+    items = [{"id": "accessibility", "state": "granted" if accessibility_trusted() else "denied"},
+             {"id": "automation", "state": automation_permission()}]
+    for kind, path in folders:
+        state = folder_access(path)
+        if state:
+            items.append({"id": kind, "state": state, "path": path})
+    return items
+
+
+def ask_permission(kind):
+    """Make macOS ask the user for that permission (if it still can), then its state."""
+    if kind == "accessibility":
+        return "granted" if accessibility_trusted(ask=True) else "denied"
+    if kind == "automation":
+        return automation_permission(ask=True)
+    return "unknown"
