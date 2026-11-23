@@ -268,6 +268,10 @@ def platform_note(note, windows=config.IS_WINDOWS):
 
 PANEL_NOTE = platform_note(PANEL_NOTE)
 
+# macOS reads KiCad's windows through the Accessibility API or AppleScript; the context poll
+# runs off the GUI thread there. Windows keeps its (fast, Win32) poll on the GUI thread.
+POLL_IN_BACKGROUND = config.IS_MAC
+
 DEFAULT_MODEL = "claude-opus-5-5"
 DEFAULT_EFFORT = "high"  # --effort; settings.json "effort" overrides (low, medium, high, xhigh, max)
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
@@ -517,6 +521,7 @@ class ClaudePanel(wx.Frame):
         self.unreachable_text = "Not connected to KiCad (is its API server on?)"
         self.unreachable_at = 0.0
         self.library_checked = 0.0
+        self.polling = False  # a context poll is running in the background
         _live_panel = self
         install_excepthook()
 
@@ -632,6 +637,8 @@ class ClaudePanel(wx.Frame):
         self.pending = []
         self.emit(**i18n.page_event(self.lang))
         self.emit("suggestions", items=[{"label": l, "text": t} for l, t in self.source.suggestions])
+        if config.IS_MAC:
+            self.emit("permissions_available")
         self.emit("models", current=self.model,
                   items=[{"id": i, "label": l, "short": s, "hint": h} for i, l, s, h in MODELS])
         if self.settings.get("notice_version", 0) < config.NOTICE_VERSION:
@@ -695,6 +702,52 @@ class ClaudePanel(wx.Frame):
     def msg_open(self, msg):
         if os.path.isfile(msg.get("path", "")):
             open_path(msg["path"])
+
+    # ---- macOS permissions -------------------------------------------------
+
+    def permission_folders(self):
+        folders = []
+        if self.chat_cwd and self.chat_cwd != os.path.expanduser("~"):
+            folders.append(("project", self.chat_cwd))
+        lib = config.library_path()
+        if lib:
+            folders.append(("library", lib))
+        return folders
+
+    def msg_permissions(self, msg):
+        """The permissions sheet: what macOS allows KiCad (and so the panel and Claude)."""
+        if not config.IS_MAC:
+            return
+        from . import kicad_window
+
+        folders = self.permission_folders()
+        self.emit("permissions_sheet", checking=True, items=[])
+        self.in_background(lambda: kicad_window.permissions(folders),
+                           lambda items: self.emit("permissions_sheet", items=[] if isinstance(
+                               items, Exception) else items))
+
+    def msg_permission_ask(self, msg):
+        if not config.IS_MAC:
+            return
+        from . import kicad_window
+
+        kind = str(msg.get("id", ""))
+        folders = self.permission_folders()
+
+        def work():
+            kicad_window.ask_permission(kind)  # waits while macOS asks
+            return kicad_window.permissions(folders)
+
+        self.in_background(work, lambda items: self.emit("permissions_sheet", items=[] if isinstance(
+            items, Exception) else items))
+
+    def msg_permission_settings(self, msg):
+        if not config.IS_MAC:
+            return
+        from . import kicad_window
+
+        subprocess.Popen(["open", kicad_window.settings_url(str(msg.get("id", "")))],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def msg_locate(self, msg):
         """A `kicad:` link was clicked: show that place in the PCB editor (and, through
@@ -805,16 +858,38 @@ class ClaudePanel(wx.Frame):
             return None
 
     def push_context(self):
+        """Show what KiCad has open and selected (every second while the panel is shown)."""
+        if not POLL_IN_BACKGROUND:
+            self.apply_context(*self.gather_context())
+            return
+        # Asking KiCad and reading its windows can take a while (KiCad busy filling zones,
+        # the first look at its language): never on the GUI thread, never two at once.
+        if self.polling:
+            return
+        self.polling = True
+
+        def done(result):
+            self.polling = False
+            if not isinstance(result, Exception):
+                self.apply_context(*result)
+
+        self.in_background(self.gather_context, done)
+
+    def gather_context(self):
         snap = self.snapshot()
-        if snap:
-            items = snap.chips
-        else:
+        status_text = None
+        if not snap:
             # Say why, refreshed at most every 15 s (it lists running processes).
             status = getattr(self.source, "unreachable_status", None)
             if status and time.time() - self.unreachable_at > 15:
-                self.unreachable_text = status()
                 self.unreachable_at = time.time()
-            items = [self.unreachable_text]
+                status_text = status()
+        return snap, status_text
+
+    def apply_context(self, snap, status_text=None):
+        if status_text is not None:
+            self.unreachable_text = status_text
+        items = snap.chips if snap else [self.unreachable_text]
         if snap and snap.cwd != self.chat_cwd and not self.proc and not self.sending:
             self.open_chat(snap.cwd)
         if items != self.context_items and self.ready:

@@ -181,6 +181,7 @@ class MacWindowTests(unittest.TestCase):
                    mock.patch.object(mac, "menu_bar", lambda pid: self.bar),
                    mock.patch.object(mac, "processes", lambda: {501: (1, "kicad"), 7: (1, "Finder")}),
                    mock.patch.object(mac, "osascript", self.fake_osascript),
+                   mock.patch.object(mac, "frontmost_pid", lambda: 0),  # not the real Mac's
                    mock.patch.object(mac, "osascript_in_background", lambda s: self.background.append(s) or True),
                    mock.patch.object(mac, "preferred_languages", lambda: ["tr_TR", "tr"]),
                    mock.patch.object(mac, "catalog", lambda lang: TR if lang == "tr" else {}),
@@ -348,6 +349,66 @@ class MacWindowTests(unittest.TestCase):
         with mock.patch.object(sources, "kicad_window", mac):
             source.capture_selection(None, lambda: done.append(1))
         self.assertEqual((polled, done), ([1], [1]))
+
+
+class MacFastWindowTests(unittest.TestCase):
+    """KiCad's windows are read through the Accessibility API (under 1 ms), AppleScript
+    (130-170 ms a call) only when it can't tell: the panel asks every second."""
+
+    def test_titles_from_the_accessibility_api(self):
+        with mock.patch.object(mac, "ax_window_titles", lambda pid: ["esp — Şematik Düzenleyici"]), \
+                mock.patch.object(mac, "osascript", side_effect=AssertionError("no AppleScript")):
+            self.assertEqual(mac.window_titles(501), ["esp — Şematik Düzenleyici"])
+
+    def test_titles_fall_back_to_applescript(self):
+        with mock.patch.object(mac, "ax_window_titles", lambda pid: None), \
+                mock.patch.object(mac, "osascript", lambda script: "a" + mac.SEPARATOR + "b"):
+            self.assertEqual(mac.window_titles(501), ["a", "b"])
+
+    def test_foreground_title_without_applescript(self):
+        no_script = mock.patch.object(mac, "osascript", side_effect=AssertionError("no AppleScript"))
+        with no_script, mock.patch.object(mac, "frontmost_pid", lambda: 42):
+            self.assertEqual(mac.foreground_title(501), "")  # the panel, or any other app
+        with no_script, mock.patch.object(mac, "frontmost_pid", lambda: 501), \
+                mock.patch.object(mac, "ax_focused_title", lambda pid: "esp — Schematic Editor"), \
+                mock.patch.object(mac, "_languages", {501: {}}):
+            self.assertEqual(mac.foreground_title(501), "esp — Schematic Editor")
+
+    def test_find_editor_of_a_known_kicad_lists_no_processes(self):
+        with mock.patch.object(mac, "processes", side_effect=AssertionError("no ps")), \
+                mock.patch.object(mac, "window_titles", lambda pid: ["esp — Schematic Editor"]), \
+                mock.patch.object(mac, "_languages", {501: {}}):
+            self.assertEqual(mac.find_editor(pid=501).title, "esp — Schematic Editor")
+
+
+class MacPermissionTests(unittest.TestCase):
+    def test_settings_links(self):
+        self.assertTrue(mac.settings_url("accessibility").endswith("?Privacy_Accessibility"))
+        self.assertTrue(mac.settings_url("automation").endswith("?Privacy_Automation"))
+        self.assertTrue(mac.settings_url("files").endswith("?Privacy_FilesAndFolders"))
+
+    def test_folder_access(self):
+        with tempfile.TemporaryDirectory() as folder:
+            self.assertEqual(mac.folder_access(folder), "granted")
+            with mock.patch.object(mac.os, "listdir", side_effect=PermissionError):
+                self.assertEqual(mac.folder_access(folder), "denied")
+            self.assertIsNone(mac.folder_access(os.path.join(folder, "missing")))
+
+    def test_sheet_items(self):
+        with tempfile.TemporaryDirectory() as folder, \
+                mock.patch.object(mac, "accessibility_trusted", lambda ask=False: False), \
+                mock.patch.object(mac, "automation_permission", lambda ask=False: "not_asked"):
+            items = mac.permissions([("project", folder), ("library", os.path.join(folder, "x"))])
+        self.assertEqual(items, [{"id": "accessibility", "state": "denied"},
+                                 {"id": "automation", "state": "not_asked"},
+                                 {"id": "project", "state": "granted", "path": folder}])
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS only")
+    def test_live_checks_answer(self):
+        self.assertIn(mac.automation_permission(), ("granted", "denied", "not_asked", "unknown"))
+        self.assertIsInstance(mac.accessibility_trusted(), bool)
+        self.assertIsInstance(mac.frontmost_pid(), int)
+        self.assertIn(mac.ax_window_titles(os.getpid()), (None, []))  # no windows here
 
 
 class MacSocketTests(unittest.TestCase):

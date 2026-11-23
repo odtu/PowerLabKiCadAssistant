@@ -8,6 +8,7 @@ import glob
 import json
 import os
 import re
+import threading
 import time
 from dataclasses import dataclass, field
 
@@ -79,6 +80,9 @@ def clipboard_sequence():
 
 
 def read_clipboard_text():
+    own = getattr(kicad_window, "clipboard_text", None)
+    if own:  # macOS: safe off the GUI thread
+        return own()
     import wx
 
     if not wx.TheClipboard.Open():
@@ -135,12 +139,16 @@ class KiCadSource:
         ("Export Gerbers for PCBWay", "Export Gerbers and drill files for PCBWay"),
     ]
 
+    lock = threading.RLock()  # each instance gets its own in __init__
+
     def __init__(self, editor="schematic", pid=0):
         self.editor = editor  # the editor the user worked in last ("pcb" or "schematic")
         self.pid = pid  # the KiCad process this panel belongs to; 0: whichever KiCad answers
         self.socket = None  # its API's ipc:// address, None while it has none
         self.token = None  # first connect: the token KiCad put in the launch environment
         self.down_until = 0.0
+        # On macOS the panel polls KiCad off the GUI thread; one call on the connection at a time.
+        self.lock = threading.RLock()
         self.connect()
         self.clip_seq = clipboard_sequence()  # ignore whatever was copied before the panel opened
         self.selected = []  # in the schematic editor
@@ -174,6 +182,10 @@ class KiCadSource:
         stale, so reconnect once with a fresh one; while KiCad is unreachable, fail fast
         for a few seconds instead of stalling the panel on every poll. KiCad's own errors
         (e.g. an editor that isn't open) are passed on as they are."""
+        with self.lock:
+            return self._call(fn)
+
+    def _call(self, fn):
         from kipy.errors import ApiError
 
         if time.time() < self.down_until:
