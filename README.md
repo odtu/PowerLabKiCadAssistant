@@ -254,7 +254,7 @@ Reports are public, so don't add confidential details to the description.
 
 ## Contributing
 
-Bug reports, pull requests, translations and testing are welcome. Open pull requests against the `test` branch: `main` only changes when a tested version is released. [CONTRIBUTING.md](CONTRIBUTING.md) explains the setup, the tests, where the code is and the project's rules.
+Bug reports, pull requests, translations and testing are welcome. Open pull requests against the `test` branch: `main` only changes when a tested version is released. [CONTRIBUTING.md](CONTRIBUTING.md) explains the setup, the tests, where the code is and the project's rules. [CONTRIBUTORS.md](CONTRIBUTORS.md) lists the people who have helped.
 
 ## License
 

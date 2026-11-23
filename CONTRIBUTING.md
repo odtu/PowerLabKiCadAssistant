@@ -17,6 +17,7 @@ Thank you for helping. Bug reports, fixes, new platforms, translations and testi
 - If a change touches code shared by Windows and macOS, say which platform you couldn't try. CI runs the tests on Windows, Ubuntu and macOS.
 - The first CI run of a first-time contributor waits for a maintainer's approval. That's GitHub's rule, not a judgement.
 - Don't bump `VERSION` or write release notes; maintainers do that at release time.
+- Add yourself to [CONTRIBUTORS.md](CONTRIBUTORS.md) with your first pull request, if you like.
 
 ## Setting up
 
@@ -109,7 +110,7 @@ This project is built with Claude, and AI-assisted pull requests are welcome. Yo
 
 ## Security
 
-Please don't post details of a security problem in a public issue. Open an issue titled "Security contact" without the details, and a maintainer will get in touch.
+Please don't post details of a security problem in a public issue. Report it privately with **Report a vulnerability** on the repository's [Security tab](https://github.com/odtu/PowerLabKiCadAssistant/security): only you and the maintainers see it, and the details are published, if at all, after the fix is released.
 
 ## License
 
