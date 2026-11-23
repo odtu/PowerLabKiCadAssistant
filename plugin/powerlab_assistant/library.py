@@ -19,7 +19,7 @@ from .common import find_gh, run_quiet
 LIBRARY_DIRS = ("symbols", "footprints", "3dmodels")
 STANDARDS = os.path.join("HowToCreateNewDesign", "DesignRules.md")
 CHECKER = os.path.join("tools", "check_library.py")
-KICAD_CONFIG = os.path.join(os.environ.get("APPDATA", ""), "kicad", "10.0")
+KICAD_CONFIG = config.KICAD_CONFIG
 
 
 def git(path, *args, env=None, timeout=120):
@@ -263,7 +263,7 @@ def run_checker(path, files):
     targets = sorted({_check_target(f["path"]) for f in files if f["status"] != "D"} - {""})
     if not os.path.isfile(checker) or not targets:
         return None
-    python = os.path.join(config.kicad_bin(), "python.exe")
+    python = config.kicad_python()
     code, out = run_quiet([python, checker, *targets], cwd=path, timeout=300)
     return {"passed": code == 0, "output": out[-6000:]}
 

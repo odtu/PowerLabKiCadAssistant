@@ -8,14 +8,23 @@ makes every KiCad started afterwards use its own api-<pid>.sock, so the panel le
 """
 
 import os
+import sys
 import tempfile
 
-SOCKET_DIR = os.path.join(tempfile.gettempdir(), "kicad")
+# KiCad puts its socket in the temp folder, but in /tmp on macOS (a Unix socket's path may
+# be at most 104 bytes there, and $TMPDIR is long).
+SOCKET_DIR = "/tmp/kicad" if sys.platform == "darwin" else os.path.join(tempfile.gettempdir(), "kicad")
 SHARED = os.path.join(SOCKET_DIR, "api.sock")
+# Only Windows needs the placeholder: elsewhere api.sock is a real file while a KiCad listens
+# on it, so a second KiCad already picks api-<pid>.sock, and the first keeps the default one
+# that a plain Claude Code session's kicad tools look for.
+NEEDS_PLACEHOLDER = os.name == "nt"
 
 
 def ensure_placeholder():
     """Leave the file that makes KiCads started from now on use api-<pid>.sock."""
+    if not NEEDS_PLACEHOLDER:
+        return
     try:
         os.makedirs(SOCKET_DIR, exist_ok=True)
         if not os.path.exists(SHARED):

@@ -28,14 +28,17 @@ The installer downloads these from their official sources into `%LOCALAPPDATA%\P
 | [python-dotenv](https://pypi.org/project/python-dotenv/) | | BSD-3-Clause |
 | [numba](https://pypi.org/project/numba/) 0.68.0 (pinned wheel and SHA-256, see `install.ps1`), into `%LOCALAPPDATA%\PowerLabKiCadAssistant\pylib`, not KiCad's Python | PowerLab router's compiled search | BSD-2-Clause; code it contains from other projects (CPython, NumPy, NetworkX, cloudpickle, …) is listed with its licenses (PSF-2.0, BSD, MIT) in the wheel's `LICENSES.third-party` |
 | [llvmlite](https://pypi.org/project/llvmlite/) 0.50.0 (numba's compiler backend, same folder) | | BSD-2-Clause; the LLVM it bundles: Apache-2.0 WITH LLVM-exception (the wheel's `LICENSE.thirdparty`); the wheel also carries Microsoft's Visual C++ runtime (`msvcp140.dll`), under Microsoft's redistributable terms |
+| macOS (`install.sh`): [numba](https://pypi.org/project/numba/) 0.60.0 and [llvmlite](https://pypi.org/project/llvmlite/) 0.43.0 instead, the last releases for KiCad for macOS's Python 3.9 (pinned cp39 wheels and SHA-256 for arm64 and x86_64, see `install.sh`), into `~/Library/Application Support/PowerLabKiCadAssistant/pylib` | PowerLab router's compiled search | BSD-2-Clause, with the same third-party files in the wheels as above (no Visual C++ runtime) |
+| macOS (`install.sh`): [NumPy](https://numpy.org/) 2.0.2 (pinned cp39 wheel and SHA-256), into KiCad's Python user folder: KiCad for macOS doesn't ship NumPy | PowerLab router, KiCad MCP server | BSD-3-Clause; it bundles OpenBLAS and LAPACK (BSD-3-Clause), the GCC runtime (GPL-3.0 WITH GCC-exception-3.1) and libquadmath (LGPL-2.1-or-later), listed in the wheel's `LICENSE.txt` |
 
 ## Installed by you
 
 | Software | License |
 |---|---|
-| [KiCad 10](https://www.kicad.org/) (the panel runs inside it and uses its Python, `pcbnew` and the bundled wxPython and [NumPy](https://numpy.org/); the PowerLab router uses NumPy) | GPL-3.0; wxPython: wxWindows Library Licence; NumPy: BSD-3-Clause |
+| [KiCad 10](https://www.kicad.org/) (the panel runs inside it and uses its Python, `pcbnew` and the bundled wxPython and, on Windows, [NumPy](https://numpy.org/); the PowerLab router uses NumPy) | GPL-3.0; wxPython: wxWindows Library Licence; NumPy: BSD-3-Clause |
 | [Claude Code](https://docs.claude.com/claude-code) | Anthropic proprietary; used under your own Claude account and Anthropic's terms |
 | [Node.js](https://nodejs.org/), [Git](https://git-scm.com/), [GitHub CLI](https://cli.github.com/) (optional) | MIT; GPL-2.0 (Git); MIT |
+| macOS: a Chromium browser for review PDFs ([Google Chrome](https://www.google.com/chrome/), [Microsoft Edge](https://www.microsoft.com/edge), Chromium or Brave), used headless if one is installed | Proprietary (Chrome, Edge); MPL-2.0 (Brave); BSD-3-Clause (Chromium) |
 
 ## Used by this repository's GitHub workflows
 

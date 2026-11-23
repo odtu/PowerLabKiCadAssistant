@@ -191,5 +191,6 @@
  "Export Gerbers and drill files for PCBWay": "Xuất file Gerber và file khoan cho PCBWay",
  "Your edited library files are kept in {backup}.": "Các tệp thư viện bạn đã sửa được giữ trong {backup}.",
  "The library update changes files you've edited here ({names}). Share your edits first, or set them aside: they're copied to a backup folder next to the library and the update goes ahead.": "Bản cập nhật thư viện thay đổi các tệp bạn đã sửa ở đây ({names}). Hãy chia sẻ thay đổi của bạn trước, hoặc để riêng chúng: chúng được sao chép vào một thư mục sao lưu cạnh thư viện và quá trình cập nhật tiếp tục.",
- "Set aside and update": "Để riêng và cập nhật"
+ "Set aside and update": "Để riêng và cập nhật",
+ "Claude changed the schematic. Use File → Revert in KiCad to see it. To let the panel reload it for you, turn on KiCad in System Settings → Privacy & Security → Accessibility.": "Claude đã thay đổi sơ đồ nguyên lý. Dùng File → Revert trong KiCad để xem. Để bảng điều khiển tự tải lại giúp bạn, hãy bật KiCad trong System Settings → Privacy & Security → Accessibility."
 }

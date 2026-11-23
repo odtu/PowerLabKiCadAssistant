@@ -9571,10 +9571,10 @@ index 0000000..ce1be5d
 +    return min(pt_seg(p1, q1, q2), pt_seg(p2, q1, q2), pt_seg(q1, p1, p2), pt_seg(q2, p1, p2))
 diff --git a/python/commands/powerlab_router2/plan.py b/python/commands/powerlab_router2/plan.py
 new file mode 100644
-index 0000000..32ef387
+index 0000000..dd6f89b
 --- /dev/null
 +++ b/python/commands/powerlab_router2/plan.py
-@@ -0,0 +1,320 @@
+@@ -0,0 +1,325 @@
 +"""The routing plan (PowerLab router 2): what each net is to the board, from the schematic.
 +
 +The router has to decide who gets the room when not everything fits, which nets run together
@@ -9713,7 +9713,12 @@ index 0000000..32ef387
 +              r"C:\Program Files\KiCad\10.0\bin\kicad-cli.exe"):
 +        if c and os.path.isfile(c):
 +            return c
-+    return None
++    try:  # macOS and Linux: KiCad.app's Contents/MacOS, KICAD_CLI, the usual places
++        from utils.kicad_cli import resolve_kicad_cli
++
++        return resolve_kicad_cli()
++    except Exception:
++        return None
 +
 +
 +# --- roles ---------------------------------------------------------------------------------------
@@ -13068,16 +13073,17 @@ index 0000000..56671ef
 +    return False
 diff --git a/python/commands/powerlab_router2/search_nb.py b/python/commands/powerlab_router2/search_nb.py
 new file mode 100644
-index 0000000..9b08bd0
+index 0000000..dca294b
 --- /dev/null
 +++ b/python/commands/powerlab_router2/search_nb.py
-@@ -0,0 +1,205 @@
+@@ -0,0 +1,209 @@
 +"""The A* of search.search() compiled with numba, when numba is there (PowerLab router 2).
 +
 +The same states, moves, costs and tie-breaks as the Python loop, so it returns the same way;
 +only faster (the Python loop runs about 100k nodes a second, most of a run's time). numba
-+comes from the installer's own folder (%LOCALAPPDATA%\\PowerLabKiCadAssistant\\pylib, or
-+POWERLAB_PYLIB), never from KiCad's site-packages. Without it, AVAILABLE is False and
++comes from the installer's own folder (%LOCALAPPDATA%\\PowerLabKiCadAssistant\\pylib on Windows,
++~/Library/Application Support/PowerLabKiCadAssistant/pylib on macOS, or POWERLAB_PYLIB),
++never from KiCad's site-packages. Without it, AVAILABLE is False and
 +search.py uses its Python loop.
 +"""
 +
@@ -13096,6 +13102,9 @@ index 0000000..9b08bd0
 +        out.append(os.environ["POWERLAB_PYLIB"])
 +    if os.environ.get("LOCALAPPDATA"):
 +        out.append(os.path.join(os.environ["LOCALAPPDATA"], "PowerLabKiCadAssistant", "pylib"))
++    if sys.platform == "darwin":
++        out.append(os.path.join(os.path.expanduser("~"), "Library", "Application Support",
++                                "PowerLabKiCadAssistant", "pylib"))
 +    return out
 +
 +
@@ -19047,6 +19056,23 @@ index 0000000..ce4c4f0
 +    if written or vias:
 +        _write_atomic(dru_path, text if text.strip() else "(version 1)\n")
 +    return written
+diff --git a/python/utils/kicad_cli.py b/python/utils/kicad_cli.py
+index fa3297d..74be243 100644
+--- a/python/utils/kicad_cli.py
++++ b/python/utils/kicad_cli.py
+@@ -63,6 +63,12 @@ def _candidate_paths() -> List[Path]:
+ 
+         candidates.extend(root / "bin" / name for root in windows_kicad_roots())
+     elif system == "Darwin":
++        # KiCad's bundled Python is inside KiCad.app (Contents/Frameworks/Python.framework),
++        # and kicad-cli in its Contents/MacOS: found wherever the app was put.
++        marker = ".app" + os.sep + "Contents" + os.sep
++        for exe in (sys.executable, sys.base_prefix + os.sep):
++            if marker in exe:
++                candidates.append(Path(exe[: exe.index(marker) + 4]) / "Contents" / "MacOS" / name)
+         candidates.extend(
+             [
+                 Path("/Applications/KiCad/KiCad.app/Contents/MacOS") / name,
 diff --git a/python/utils/region_box.py b/python/utils/region_box.py
 new file mode 100644
 index 0000000..a15e7d3

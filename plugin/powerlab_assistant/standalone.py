@@ -59,10 +59,11 @@ def serve(srv, on_toggle, on_outdated):
 
 
 def main():
-    try:  # match KiCad: per-monitor DPI aware, so window coordinates aren't rescaled
-        ctypes.windll.shcore.SetProcessDpiAwareness(2)
-    except (AttributeError, OSError):
-        pass
+    if os.name == "nt":
+        try:  # match KiCad: per-monitor DPI aware, so window coordinates aren't rescaled
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except (AttributeError, OSError):
+            pass
     app = wx.App(False)
     claude = find_claude()
     if not claude:

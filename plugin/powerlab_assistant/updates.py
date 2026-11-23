@@ -12,6 +12,7 @@ address, like any download).
 import json
 import os
 import re
+import shlex
 import time
 import urllib.request
 
@@ -94,10 +95,24 @@ def check(settings, force=False, fetch_version=fetch_stable_version, fetch_relea
     }
 
 
+INSTALLER = "install.ps1" if config.IS_WINDOWS else "install.sh"
+
+
 def can_self_update():
     source = config.source_path()
     return bool(source) and os.path.isdir(os.path.join(source, ".git")) and \
-        os.path.isfile(os.path.join(source, "install.ps1"))
+        os.path.isfile(os.path.join(source, INSTALLER))
+
+
+def update_script(source):
+    """macOS: what the update's Terminal window runs (bash)."""
+    return (
+        f"cd {shlex.quote(source)} || exit 1; "
+        "echo 'Updating PowerLab KiCad Assistant...'; "
+        "if ! git pull --ff-only; then echo 'git pull failed: see above.'; exit 1; fi; "
+        "/bin/bash ./install.sh --update; "
+        "echo; echo 'Restart KiCad to finish the update. You can close this window.'"
+    )
 
 
 def start_update():
@@ -107,6 +122,9 @@ def start_update():
     if not can_self_update():
         return False
     source = config.source_path()
+    if not config.IS_WINDOWS:
+        open_console(["/bin/bash", "-lc", update_script(source)], cwd=source)
+        return True
     script = (
         f"Set-Location -LiteralPath '{source}'; "
         "Write-Host 'Updating PowerLab KiCad Assistant...' -ForegroundColor Cyan; "

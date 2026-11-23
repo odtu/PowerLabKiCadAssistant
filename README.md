@@ -7,7 +7,7 @@
 **Claude in a KiCad side panel: libraries, placement, routing and design reviews, the METU Power Lab way.**
 
 [![KiCad 10](https://img.shields.io/badge/KiCad-10.0%2B-314CB0?logo=kicad&logoColor=white)](https://www.kicad.org/)
-[![Windows](https://img.shields.io/badge/platform-Windows-0078D4)](#requirements)
+[![Windows | macOS](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-0078D4)](#requirements)
 [![Version](https://img.shields.io/badge/version-1.4.2-2ea44f)](plugin/powerlab_assistant/config.py)
 [![Tests](https://github.com/odtu/PowerLabKiCadAssistant/actions/workflows/tests.yml/badge.svg)](https://github.com/odtu/PowerLabKiCadAssistant/actions/workflows/tests.yml)
 [![License: CERN-OHL-S-2.0](https://img.shields.io/badge/license-CERN--OHL--S--2.0-blue)](LICENSE)
@@ -25,7 +25,7 @@ A side panel for **KiCad 10** that lets you ask Claude to do things in your desi
 
 It runs [Claude Code](https://docs.claude.com/claude-code) on your computer with your own Claude account, and gives it KiCad tools through [KiCAD-MCP-Server](https://github.com/mixelpixx/KiCAD-MCP-Server).
 
-> **Early version.** Windows and KiCad 10 only. Expect rough edges and please [report problems](#reporting-problems).
+> **Early version.** Windows and macOS (newer), KiCad 10 only. Expect rough edges and please [report problems](#reporting-problems).
 
 ![The PowerLab Assistant panel: suggestions and library updates; autorouting with a rendered board view; checking a footprint against an attached datasheet](docs/images/panel-overview.png)
 
@@ -95,15 +95,15 @@ Problem reports contain versions, the error and the panel's own stack trace. The
 **Stays on your computer:**
 
 - your Claude login and your GitHub login (if you use one)
-- the panel's settings (`%APPDATA%\PowerLabKiCadAssistant`)
+- the panel's settings (`%APPDATA%\PowerLabKiCadAssistant`; on macOS `~/Library/Application Support/PowerLabKiCadAssistant`)
 - your conversation history (`%USERPROFILE%\.claude`, and the panel's copy in `%APPDATA%\PowerLabKiCadAssistant\chats`)
-- design reviews and their PDFs (`design-review\` in your project; Microsoft Edge prints the PDF on your computer, offline), and other documents you ask Claude for as a PDF (`documents\`, printed the same way)
+- design reviews and their PDFs (`design-review\` in your project; Microsoft Edge prints the PDF on your computer, offline; on macOS Edge, Chrome, Chromium or Brave), and other documents you ask Claude for as a PDF (`documents\`, printed the same way)
 
 The repository contains no API keys or tokens. Each user signs in with their own accounts.
 
 ## Requirements
 
-- Windows 10 or 11
+- Windows 10 or 11, or macOS 11 or newer (Apple silicon or Intel; see [Install on macOS](#install-on-macos))
 - [KiCad 10](https://www.kicad.org/download/windows/)
 - A Claude account with Claude Code access (a paid Claude plan or an Anthropic API account)
 - [Git](https://git-scm.com/download/win): `winget install --id Git.Git -e`
@@ -135,6 +135,30 @@ The repository contains no API keys or tokens. Each user signs in with their own
 5. In the **Schematic Editor**, go to **Preferences → Preferences → Schematic Editor → Toolbars**. Add **IPC/Scripting plugins** to the **Top main** toolbar. KiCad doesn't show plugin buttons there by default.
 
 To remove it later, run `uninstall.ps1`.
+
+### Install on macOS
+
+1. Install [KiCad 10 for macOS](https://www.kicad.org/download/macos/), start it once and quit it (**KiCad → Quit KiCad**), so it writes its settings. KiCad.app can be anywhere: the installer finds it (or pass `--kicad-app /path/to/KiCad.app`).
+2. Install Git (`xcode-select --install`) and [Node.js](https://nodejs.org/) 18 or newer (`brew install node`).
+3. `git clone https://github.com/odtu/PowerLabKiCadAssistant` anywhere (it doesn't have to be next to KiCad), then in Terminal, in that folder:
+
+   ```bash
+   /bin/bash install.sh
+   ```
+
+   It does what `install.ps1` does, with these differences:
+
+   - KiCad for macOS ships Python 3.9 without NumPy, so the installer adds NumPy 2.0.2 and, for the PowerLab router, numba 0.60 (the last releases for Python 3.9; pinned wheels with their SHA-256).
+   - The KiCad MCP server and numba go to `~/Library/Application Support/PowerLabKiCadAssistant`; the plugins to `~/Documents/KiCad/10.0`.
+   - GitHub CLI comes from Homebrew, if you want it.
+
+   If you already have a clone of the library, add `--library ~/path/to/PowerLabKiCadLibraries`.
+
+4. Sign in to Claude Code once: run `claude` in Terminal, follow the login, then type `/exit`.
+5. In the **Schematic Editor**, go to **KiCad → Settings → Schematic Editor → Toolbars** and add **IPC/Scripting plugins** to the **Top main** toolbar.
+6. The first time the panel saves or reloads the schematic, macOS asks whether KiCad may control your computer. Allow it (**System Settings → Privacy & Security → Accessibility**): KiCad 10 has no API for that, so the panel clicks **File → Save** and **File → Revert** itself. For that moment KiCad comes to the front, then the focus goes back.
+
+To remove it later, run `/bin/bash uninstall.sh`.
 
 ## Updating
 
@@ -219,10 +243,11 @@ Reports are public, so don't add confidential details to the description.
 
 ## Known limitations
 
-- **KiCad 10's schematic API is limited.** It can't report the selection, save or reload. The panel works around this by using the editor's own **Edit → Copy**, **File → Save** and **File → Revert**. Your clipboard is restored afterwards. This needs KiCad's menus in **English**.
+- **KiCad 10's schematic API is limited.** It can't report the selection, save or reload. The panel works around this by using the editor's own **Edit → Copy**, **File → Save** and **File → Revert**. Your clipboard is restored afterwards. On Windows this needs KiCad's menus in **English**; on macOS any language KiCad ships works (the panel reads KiCad's own translations).
+- **On macOS the schematic selection is what you copy.** Driving **Edit → Copy** would pull KiCad to the front with every message, so there the panel uses what you last copied with **⌘C** in the schematic editor. The PCB editor's selection comes from KiCad's API, as on Windows.
 - **Claude's permissions are limited.** Inside the panel, Claude can only use the KiCad tools, read and write files, search the web, run `kicad-cli`, and zip outputs with `tar -a -cf`. Other shell commands are blocked, because the panel can't ask you for permission mid-run. Use the terminal button to continue a conversation in a full Claude Code session.
 - **The KiCad tools get small fixes from this repository.** `patches/kicad-mcp.patch` keeps 3D models when parts are rotated (kipy 0.8 drops them), and adds the PowerLab router. The installer applies it on top of the pinned KiCad MCP server.
-- **Windows only, KiCad 10 only.**
+- **Windows and macOS, KiCad 10 only.** macOS support is newer: please report what doesn't work.
 
 ## Contributing
 

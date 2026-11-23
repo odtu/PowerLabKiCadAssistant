@@ -171,6 +171,7 @@
  "Could not start Claude Code: {exc}": "Could not start Claude Code: {exc}",
  "The block plan couldn't be shown.": "The block plan couldn't be shown.",
  "The design review couldn't be shown.": "The design review couldn't be shown.",
+ "Claude changed the schematic. Use File → Revert in KiCad to see it. To let the panel reload it for you, turn on KiCad in System Settings → Privacy & Security → Accessibility.": "Claude changed the schematic. Use File → Revert in KiCad to see it. To let the panel reload it for you, turn on KiCad in System Settings → Privacy & Security → Accessibility.",
  "Report filed: {info} Thank you!": "Report filed: {info} Thank you!",
  "Couldn't file it with GitHub; opening the form instead.": "Couldn't file it with GitHub; opening the form instead.",
  "Library updated. New libraries: {value}. Restart KiCad to see them.": "Library updated. New libraries: {value}. Restart KiCad to see them.",

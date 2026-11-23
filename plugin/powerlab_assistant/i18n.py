@@ -8,6 +8,9 @@ parts filled in); any other text, or another language, stays English.
 import json
 import locale
 import os
+import re
+import subprocess
+import sys
 
 # (code, English name, own name). The first one is the default.
 LANGUAGES = [
@@ -37,14 +40,39 @@ FOLDER = os.path.join(os.path.dirname(__file__), "lang")
 _tables = {}
 
 
-def detect():
-    """Windows' display language, if it is one of LANGUAGES; else English."""
-    name = ""
+def mac_language(defaults_output):
+    """The first of macOS's preferred languages (`defaults read -g AppleLanguages`, e.g.
+    '(\n    "tr-TR",\n    "en-US"\n)') as a locale name: 'tr_TR', 'zh_TW' for 'zh-Hant-TW'."""
+    first = re.search(r'"?([A-Za-z]{2,3}(?:-[A-Za-z0-9]+)*)"?\s*[,)]', defaults_output or "")
+    if not first:
+        return ""
+    parts = first.group(1).split("-")
+    if parts[0].lower() == "zh":  # the script says which characters, the region may not
+        traditional = "Hant" in parts or any(p.upper() in ("TW", "HK", "MO") for p in parts[1:])
+        return "zh_TW" if traditional else "zh_CN"
+    region = next((p for p in parts[1:] if len(p) == 2), "")
+    return parts[0] + ("_" + region if region else "")
+
+
+def system_language():
+    """The display language's locale name ('tr_TR'), or ""."""
+    if sys.platform == "darwin":
+        try:
+            out = subprocess.run(["defaults", "read", "-g", "AppleLanguages"], capture_output=True,
+                                 text=True, timeout=5).stdout
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        return mac_language(out)
     try:
         import ctypes
-        name = locale.windows_locale.get(ctypes.windll.kernel32.GetUserDefaultUILanguage(), "")
+        return locale.windows_locale.get(ctypes.windll.kernel32.GetUserDefaultUILanguage(), "")
     except (AttributeError, OSError):
-        pass
+        return ""
+
+
+def detect():
+    """The system's display language, if it is one of LANGUAGES; else English."""
+    name = system_language()
     lang, _, region = (name or locale.getlocale()[0] or "").partition("_")
     if lang.lower() == "zh":  # Taiwan, Hong Kong and Macau write traditional characters
         return "zh-TW" if region.upper() in ("TW", "HK", "MO") else "zh"

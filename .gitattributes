@@ -1,2 +1,4 @@
 # Patches are applied byte-for-byte; keep their LF line endings on every checkout.
 *.patch -text
+# bash reads its scripts with LF only: a CRLF checkout (Windows, autocrlf) breaks install.sh.
+*.sh text eol=lf
