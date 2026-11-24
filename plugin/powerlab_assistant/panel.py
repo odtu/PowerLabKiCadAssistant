@@ -214,6 +214,11 @@ PANEL_NOTE = (
     "design-review\\design-review.md in the project folder. The panel shows it to the user "
     "and saves it as a PDF. After routing, do this right away without asking first; only "
     "then ask the user to look at the board and the review.\n"
+    "For any question about a part's ratings, pins, curves, package or reference circuit, "
+    "and to check a symbol or footprint against its datasheet, load the "
+    "powerlab-datasheet-lookup skill: fetch_datasheet gets the PDF into the user's datasheet "
+    "library (opening it in their browser when a site lets only a person download it), and "
+    "read_datasheet reads it. Never quote a spec from memory.\n"
     "You can make mistakes: for anything that ends up in hardware (footprints, pinouts, "
     "ratings, design rules), say what the user should double-check against the datasheet."
 )
@@ -1216,6 +1221,7 @@ class ClaudePanel(wx.Frame):
         if not resend:
             files, self.attached = self.attached, []
         extra = attachments.folders(files) + [VIEWS_DIR] + ([os.path.dirname(earlier)] if earlier else [])
+        extra += [d for d in [config.datasheet_dir()] if d]  # read_datasheet's renders, for Read
         for d in config.work_dirs() + [f for f in extra if f not in config.work_dirs()]:
             args += ["--add-dir", d]
         if self.session_id and not fresh:

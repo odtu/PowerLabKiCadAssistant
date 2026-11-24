@@ -87,6 +87,31 @@ def work_dirs():
     return [d for d in dirs if d and os.path.isdir(d)]
 
 
+def _documents():
+    """The user's Documents folder, wherever Windows has it (OneDrive moves it)."""
+    if IS_WINDOWS:
+        try:
+            import ctypes
+            buf = ctypes.create_unicode_buffer(260)
+            if ctypes.windll.shell32.SHGetFolderPathW(None, 5, None, 0, buf) == 0 and buf.value:  # CSIDL_PERSONAL
+                return buf.value
+        except Exception:
+            pass
+    return os.path.join(os.path.expanduser("~"), "Documents")
+
+
+def datasheet_dir():
+    """The datasheet library of the kicad tools fetch_datasheet / read_datasheet: config.json's
+    datasheet_dir, or Documents/PowerLab Datasheets. The panel passes it to them
+    (POWERLAB_DATASHEETS) and gives Claude read access to it."""
+    path = config().get("datasheet_dir") or os.path.join(_documents(), "PowerLab Datasheets")
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError:
+        return ""
+    return path
+
+
 def mcp_path():
     return config().get("mcp_path", "")
 

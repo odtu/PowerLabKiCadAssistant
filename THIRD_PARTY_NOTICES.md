@@ -21,7 +21,7 @@ The installer downloads these from their official sources into `%LOCALAPPDATA%\P
 | [sexpdata](https://pypi.org/project/sexpdata/) | | BSD-2-Clause |
 | [kicad-skip](https://pypi.org/project/kicad-skip/) | | LGPL-2.0-or-later |
 | [Pillow](https://pypi.org/project/pillow/) | | MIT-CMU |
-| [PyMuPDF](https://pypi.org/project/PyMuPDF/) | rendering board views | **AGPL-3.0** or an Artifex commercial license |
+| [PyMuPDF](https://pypi.org/project/PyMuPDF/) | rendering board views; reading datasheets (`fetch_datasheet`, `read_datasheet`) | **AGPL-3.0** or an Artifex commercial license |
 | [CairoSVG](https://pypi.org/project/CairoSVG/) | | LGPL-3.0-or-later |
 | [colorlog](https://pypi.org/project/colorlog/), [pydantic](https://pypi.org/project/pydantic/) | | MIT |
 | [requests](https://pypi.org/project/requests/) | | Apache-2.0 |
