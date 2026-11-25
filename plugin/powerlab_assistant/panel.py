@@ -16,7 +16,7 @@ import time
 import wx
 import wx.html2
 
-from . import attachments, config, history, i18n, library, models, plan, report, review, updates, usage
+from . import attachments, config, history, i18n, library, models, plan, report, review, sessions, updates, usage
 from .common import CREATE_NO_WINDOW, find_gh, open_console, open_path, open_terminal, clean_env
 
 # Tools Claude may use without asking. Headless runs can't show permission
@@ -760,6 +760,46 @@ class ClaudePanel(wx.Frame):
         self.fresh = False
         self.save_chat()
         self.load_page()
+
+    # ---- past conversations (sessions.py) -----------------------------------
+
+    def msg_history(self, msg):
+        """The project's past conversations, from Claude Code's own records."""
+        cwd = self.chat_cwd
+        self.emit("history_sheet", checking=True, items=[])
+        self.in_background(lambda: sessions.list_sessions(cwd) if cwd else [],
+                           lambda rows: self.emit("history_sheet", items=[] if isinstance(
+                               rows, Exception) else rows, current=self.session_id or ""))
+
+    def write_transcript(self, session_id, then):
+        cwd = self.chat_cwd
+
+        def done(path):
+            if isinstance(path, FileNotFoundError):
+                self.emit("note", level="warn", text="Claude Code no longer has this conversation "
+                          "(it deletes them after about a month).")
+                return
+            if isinstance(path, Exception):
+                self.problem("error", "Couldn't write the transcript.", "transcript failed",
+                             type(path).__name__)
+                return
+            then(path)
+
+        self.in_background(lambda: sessions.write_transcript(cwd, session_id), done)
+
+    def msg_history_open(self, msg):
+        """Write a conversation's transcript into the project's chat-history folder and open it."""
+        self.write_transcript(msg.get("id", ""), open_path)
+
+    def msg_history_continue(self, msg):
+        """A new chat with the transcript attached, and a first message ready to send."""
+        def then(path):
+            self.msg_new({})
+            self.attached = [path]
+            self.emit_attached()
+            self.emit("prefill", continue_from=os.path.basename(path))
+
+        self.write_transcript(msg.get("id", ""), then)
 
     def msg_open(self, msg):
         if os.path.isfile(msg.get("path", "")):
