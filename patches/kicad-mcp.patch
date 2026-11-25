@@ -15980,6 +15980,100 @@ index ee10775..b63d79a 100644
      def _extract_components_from_schematic(self, schematic_path: str) -> List[Dict[str, str]]:
          """Run kicad-cli netlist export and return the flat list of components.
  
+diff --git a/python/commands/schematic_hierarchy.py b/python/commands/schematic_hierarchy.py
+index bfd1f86..6352a3c 100644
+--- a/python/commands/schematic_hierarchy.py
++++ b/python/commands/schematic_hierarchy.py
+@@ -55,6 +55,28 @@ class SchematicHierarchyCommands:
+             except ValueError:
+                 rel_str = str(subsheet_path).replace("\\", "/")
+ 
++            content = parent_file.read_text(encoding="utf-8")
++            parent_uuid_match = re.search(r"\(uuid\s+\"?([0-9a-fA-F-]+)\"?\)", content)
++            parent_uuid = parent_uuid_match.group(1) if parent_uuid_match else ""
++            existing_pages = re.findall(r'\(page\s+"(\d+)"\)', content)
++            next_page = max((int(p) for p in existing_pages), default=0) + 1
++            # Since KiCad 7 (file version 20221110) a sheet's page number lives in its own
++            # (instances ...) block; the parent's (sheet_instances ...) only holds "/" and KiCad
++            # ignores other paths there. A sheet without one loaded with no page number, and
++            # KiCad then numbered it and called the schematic "automatically fixed" (modified)
++            # at every load.
++            version_match = re.search(r"\(version\s+(\d+)\)", content)
++            modern = not version_match or int(version_match.group(1)) >= 20221110
++            instances_block = ""
++            if modern:
++                instances_block = (
++                    f"    (instances\n"
++                    f'      (project "{escape_sexpr_string(self._project_name(parent_file))}"\n'
++                    f'        (path "/{parent_uuid}" (page "{next_page}"))\n'
++                    f"      )\n"
++                    f"    )\n"
++                )
++
+             sheet_block_uuid = str(uuid.uuid4())
+             name_x, name_y = round(x + 2.54, 4), round(y - 1.27, 4)
+             file_x, file_y = round(x + 2.54, 4), round(y + h + 1.27, 4)
+@@ -72,21 +94,20 @@ class SchematicHierarchyCommands:
+                 f" (at {file_x} {file_y} 0)\n"
+                 f"      (effects (font (size 1.27 1.27)) (justify left bottom))\n"
+                 f"    )\n"
++                f"{instances_block}"
+                 f"  )\n"
+             )
+ 
+-            content = parent_file.read_text(encoding="utf-8")
+-            parent_uuid_match = re.search(r"\(uuid\s+([0-9a-fA-F-]+)\)", content)
+-            parent_uuid = parent_uuid_match.group(1) if parent_uuid_match else ""
+-            existing_pages = re.findall(r'\(page\s+"(\d+)"\)', content)
+-            next_page = max((int(p) for p in existing_pages), default=0) + 1
+-
+             instance_path = (
+                 f"/{parent_uuid}/{sheet_block_uuid}" if parent_uuid else f"/{sheet_block_uuid}"
+             )
+             path_entry = f'    (path "{instance_path}" (page "{next_page}"))\n'
+ 
+             insert_at = content.rfind("(sheet_instances")
++            if insert_at == -1 and modern:
++                # (sheet_instances is only needed for an old file's page entry: put the
++                # sheet before the file's closing parenthesis.
++                insert_at = content.rstrip().rfind(")")
+             if insert_at == -1:
+                 return {"success": False, "message": "Could not find (sheet_instances in schematic"}
+             # rfind returns a raw character offset; on files where
+@@ -106,6 +127,16 @@ class SchematicHierarchyCommands:
+                 content = content[:line_start] + sheet_block + content[line_start:]
+ 
+             si_start = content.rfind("(sheet_instances")
++            if modern or si_start == -1:
++                parent_file.write_text(content, encoding="utf-8")
++                self.fix_subsheet_instances(str(parent_file), content)
++                return {
++                    "success": True,
++                    "sheet_uuid": sheet_block_uuid,
++                    "sheet_name": sheet_name,
++                    "subsheet_path": rel_str,
++                    "page": next_page,
++                }
+             depth = 0
+             si_close = len(content) - 1
+             for i in range(si_start, len(content)):
+@@ -138,6 +169,16 @@ class SchematicHierarchyCommands:
+             logger.error(traceback.format_exc())
+             return {"success": False, "message": str(e)}
+ 
++    @staticmethod
++    def _project_name(parent_file: Path) -> str:
++        """The KiCad project a sheet belongs to: the .kicad_pro next to it (the one named like
++        the schematic first), else the schematic's own name."""
++        pros = sorted(parent_file.parent.glob("*.kicad_pro"))
++        for pro in pros:
++            if pro.stem == parent_file.stem:
++                return pro.stem
++        return pros[0].stem if len(pros) == 1 else parent_file.stem
++
+     @staticmethod
+     def _find_sheet_blocks(content: str) -> List[tuple]:
+         """Return (start, end) spans of every top-level (sheet ...) block.
 diff --git a/python/commands/update_symbol_from_library.py b/python/commands/update_symbol_from_library.py
 index f876f4b..582a074 100644
 --- a/python/commands/update_symbol_from_library.py
@@ -22622,6 +22716,47 @@ index 7fd9dfa..4cebe47 100644
          )
          monkeypatch.setattr(sb, "DynamicSymbolLoader", fake_loader_cls)
          fake_pins = types.SimpleNamespace(
+diff --git a/tests/test_schematic_hierarchy.py b/tests/test_schematic_hierarchy.py
+index 8da57df..682c07b 100644
+--- a/tests/test_schematic_hierarchy.py
++++ b/tests/test_schematic_hierarchy.py
+@@ -41,8 +41,10 @@ class TestAddHierarchicalSheet:
+         assert "(sheet " in content
+         assert '"Sheet name" "Power"' in content
+         assert '"Sheet file" "sub.kicad_sch"' in content
+-        # a sheet_instances path entry for the new sheet block was added
+-        assert f'/{ "abcd-1234" }/{ r["sheet_uuid"] }' in content
++        # KiCad 7+ reads the page from the sheet's own (instances ...), not from the
++        # parent's sheet_instances (which keeps "/" only)
++        assert '(project "top"\n        (path "/abcd-1234" (page "2"))' in content
++        assert f'/abcd-1234/{r["sheet_uuid"]}' not in content
+ 
+     def test_sheet_block_starts_its_own_line(self, tmp_path):
+         """#298: rfind gives a raw char offset; when (sheet_instances does not
+@@ -180,8 +182,8 @@ class TestRemoveHierarchicalSheet:
+         assert r["success"] is False
+ 
+     def test_roundtrip_add_then_remove_modern(self, tmp_path):
+-        # add_hierarchical_sheet writes the modern format with a top-level
+-        # sheet_instances path entry; remove must clean both the block and that entry.
++        # add_hierarchical_sheet writes the page into the sheet block's own (instances ...),
++        # so removing the block removes it; the root page entry stays.
+         parent = tmp_path / "top.kicad_sch"
+         parent.write_text(
+             '(kicad_sch (uuid abcd-1234)\n  (sheet_instances (path "/" (page "1")))\n)'
+@@ -199,10 +201,10 @@ class TestRemoveHierarchicalSheet:
+ 
+         rem = c.remove_hierarchical_sheet({"schematicPath": str(parent), "sheetName": "Power"})
+         assert rem["success"] is True
+-        assert rem["removed_instance_path"] is True
+         content = parent.read_text()
+         assert "power.kicad_sch" not in content
+-        assert add["sheet_uuid"] not in content  # sheet_instances path entry gone too
++        assert add["sheet_uuid"] not in content
++        assert "(instances" not in content
+         assert '(path "/" (page "1"))' in content  # root page entry preserved
+ 
+ 
 diff --git a/tests/test_schematic_text_edit.py b/tests/test_schematic_text_edit.py
 new file mode 100644
 index 0000000..2d98d57
@@ -22704,6 +22839,115 @@ index 0000000..2d98d57
 +    assert _texts(sch)["Boxed"]["kind"] == "text_box"
 +    assert WireManager.delete_text(sch, uuid_="11111111-2222-3333-4444-555555555555")["success"]
 +    assert "Boxed" not in _texts(sch)
+diff --git a/tests/test_sheet_page_instances.py b/tests/test_sheet_page_instances.py
+new file mode 100644
+index 0000000..0f98a64
+--- /dev/null
++++ b/tests/test_sheet_page_instances.py
+@@ -0,0 +1,103 @@
++"""
++A sheet linked by add_hierarchical_sheet keeps its page number where KiCad 7+ reads it.
++
++Since file version 20221110 KiCad reads a sheet's page from the sheet's own
++(instances (project ...) (path "/<parent uuid>" (page "N"))) block and ignores every path but
++"/" in the parent's (sheet_instances ...). Sheets linked with only a sheet_instances entry
++loaded without a page number, so KiCad renumbered them and reported "An error was found when
++loading the schematic that has been automatically fixed" at every load, with the schematic
++marked modified.
++"""
++
++import sys
++from pathlib import Path
++from unittest.mock import patch
++
++import pytest
++import sexpdata
++from sexpdata import Symbol
++
++sys.path.insert(0, str(Path(__file__).parent.parent / "python"))
++
++ROOT = """(kicad_sch
++\t(version 20260306)
++\t(generator "eeschema")
++\t(generator_version "10.0")
++\t(uuid f78b695b-b3e2-45e6-8fcd-1c1dbe7166a9)
++\t(paper "A4")
++\t(lib_symbols)
++\t(sheet_instances
++\t\t(path "/"
++\t\t\t(page "1")
++\t\t)
++\t)
++\t(embedded_fonts no)
++)
++"""
++
++
++@pytest.fixture
++def commands():
++    with patch("kicad_interface.USE_IPC_BACKEND", False):
++        from kicad_interface import KiCADInterface
++
++        iface = KiCADInterface()
++    from commands.schematic_hierarchy import SchematicHierarchyCommands
++
++    return SchematicHierarchyCommands(iface)
++
++
++def _sheets(content):
++    return [i for i in sexpdata.loads(content) if isinstance(i, list) and i and i[0] == Symbol("sheet")]
++
++
++def _find(tree, name):
++    return next(i for i in tree if isinstance(i, list) and i and i[0] == Symbol(name))
++
++
++def test_page_goes_into_the_sheets_own_instances(commands, tmp_path):
++    (tmp_path / "board.kicad_pro").write_text("{}")
++    root = tmp_path / "board.kicad_sch"
++    root.write_text(ROOT)
++    for i, name in enumerate(["Power", "MCU"]):
++        result = commands.add_hierarchical_sheet(
++            {"schematicPath": str(root), "subsheetPath": str(tmp_path / f"{name}.kicad_sch"),
++             "sheetName": name, "position": {"x": 30 + 80 * i, "y": 100}})
++        assert result["success"], result
++        assert result["page"] == i + 2
++
++    content = root.read_text()
++    sheets = _sheets(content)
++    assert len(sheets) == 2
++    for page, sheet in zip(["2", "3"], sheets):
++        project = _find(_find(sheet, "instances"), "project")
++        assert project[1] == "board"
++        path = _find(project, "path")
++        assert path[1] == "/f78b695b-b3e2-45e6-8fcd-1c1dbe7166a9"
++        assert _find(path, "page")[1] == page
++
++    # The root's sheet_instances keeps "/" only, as KiCad writes it.
++    sheet_instances = _find(sexpdata.loads(content), "sheet_instances")
++    assert [p[1] for p in sheet_instances[1:]] == ["/"]
++    # The rest of the file is untouched.
++    assert content.rstrip().endswith("(embedded_fonts no)\n)")
++
++
++def test_old_file_keeps_sheet_instances_entry(commands, tmp_path):
++    root = tmp_path / "old.kicad_sch"
++    root.write_text('(kicad_sch (version 20211123) (uuid abcd-1234) '
++                    '(sheet_instances (path "/" (page "1"))))')
++    result = commands.add_hierarchical_sheet(
++        {"schematicPath": str(root), "subsheetPath": str(tmp_path / "p.kicad_sch"), "sheetName": "P"})
++    assert result["success"], result
++    content = root.read_text()
++    assert "(instances" not in content
++    assert '(page "2")' in content
++
++
++def test_project_name_without_kicad_pro_is_the_schematics(commands, tmp_path):
++    root = tmp_path / "top.kicad_sch"
++    root.write_text(ROOT)
++    commands.add_hierarchical_sheet(
++        {"schematicPath": str(root), "subsheetPath": str(tmp_path / "p.kicad_sch"), "sheetName": "P"})
++    assert '(project "top"' in root.read_text()
 diff --git a/tests/test_update_symbol_from_library.py b/tests/test_update_symbol_from_library.py
 index 6119fce..57ba624 100644
 --- a/tests/test_update_symbol_from_library.py
