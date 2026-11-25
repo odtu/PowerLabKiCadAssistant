@@ -233,8 +233,8 @@ PANEL_NOTE = (
     "For any question about a part's ratings, pins, curves, package or reference circuit, "
     "and to check a symbol or footprint against its datasheet, load the "
     "powerlab-datasheet-lookup skill: fetch_datasheet gets the PDF into the user's datasheet "
-    "library (opening it in their browser when a site lets only a person download it), and "
-    "read_datasheet reads it. Never quote a spec from memory.\n"
+    "library (from the maker, else LCSC's copy with its date, else through the user's browser), "
+    "and read_datasheet reads it. Never quote a spec from memory.\n"
     "You can make mistakes: for anything that ends up in hardware (footprints, pinouts, "
     "ratings, design rules), say what the user should double-check against the datasheet."
 )

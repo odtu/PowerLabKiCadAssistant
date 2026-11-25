@@ -797,17 +797,20 @@ index f635672..7ea84f4 100644
                      "value": value or module.GetValue(),
 diff --git a/python/commands/datasheets.py b/python/commands/datasheets.py
 new file mode 100644
-index 0000000..8431457
+index 0000000..00950aa
 --- /dev/null
 +++ b/python/commands/datasheets.py
-@@ -0,0 +1,477 @@
+@@ -0,0 +1,642 @@
 +"""Datasheet library and reader for the panel (PowerLab patch).
 +
 +fetch_datasheet keeps datasheet PDFs in a library folder of the user's and gets new ones:
-+straight from the URL, or, when the site refuses downloads by programs (a bot check, 403,
-+an HTML page instead of the PDF), by opening the page in the user's own browser and taking
-+the PDF they save there from their Downloads folder. It never tries to get round a refusal
-+(no browser user agent, no cookies, no retries with other clients): the user downloads it.
++straight from the maker's URL; when the maker refuses downloads by programs (a bot check,
++403, an HTML page instead of the PDF; ST, Nexperia), LCSC's copy, which LCSC serves to
++programs (its product page names the part's datasheet in its structured data). LCSC's copy
++can be years older than the maker's current revision, so its printed date is always given.
++Last, the page opens in the user's own browser and the PDF they save there is taken from
++their Downloads folder. It never tries to get round a refusal (no browser user agent, no
++cookies, no retries with other clients).
 +
 +read_datasheet lists the library and reads a PDF: a map of its sections, a word search,
 +a page's text, or a page (or part of one) drawn as a PNG for Claude to look at with Read.
@@ -825,9 +828,17 @@ index 0000000..8431457
 +import sys
 +import time
 +import urllib.error
++import urllib.parse
 +import urllib.request
 +import webbrowser
 +
++LCSC_PAGE = "https://www.lcsc.com/product-detail/{}.html"
++MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september",
++          "october", "november", "december"]
++_MONTH = r"(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
++# "21 April 2023", "April 21, 2023", "JUNE 2022", "Rev 3 - July 2020"
++_DATE = re.compile(r"\b(?:(\d{1,2})\s+)?" + _MONTH + r"\.?\s+(?:(\d{1,2}),\s*)?((?:19|20)\d\d)\b", re.I)
++_ISO = re.compile(r"\b((?:19|20)\d\d)-(\d\d)-(\d\d)\b")
 +USER_AGENT = "PowerLabKiCadAssistant (datasheet download; +https://github.com/odtu/PowerLabKiCadAssistant)"
 +MAX_BYTES = 150 * 1024 * 1024
 +PARTIAL = (".crdownload", ".part", ".partial", ".download", ".tmp")  # browsers' unfinished downloads
@@ -961,6 +972,7 @@ index 0000000..8431457
 +            out.append({"pdf": path, "part": meta.get("part") or name[:-4],
 +                        "maker": meta.get("maker") or (os.path.basename(folder) if folder != root else None),
 +                        "pages": meta.get("pages"), "source": meta.get("url") or meta.get("source"),
++                        "copy": meta.get("copy"), "printedDate": meta.get("printedDate"),
 +                        "fetched": meta.get("fetched")})
 +    return out
 +
@@ -985,6 +997,9 @@ index 0000000..8431457
 +            title = (doc.metadata or {}).get("title")
 +            if title:
 +                info["title"] = title
++            printed = printed_date(_page_text(doc, 0) if len(doc) else "")
++            if printed:
++                info["printedDate"] = printed
 +            first = " ".join(_page_text(doc, i) for i in range(min(3, len(doc)))).upper()
 +            if _safe(part).upper().split("_")[0][:6] not in re.sub(r"[^A-Z0-9_]", "_", first):
 +                info["warning"] = (f"'{part}' isn't on the PDF's first pages: check it's the right "
@@ -1000,6 +1015,26 @@ index 0000000..8431457
 +    return info
 +
 +
++def printed_date(text):
++    """The date a datasheet's first page gives for its revision, as printed ("21 April 2023",
++    "November 2022"): the one after "revised" if there is one, else the latest there."""
++    found = []
++    for m in _DATE.finditer(text):
++        day = m.group(1) or m.group(3)
++        month = next(i for i, name in enumerate(MONTHS, 1) if name.startswith(m.group(2).lower()[:3]))
++        key = (int(m.group(4)), month, int(day) if day and int(day) <= 31 else 0)
++        revised = bool(re.search(r"revised\s*(on\s*)?[:\-–—]?\s*$", text[max(0, m.start() - 14):m.start()], re.I))
++        printed = (f"{int(day)} " if day else "") + MONTHS[month - 1].capitalize() + f" {m.group(4)}"
++        found.append((revised, key, printed))
++    for m in _ISO.finditer(text):
++        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
++        if 1 <= mo <= 12 and 1 <= d <= 31:
++            found.append((False, (y, mo, d), f"{d} {MONTHS[mo - 1].capitalize()} {y}"))
++    if not found:
++        return None
++    return max(found)[2]
++
++
 +def _is_pdf(path):
 +    try:
 +        with open(path, "rb") as f:
@@ -1010,8 +1045,10 @@ index 0000000..8431457
 +
 +# ---- fetching ---------------------------------------------------------------
 +
-+def download(url, timeout=60):
-+    """(bytes, None) for a PDF, or (None, reason) when the site refused or sent no PDF."""
++def download(url, timeout=20):
++    """(bytes, None) for a PDF, or (None, reason) when the site refused or sent no PDF.
++    timeout is silence between reads, not the whole download: ST never answers programs,
++    and 60 s of that held up the LCSC fallback for a minute."""
 +    if not re.match(r"https?://", url, re.I):
 +        return None, "only http(s) URLs can be downloaded"
 +    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT,
@@ -1030,6 +1067,100 @@ index 0000000..8431457
 +        kind = "an HTML page" if b"<html" in data[:4096].lower() or "html" in ctype else ctype or "not a PDF"
 +        return None, f"the site sent {kind} instead of the PDF (often a bot check or a page with the link on it)"
 +    return data, None
++
++
++def _norm(part):
++    return re.sub(r"[^A-Z0-9]", "", str(part).upper())
++
++
++def same_part(asked, listed):
++    """PSMN1R0-30YLD and PSMN1R0-30YLDX (a packing suffix) are the same part; a different
++    voltage grade or package code isn't."""
++    a, b = _norm(asked), _norm(listed)
++    return bool(a and b) and (a.startswith(b) or b.startswith(a)) and abs(len(a) - len(b)) <= 4
++
++
++def _lcsc_host_ok(url):
++    host = (urllib.parse.urlparse(url).hostname or "").lower()
++    return url.lower().startswith("https://") and (host == "lcsc.com" or host.endswith(".lcsc.com"))
++
++
++def lcsc_page(value):
++    """LCSC's product page for an LCSC number (C478145) or an lcsc.com product URL."""
++    value = (value or "").strip()
++    if re.fullmatch(r"[Cc]\d{1,10}", value):
++        return LCSC_PAGE.format(value.upper())
++    return value if _lcsc_host_ok(value) else None
++
++
++def lcsc_product(html):
++    """{sku, mpn, brand, datasheet} from the Product in an LCSC page's JSON-LD, or None."""
++    for block in re.findall(r'<script[^>]*application/ld\+json[^>]*>(.*?)</script>', html, re.S | re.I):
++        try:
++            data = json.loads(block)
++        except ValueError:
++            continue
++        for item in data if isinstance(data, list) else [data]:
++            if not isinstance(item, dict) or item.get("@type") != "Product":
++                continue
++            doc = item.get("subjectOf") or {}
++            docs = doc if isinstance(doc, list) else [doc]
++            sheet = next((d.get("url") for d in docs if isinstance(d, dict)
++                          and str(d.get("name", "")).lower() == "datasheet" and d.get("url")), None)
++            brand = item.get("brand")
++            return {"sku": item.get("sku"), "mpn": item.get("mpn"),
++                    "brand": brand.get("name") if isinstance(brand, dict) else brand, "datasheet": sheet}
++    return None
++
++
++def _get_text(url, timeout=30):
++    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
++    try:
++        with urllib.request.urlopen(req, timeout=timeout) as r:
++            return r.read(8 * 1024 * 1024).decode("utf-8", "replace"), None
++    except urllib.error.HTTPError as e:
++        return None, f"HTTP {e.code} {e.reason}"
++    except Exception as e:
++        return None, f"{type(e).__name__}: {e}"
++
++
++def from_lcsc(value, part):
++    """(pdf bytes, details, None) for LCSC's copy of part's datasheet, or (None, None, reason)."""
++    page = lcsc_page(value)
++    if not page:
++        return None, None, f"'{value}' isn't an LCSC number (like C478145) or an lcsc.com product page"
++    html, why = _get_text(page)
++    if html is None:
++        return None, None, f"LCSC's page didn't load ({why})"
++    product = lcsc_product(html)
++    if not product:
++        return None, None, "LCSC's page has no product data (wrong number?)"
++    if not same_part(part, product.get("mpn") or ""):
++        return None, None, f"LCSC's {product.get('sku')} is {product.get('mpn')}, not {part}"
++    sheet = product.get("datasheet")
++    if not sheet or not _lcsc_host_ok(sheet):
++        return None, None, f"LCSC has no datasheet file for {product.get('sku')}"
++    data, why = download(sheet)
++    if data is None:
++        return None, None, f"LCSC's datasheet file didn't download ({why})"
++    return data, dict(product, page=page), None
++
++
++def _keep(data, part, maker, root, **meta):
++    """Store downloaded bytes in the library."""
++    tmp = _target(part, maker, root) + ".download"
++    with open(tmp, "wb") as f:
++        f.write(data)
++    try:
++        return _store(tmp, part, maker, root, **meta)
++    finally:
++        os.remove(tmp)
++
++
++LCSC_NOTE = ("This is LCSC's copy{date}. The maker's current revision can be newer (LCSC's copy of one "
++             "Nexperia part was 8 years older): give this date with every value you quote. Offer the "
++             "maker's copy (fetch_datasheet with the maker's url and browser: true, which needs one "
++             "download by the user) only when the newest revision matters, e.g. before ordering boards.")
 +
 +
 +def _pdfs_in(folder):
@@ -1070,6 +1201,7 @@ index 0000000..8431457
 +    part = (params.get("part") or "").strip()
 +    maker = (params.get("maker") or "").strip() or None
 +    url = (params.get("url") or "").strip()
++    lcsc = (params.get("lcsc") or "").strip()
 +    root = library_dir()
 +    if not part:
 +        return {"success": False, "message": "part is required (the part number, e.g. DRV8323RS)"}
@@ -1078,39 +1210,71 @@ index 0000000..8431457
 +        path = os.path.abspath(os.path.expanduser(params["file"]))
 +        if not _is_pdf(path):
 +            return {"success": False, "message": f"{path} isn't a PDF"}
-+        info = _store(path, part, maker, root, url=url or None, source="file " + os.path.basename(path))
++        info = _store(path, part, maker, root, url=url or None, copy="file",
++                      source="file " + os.path.basename(path))
 +        return {"success": True, "message": "Added to the datasheet library", **info}
 +
-+    if not params.get("refresh"):
++    browser = bool(params.get("browser"))
++    if not params.get("refresh") and not browser:
 +        have = [e for e in library(part, root) if _safe(e["part"]).upper() == _safe(part).upper()]
 +        if have:
-+            return {"success": True, "message": "Already in the datasheet library (refresh: true gets it again)",
-+                    **have[0]}
-+    if not url:
++            out = {"success": True, "message": "Already in the datasheet library (refresh: true gets it again)",
++                   **have[0]}
++            if have[0].get("copy") == "lcsc":
++                date = have[0].get("printedDate")
++                out["note"] = LCSC_NOTE.format(date=f", dated {date}" if date else "")
++            return out
++    if not url and not lcsc:
 +        return {"success": False, "notInLibrary": True,
-+                "message": f"{part} isn't in the datasheet library. Find the manufacturer's PDF link "
-+                           "(WebSearch) and call fetch_datasheet again with url."}
++                "message": f"{part} isn't in the datasheet library. Find the maker's PDF link (WebSearch) "
++                           "and call fetch_datasheet again with url; add lcsc (the part's LCSC number) "
++                           "if you know it, as a fallback for makers that refuse programs."}
 +
-+    if not params.get("browser"):
-+        data, why = download(url)
-+        if data is not None:
-+            tmp = _target(part, maker, root) + ".download"
-+            with open(tmp, "wb") as f:
-+                f.write(data)
-+            try:
-+                info = _store(tmp, part, maker, root, url=url)
-+            finally:
-+                os.remove(tmp)
-+            return {"success": True, "message": "Downloaded into the datasheet library", **info}
-+        return {"success": False, "refused": True, "reason": why, "url": url,
-+                "message": (f"The download didn't work: {why}. Don't try to get round it (no other "
-+                            "clients, user agents or WebFetch of the same file). If the URL may be "
-+                            "wrong, find the right PDF link and try once more. Otherwise tell the "
-+                            "user in one line that the site only lets a person download it, and "
-+                            "that you're opening it in their browser, where they should download "
-+                            "or save the PDF (in its PDF viewer: the download button or Ctrl+S) to "
-+                            "their Downloads folder. Then call fetch_datasheet again with the same "
-+                            "part and url and browser: true.")}
++    if not browser:
++        why = None
++        if url:
++            data, why = download(url)
++            if data is not None:
++                info = _keep(data, part, maker, root, url=url, copy="maker")
++                return {"success": True, "message": "Downloaded from the maker into the datasheet library",
++                        **info}
++        if lcsc:
++            data, product, lcsc_why = from_lcsc(lcsc, part)
++            if data is not None:
++                info = _keep(data, part, maker or product.get("brand"), root, url=product["datasheet"],
++                             copy="lcsc", lcsc=product.get("sku"), mpn=product.get("mpn"),
++                             makerUrl=url or None)
++                date = info.get("printedDate")
++                return {"success": True,
++                        "message": ("The maker refused programs, so this is " if url else "Took ")
++                        + "LCSC's copy, in the datasheet library",
++                        "makerRefused": why, **info,
++                        "note": LCSC_NOTE.format(date=f", dated {date}" if date else "")}
++            why = f"{why}; LCSC: {lcsc_why}" if why else f"LCSC: {lcsc_why}"
++        else:
++            return {"success": False, "refused": True, "reason": why, "url": url,
++                    "message": (f"The maker's download didn't work: {why}. Don't try to get round it (no "
++                                "other clients, user agents or WebFetch of the same file). If the URL may "
++                                "be wrong, find the right PDF link and try once more. Otherwise get LCSC's "
++                                "copy, with no step for the user: find the part's LCSC number (the "
++                                "symbol's LCSC field, or WebSearch on lcsc.com for the part number: "
++                                "lcsc.com/product-detail/C…) and call fetch_datasheet again with the same "
++                                "part and url and lcsc. Only if LCSC doesn't have it: tell the user in one "
++                                "line that the site only lets a person download it and that you're opening "
++                                "it in their browser, where they should download or save the PDF to their "
++                                "Downloads folder; then call fetch_datasheet with the same part and url and "
++                                "browser: true.")}
++        return {"success": False, "refused": True, "reason": why, "url": url or None,
++                "message": (f"No copy could be downloaded: {why}. Don't try to get round it. If the "
++                            "LCSC number may be wrong, check it (LCSC's page lists the part as "
++                            "manufacturer part number) and try once more. Otherwise, with the maker's "
++                            "url: tell the user in one line that the site only lets a person download "
++                            "it, and that you're opening it in their browser, where they should "
++                            "download or save the PDF (in its PDF viewer: the download button or "
++                            "Ctrl+S) to their Downloads folder. Then call fetch_datasheet again with "
++                            "the same part and url and browser: true.")}
++    if not url:
++        return {"success": False, "message": "browser: true needs the maker's url"}
 +
 +    folder = downloads_dir()
 +    wait = max(10, min(float(params.get("wait") or WAIT_DEFAULT), WAIT_MAX))
@@ -1127,7 +1291,8 @@ index 0000000..8431457
 +                "message": (f"No new PDF arrived in {folder} within {int(wait)} s. Ask the user to "
 +                            "save the PDF there (or attach it to the chat) and tell you; then call "
 +                            "fetch_datasheet with browser: true again, or with file: the PDF's path.")}
-+    info = _store(found, part, maker, root, url=url, source="browser download " + os.path.basename(found))
++    info = _store(found, part, maker, root, url=url, copy="browser",
++                  source="browser download " + os.path.basename(found))
 +    return {"success": True, "message": f"Took {os.path.basename(found)} from Downloads into the library",
 +            **info}
 +
@@ -20867,10 +21032,10 @@ index d3737bc..b227256 100644
    // Suggest Placement Tool
    // ------------------------------------------------------
 diff --git a/src/tools/datasheet.ts b/src/tools/datasheet.ts
-index 94dffc6..74701b0 100644
+index 94dffc6..642f205 100644
 --- a/src/tools/datasheet.ts
 +++ b/src/tools/datasheet.ts
-@@ -109,4 +109,62 @@ Example: get_datasheet_url("C179739")
+@@ -109,4 +109,67 @@ Example: get_datasheet_url("C179739")
        };
      },
    );
@@ -20879,15 +21044,20 @@ index 94dffc6..74701b0 100644
 +  server.tool(
 +    "fetch_datasheet",
 +    "Get a part's datasheet PDF into the user's local datasheet library (Documents/PowerLab Datasheets, kept across projects). " +
-+      "With only part (and maker): says whether it's already there. With url: downloads it, identifying itself honestly as a program. " +
-+      "Many sites refuse that (bot checks, 403, an HTML page instead of the PDF); then the result says so and you call again with browser: true, " +
-+      "which opens the URL in the user's own browser and waits up to `wait` seconds for the PDF they download or save there to arrive in their Downloads folder, " +
++      "With only part (and maker): says whether it's already there. With url: downloads it from the maker, identifying itself honestly as a program. " +
++      "Some makers refuse that (ST, Nexperia: bot checks, 403); with lcsc (the part's LCSC number, e.g. C478145) it then takes LCSC's copy, which LCSC serves to programs, " +
++      "checking LCSC lists the same part. LCSC's copy can be years older than the maker's current revision: the result gives its printedDate; quote it with the values. " +
++      "Last resort, browser: true opens the maker's url in the user's own browser and waits up to `wait` seconds for the PDF they download or save there to arrive in their Downloads folder, " +
 +      "then copies it into the library. Tell the user before you open their browser. Never try to get round a refusal another way. " +
 +      "With file: adds a PDF the user attached or saved (it stays where it is). Use the exact part number the user has, suffix included.",
 +    {
 +      part: z.string().describe("Part number, as on the BOM, e.g. DRV8323RS, IPB017N10N5"),
 +      maker: z.string().optional().describe("Manufacturer, e.g. TI, Infineon, onsemi; the library's folder for it"),
 +      url: z.string().optional().describe("The manufacturer's (or a major distributor's) PDF link, http(s)"),
++      lcsc: z
++        .string()
++        .optional()
++        .describe("The part's LCSC number (C478145) or lcsc.com product page: LCSC's copy when the maker refuses programs or there is no url"),
 +      browser: z
 +        .boolean()
 +        .optional()

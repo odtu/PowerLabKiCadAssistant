@@ -110,8 +110,36 @@ class WiringTests(unittest.TestCase):
         with open(skill, encoding="utf-8") as f:
             text = f.read()
         self.assertTrue(text.startswith("---\nname: powerlab-datasheet-lookup\n"))
-        for word in ("fetch_datasheet", "read_datasheet", "browser: true", "never\n   try to get round it"):
+        for word in ("fetch_datasheet", "read_datasheet", "browser: true", "never try to\n   get round it",
+                     "and `lcsc`", "`printedDate`"):
             self.assertIn(word, text)
+
+
+class PureTests(unittest.TestCase):
+    def test_printed_date(self):
+        cases = {
+            "LMR51430 SLUSEF4A – JUNE 2022 – REVISED NOVEMBER 2022 www.ti.com": "November 2022",
+            "PSMN1R0-30YLD N-channel 30 V 14 December 2015 Product data sheet": "14 December 2015",
+            "DS12499 - Rev 3 - July 2020 For further information contact": "July 2020",
+            "Data sheet, April 21, 2023, rev. B": "21 April 2023",
+            "Released 2019-03-05, superseded 2021-11-30": "30 November 2021",
+            "No date here, (C) 2022 and 60134": None,
+        }
+        for text, date in cases.items():
+            self.assertEqual(ds.printed_date(text), date, text)
+
+    def test_same_part(self):
+        self.assertTrue(ds.same_part("PSMN1R0-30YLD", "PSMN1R0-30YLDX"))  # packing suffix
+        self.assertTrue(ds.same_part("STUSB4500", "STUSB4500QTR"))
+        self.assertFalse(ds.same_part("PSMN1R0-30YLD", "PSMN1R2-30YLD"))
+        self.assertFalse(ds.same_part("LMR51430", "LMR51420"))
+        self.assertFalse(ds.same_part("TPX100", ""))
+
+    def test_lcsc_product_reads_the_parts_own_datasheet(self):
+        product = ds.lcsc_product(LCSC_PAGE.format(base="https://datasheet.lcsc.com"))
+        self.assertEqual(product, {"sku": "C100", "mpn": "TPX100X", "brand": "Lab",
+                                   "datasheet": "https://datasheet.lcsc.com/ldx-datasheet.pdf?productCode=C100"})
+        self.assertIsNone(ds.lcsc_product("<html>no data</html>"))
 
 
 class DownloadWatchTests(TempDirs):
@@ -151,12 +179,34 @@ class DownloadWatchTests(TempDirs):
         self.assertEqual(self.run_watch([lambda: self.write(path)]), path)
 
 
+LCSC_PDF = make_pdf([["TPX100 100 V N-channel MOSFET", "14 December 2015 Product data sheet"],
+                     ["7.1 Absolute Maximum Ratings", "Gate-source voltage VGS 20 V"]])
+
+LCSC_PAGE = """<html><head><script type="application/ld+json">{{"@context":"https://schema.org",
+"@type":"Product","name":"Lab TPX100X","sku":"C100","mpn":"TPX100X","brand":{{"@type":"Brand","name":"Lab"}},
+"subjectOf":{{"@type":"DigitalDocument","name":"Datasheet","url":"{base}/ldx-datasheet.pdf?productCode=C100"}}}}
+</script><script type="application/ld+json">{{"@type":"BreadcrumbList"}}</script></head><body>
+<script>window.__NUXT__={{"similar":[{{"pdfUrl":"{base}/other-part.pdf"}}]}}</script></body></html>"""
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
     agents = []
+    paths = []
 
     def do_GET(self):
         Handler.agents.append(self.headers.get("User-Agent"))
-        if self.path == "/ok.pdf":
+        Handler.paths.append(self.path)
+        if self.path == "/product-detail/C100.html":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            self.wfile.write(LCSC_PAGE.format(base="http://" + self.headers["Host"]).encode())
+        elif self.path.startswith("/ldx-datasheet.pdf"):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/pdf")
+            self.end_headers()
+            self.wfile.write(LCSC_PDF)
+        elif self.path == "/ok.pdf":
             self.send_response(200)
             self.send_header("Content-Type", "application/pdf")
             self.end_headers()
@@ -203,9 +253,60 @@ class FetchTests(TempDirs):
             self.assertFalse(out["success"])
             self.assertTrue(out["refused"])
             self.assertIn(why, out["reason"])
-            self.assertIn("browser: true", out["message"])
+            self.assertIn("lcsc", out["message"])  # LCSC's copy next, with nothing for the user to do
+            self.assertIn("browser: true", out["message"])  # the user's browser only after that
             self.assertIn("Don't try to get round it", out["message"])
             self.assertEqual(len(Handler.agents), n + 1)  # one request, no retries
+
+    def lcsc_on_local_server(self):
+        """LCSC's checks accept this test server's pages in place of lcsc.com."""
+        saved = ds.LCSC_PAGE, ds._lcsc_host_ok
+        ds.LCSC_PAGE = self.base + "/product-detail/{}.html"
+        ds._lcsc_host_ok = lambda url: url.startswith(self.base)
+        self.addCleanup(lambda: (setattr(ds, "LCSC_PAGE", saved[0]), setattr(ds, "_lcsc_host_ok", saved[1])))
+
+    def test_lcsc_copy_when_the_maker_refuses(self):
+        self.lcsc_on_local_server()
+        out = ds.fetch({"part": "TPX100", "maker": "Lab", "url": self.base + "/blocked", "lcsc": "c100"})
+        self.assertTrue(out["success"], out)
+        self.assertEqual(out["copy"], "lcsc")
+        self.assertEqual((out["lcsc"], out["mpn"]), ("C100", "TPX100X"))
+        self.assertIn("HTTP 403", out["makerRefused"])
+        self.assertEqual(out["printedDate"], "14 December 2015")
+        self.assertIn("dated 14 December 2015", out["note"])
+        self.assertIn("ldx-datasheet.pdf", Handler.paths[-1])  # the page's own datasheet, not a related part's
+        self.assertTrue(all(a.startswith("PowerLabKiCadAssistant") for a in Handler.agents[-3:]))
+        again = ds.fetch({"part": "TPX100", "maker": "Lab"})
+        self.assertEqual(again["copy"], "lcsc")
+        self.assertIn("dated 14 December 2015", again["note"])  # the date goes with every later use
+
+    def test_lcsc_alone_and_a_different_part_refused(self):
+        self.lcsc_on_local_server()
+        self.assertTrue(ds.fetch({"part": "TPX100", "lcsc": "C100"})["success"])
+        out = ds.fetch({"part": "TPX200", "url": self.base + "/blocked", "lcsc": "C100"})
+        self.assertFalse(out["success"])
+        self.assertIn("is TPX100X, not TPX200", out["reason"])
+        self.assertIn("browser: true", out["message"])
+        self.assertFalse(ds.fetch({"part": "TPX100", "lcsc": "C999", "refresh": True})["success"])  # 403 page
+
+    def test_lcsc_only_on_lcsc_com(self):
+        self.assertEqual(ds.lcsc_page("c478145"), "https://www.lcsc.com/product-detail/C478145.html")
+        page = "https://www.lcsc.com/product-detail/C478145.html"
+        self.assertEqual(ds.lcsc_page(page), page)
+        for bad in ("https://evil.example/product-detail/C1.html", "http://www.lcsc.com/x", "478145",
+                    "https://lcsc.com.evil.example/x"):
+            self.assertIsNone(ds.lcsc_page(bad), bad)
+        out = ds.fetch({"part": "TPX100", "lcsc": "https://evil.example/x"})
+        self.assertFalse(out["success"])
+
+    def test_browser_replaces_lcsc_copy(self):
+        self.lcsc_on_local_server()
+        ds.fetch({"part": "TPX100", "maker": "Lab", "url": self.base + "/blocked", "lcsc": "C100"})
+        out = ds.fetch({"part": "TPX100", "maker": "Lab", "url": self.base + "/blocked", "browser": True,
+                        "wait": 10}, opener=lambda url: self.write(os.path.join(self.downloads, "new.pdf")))
+        self.assertTrue(out["success"], out)
+        self.assertEqual(out["copy"], "browser")
+        self.assertEqual(ds.fetch({"part": "TPX100", "maker": "Lab"})["copy"], "browser")
 
     def test_browser_path_takes_the_users_download(self):
         opened = []
