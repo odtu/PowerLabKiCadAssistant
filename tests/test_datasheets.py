@@ -92,10 +92,10 @@ class WiringTests(unittest.TestCase):
         for tool in ("fetch_datasheet", "read_datasheet"):
             self.assertIn(f'+    "{tool}",', patch)  # TypeScript tool
             self.assertIn(f'"{tool}": datasheets.', patch)  # Python dispatcher
-        self.assertIn('+    tools: ["fetch_datasheet", "read_datasheet", "get_datasheet_url", "enrich_datasheets"],',
+        self.assertIn('"fetch_datasheet", "read_datasheet", "get_datasheet_url", "enrich_datasheets"],',
                       patch)  # registry, so search_tools finds them
         self.assertIn('+  "fetch_datasheet", // PowerLab patch', patch)  # 600 s: it waits for the browser
-        self.assertIn("+from commands import datasheets, part_spacing,", patch)
+        self.assertIn("+from commands import datasheets, part_search, part_spacing,", patch)
 
     def test_mupdf_never_writes_to_stdout(self):
         """The Python worker answers on stdout; a damaged PDF makes MuPDF print."""

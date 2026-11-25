@@ -40,6 +40,16 @@ The installer downloads these from their official sources into `%LOCALAPPDATA%\P
 | [Node.js](https://nodejs.org/), [Git](https://git-scm.com/), [GitHub CLI](https://cli.github.com/) (optional) | MIT; GPL-2.0 (Git); MIT |
 | macOS: a Chromium browser for review PDFs ([Google Chrome](https://www.google.com/chrome/), [Microsoft Edge](https://www.microsoft.com/edge), Chromium or Brave), used headless if one is installed | Proprietary (Chrome, Edge); MPL-2.0 (Brave); BSD-3-Clause (Chromium) |
 
+## Web services the tools use
+
+Nothing is downloaded or redistributed from these; the kicad tools send them requests and use the answers.
+
+| Service | Used for | Terms |
+|---|---|---|
+| [jlcsearch](https://jlcsearch.tscircuit.com) by [tscircuit](https://github.com/tscircuit/jlcsearch) | `search_lcsc_catalog`: parts, stock and prices from the LCSC/JLCPCB catalogue | Free public service; its code is MIT. Catalogue data is LCSC's |
+| [LCSC](https://www.lcsc.com) product pages and datasheet files | `fetch_datasheet`: LCSC's copy of a datasheet when the maker refuses programs | LCSC's site terms; datasheets stay their makers' copyright and are kept only in the user's own library |
+| Part makers' sites (TI, onsemi, …) | `fetch_datasheet`: datasheet PDFs | Each maker's site terms and copyright |
+
 ## Used by this repository's GitHub workflows
 
 | Action | License |

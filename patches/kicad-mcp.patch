@@ -27,7 +27,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 diff --git a/README.md b/README.md
-index 831a2f3..2feb18b 100644
+index 831a2f3..1f48fce 100644
 --- a/README.md
 +++ b/README.md
 @@ -23,8 +23,8 @@ The [Model Context Protocol](https://modelcontextprotocol.io/) is an open standa
@@ -36,8 +36,8 @@ index 831a2f3..2feb18b 100644
  
 -- 233 tools registered, 173 of them indexed for keyword discovery
 -- 173 tools across 16 categories with JSON Schema validation
-+- 245 tools registered, 188 of them indexed for keyword discovery
-+- 188 tools across 17 categories with JSON Schema validation
++- 246 tools registered, 189 of them indexed for keyword discovery
++- 189 tools across 17 categories with JSON Schema validation
  - Keyword tool discovery via `search_tools` / `get_category_tools`
  - 23 dynamic resources exposing project state
  - Complete schematic workflow with 65 tools (authoring, batch edits, hierarchy, layout) and dynamic symbol loading (~10,000 symbols)
@@ -46,7 +46,7 @@ index 831a2f3..2feb18b 100644
  - **32 essential tools** that `search_tools` surfaces first, covering the
    operations nearly every session needs
 -- **173 tools indexed across 16 categories** (board, component, export, drc,
-+- **188 tools indexed across 17 categories** (board, component, export, drc,
++- **189 tools indexed across 17 categories** (board, component, export, drc,
    schematic, library, symbol_library, symbol_pins, schematic_hierarchy,
    schematic_layout, schematic_batch, routing, autoroute, validation,
 -  parts-registry, digikey)
@@ -3752,6 +3752,256 @@ index ce1981d..da7ad90 100644
  
          # Replace environment variables
          for var, value in env_vars.items():
+diff --git a/python/commands/part_search.py b/python/commands/part_search.py
+new file mode 100644
+index 0000000..688eff5
+--- /dev/null
++++ b/python/commands/part_search.py
+@@ -0,0 +1,244 @@
++"""LCSC/JLCPCB catalogue search for component research (PowerLab patch).
++
++search_lcsc_catalog asks jlcsearch (https://jlcsearch.tscircuit.com, tscircuit's free
++public index of the JLCPCB/LCSC catalogue; no account or key) for candidates:
++
++- search: free text over part number and description, optionally one package;
++- table:  a parametric table (mosfets, diodes, capacitors, ldos, buck_boost_converters,
++          microcontrollers, ...) filtered by its fields: `<field>_min` / `<field>_max`,
++          `package`, booleans like `is_schottky`;
++- tables: the parametric tables and their fields.
++
++Rows come back with the LCSC number (fetch_datasheet's `lcsc`), part number, package,
++stock and price. The values are LCSC's parsed parameters: some are missing or wrong, so
++a shortlisted part is always checked in its datasheet. The tool identifies itself honestly
++and makes one request per call (two for an unknown table name).
++"""
++
++import json
++import re
++import urllib.error
++import urllib.parse
++import urllib.request
++
++BASE = "https://jlcsearch.tscircuit.com"
++USER_AGENT = "PowerLabKiCadAssistant (component research; +https://github.com/odtu/PowerLabKiCadAssistant)"
++LIMIT_DEFAULT = 25
++LIMIT_MAX = 100
++_TABLES = {}  # table -> its fields, filled from the service's home page and first rows
++_PLAIN = ("lcsc", "mfr", "description", "stock", "price1", "price", "in_stock", "attributes",
++          "is_basic", "is_preferred", "package", "category", "subcategory")
++
++
++def _get_json(path, query, timeout=30):
++    url = BASE + path + ("?" + urllib.parse.urlencode(query) if query else "")
++    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
++    try:
++        with urllib.request.urlopen(req, timeout=timeout) as r:
++            return json.loads(r.read(16 * 1024 * 1024)), None
++    except urllib.error.HTTPError as e:
++        return None, f"HTTP {e.code} {e.reason}"
++    except Exception as e:
++        return None, f"{type(e).__name__}: {e}"
++
++
++def _rows(data):
++    if isinstance(data, dict):
++        for value in data.values():
++            if isinstance(value, list):
++                return value
++    return []
++
++
++def price_tiers(text):
++    """'1-9:1.26,10-29:1.05,1500-:0.70' -> [{"from": 1, "usd": 1.26}, ...]"""
++    tiers = []
++    for part in str(text or "").split(","):
++        m = re.match(r"\s*(\d+)\s*-\s*\d*\s*:\s*([\d.]+)\s*$", part)
++        if m:
++            tiers.append({"from": int(m.group(1)), "usd": float(m.group(2))})
++    return tiers
++
++
++def tidy(row):
++    """One catalogue row as the tool returns it."""
++    out = {"lcsc": f"C{row['lcsc']}" if row.get("lcsc") is not None else None,
++           "mpn": row.get("mfr"), "package": row.get("package"), "stock": row.get("stock")}
++    tiers = price_tiers(row.get("price"))
++    out["priceUsd"] = row.get("price1") if row.get("price1") is not None else (tiers[0]["usd"] if tiers else None)
++    if tiers:
++        out["priceTiers"] = tiers
++    if row.get("is_basic") or row.get("is_preferred"):
++        out["jlcpcbLibrary"] = "basic" if row.get("is_basic") else "preferred"  # lower assembly fee at JLCPCB
++    for key in ("category", "subcategory"):
++        if row.get(key):
++            out[key] = row[key]
++    params = {k: v for k, v in row.items() if k not in _PLAIN and v not in (None, "")}
++    if params:
++        out["params"] = params
++    attrs = row.get("attributes")
++    if isinstance(attrs, str):
++        try:
++            attrs = json.loads(attrs)
++        except ValueError:
++            attrs = None
++    if isinstance(attrs, dict) and attrs:
++        out["attributes"] = attrs
++    if row.get("description"):
++        out["description"] = re.sub(r"\s+", " ", str(row["description"]))[:300]
++    return out
++
++
++def tables():
++    """{table: [fields]} from the service's home page, cached for the process."""
++    if _TABLES:
++        return dict(_TABLES), None
++    req = urllib.request.Request(BASE + "/", headers={"User-Agent": USER_AGENT})
++    try:
++        with urllib.request.urlopen(req, timeout=30) as r:
++            html = r.read(4 * 1024 * 1024).decode("utf-8", "replace")
++    except Exception as e:
++        return None, f"{type(e).__name__}: {e}"
++    for name in sorted(set(re.findall(r'href="/([a-z_]+)/list"', html))):
++        if name not in ("categories", "footprint_index", "components"):
++            _TABLES[name] = []
++    return dict(_TABLES), None
++
++
++def _fields_of(table):
++    if _TABLES.get(table):
++        return _TABLES[table]
++    data, _ = _get_json(f"/{table}/list.json", {"limit": 1})
++    rows = _rows(data)
++    fields = [k for k in (rows[0] if rows else {}) if k not in _PLAIN or k == "package"]
++    if fields:
++        _TABLES[table] = fields
++    return fields
++
++
++def _sort(rows, key, descending):
++    def value(row):
++        v = row.get(key)
++        if v is None:
++            v = (row.get("params") or {}).get(key)
++        return v
++
++    have = [r for r in rows if isinstance(value(r), (int, float))]
++    rest = [r for r in rows if not isinstance(value(r), (int, float))]
++    return sorted(have, key=value, reverse=descending) + rest
++
++
++def _num(v):
++    try:
++        return float(v)
++    except (TypeError, ValueError):
++        return None
++
++
++def check_filters(rows, filters):
++    """Keep the rows that meet every filter, as far as their values show; jlcsearch ignores
++    filters it doesn't know (e.g. is_schottky) without saying so. Returns (kept, ignored),
++    ignored being the filters some returned row broke."""
++    ignored, kept = set(), []
++    for row in rows:
++        values = dict(row.get("params") or {}, package=row.get("package"))
++        ok = True
++        for key, want in filters.items():
++            field, bound = key, None
++            if key.endswith("_min") or key.endswith("_max"):
++                field, bound = key[:-4], key[-3:]
++            have = values.get(field)
++            if have is None:
++                ok = False  # the catalogue has no value: it can't be shown to meet the filter
++                continue
++            if bound:
++                h, w = _num(have), _num(want)
++                if h is not None and w is not None and ((bound == "min" and h < w) or (bound == "max" and h > w)):
++                    ok, _ = False, ignored.add(key)
++            elif str(have).lower() != str(want).lower():
++                ok, _ = False, ignored.add(key)
++        if ok:
++            kept.append(row)
++    return kept, sorted(ignored)
++
++
++def search(params):
++    mode = (params.get("mode") or ("table" if params.get("table") else "search")).lower()
++    limit = max(1, min(int(params.get("limit") or LIMIT_DEFAULT), LIMIT_MAX))
++    text = searched = ""
++    if mode == "tables":
++        found, why = tables()
++        if found is None:
++            return {"success": False, "message": f"jlcsearch didn't answer ({why})"}
++        wanted = params.get("table")
++        if wanted:
++            return {"success": True, "table": wanted, "fields": _fields_of(wanted),
++                    "filters": "<field>_min / <field>_max for numbers (SI units: V, A, ohm, F, Hz, W), "
++                               "<field> for text and true/false"}
++        return {"success": True, "tables": sorted(found),
++                "message": "Call with mode tables and table to get a table's fields"}
++
++    if mode == "search":
++        text = (params.get("query") or "").strip()
++        if not text:
++            return {"success": False, "message": "search needs query (a part number or words, e.g. '100V mosfet LFPAK')"}
++        query = {"search": text, "limit": LIMIT_MAX if params.get("sortBy") else limit}
++        if params.get("package"):
++            query["package"] = params["package"]
++        data, why = _get_json("/components/list.json", query)
++        # jlcsearch needs every word in one listing ("gate driver" finds parts listed as "Gate
++        # Drive ICs", "half-bridge gate driver 100V" none): drop words from the end until it finds some.
++        words = text.split()
++        searched = text
++        while data is not None and not _rows(data) and len(words) > 1:
++            words = words[:-1]
++            searched = " ".join(words)
++            data, why = _get_json("/components/list.json", dict(query, search=searched))
++    elif mode == "table":
++        table = (params.get("table") or "").strip().lower()
++        if not re.fullmatch(r"[a-z_]{2,40}", table):
++            return {"success": False, "message": "table is a jlcsearch table name, e.g. mosfets (mode tables lists them)"}
++        query = {"limit": LIMIT_MAX if params.get("sortBy") or params.get("filters") else limit}
++        for key, value in (params.get("filters") or {}).items():
++            if not re.fullmatch(r"[a-z0-9_]{1,60}", str(key)) or isinstance(value, (dict, list)):
++                return {"success": False, "message": f"filter {key!r}: use field names like drain_source_voltage_min with a number, text or true/false"}
++            query[key] = str(value).lower() if isinstance(value, bool) else value
++        if params.get("package"):
++            query["package"] = params["package"]
++        data, why = _get_json(f"/{table}/list.json", query)
++        if data is None and why and why.startswith("HTTP 404"):
++            found, _ = tables()
++            return {"success": False, "message": f"no table '{table}'", "tables": sorted(found or [])}
++    else:
++        return {"success": False, "message": "mode is search, table or tables"}
++
++    if data is None:
++        return {"success": False, "message": f"jlcsearch didn't answer ({why}); try again later, or WebSearch "
++                                             "the makers' parametric selectors"}
++    rows = [tidy(r) for r in _rows(data)]
++    returned = len(rows)
++    ignored = []
++    if mode == "table" and params.get("filters"):
++        rows, ignored = check_filters(rows, params["filters"])
++    if params.get("inStock", True):
++        rows = [r for r in rows if (r.get("stock") or 0) > 0]
++    if params.get("sortBy"):
++        rows = _sort(rows, params["sortBy"], bool(params.get("descending")))
++    out = {"success": True, "count": len(rows[:limit]), "parts": rows[:limit],
++           "note": "Catalogue values are LCSC's parsed parameters and can be missing or wrong: check every "
++                   "shortlisted part in its datasheet (fetch_datasheet with lcsc). Stock and prices are "
++                   "jlcsearch's last copy of LCSC's, not live."}
++    if mode == "search" and searched != text:
++        out["searchedFor"] = searched
++        out["searchNote"] = (f"Nothing listed all of '{text}', so this searched for '{searched}'. The service "
++                             "needs every word in one listing: use the catalogue's words (e.g. 'gate driver', "
++                             "'current sense amplifier') plus one number, and check the rest in the results.")
++    if ignored:
++        out["ignoredByService"] = ignored
++        out["filterNote"] = (f"jlcsearch doesn't filter on {', '.join(ignored)}: only the {returned} rows it "
++                             "returned were checked here, so parts may be missing. Narrow the table by its "
++                             "numeric fields or package, or use mode search with words for it (e.g. "
++                             "'schottky 100V SMA').")
++    if mode == "table" and not rows:
++        out["fields"] = _fields_of(params.get("table", "").lower())
++    return out
 diff --git a/python/commands/part_spacing.py b/python/commands/part_spacing.py
 new file mode 100644
 index 0000000..78f1697
@@ -17492,14 +17742,14 @@ index 6f9a813..a2d32a8 100644
              # Create outline polyline
              outline = PolyLine()
 diff --git a/python/kicad_interface.py b/python/kicad_interface.py
-index c6ac305..01fc0de 100644
+index c6ac305..1a91384 100644
 --- a/python/kicad_interface.py
 +++ b/python/kicad_interface.py
 @@ -36,6 +36,7 @@ if sys.platform == "win32":
  
  import sexpdata
  from annotations import AnnotationLoader
-+from commands import datasheets, part_spacing, powerlab_route, routing_check, zone_edit  # PowerLab patch
++from commands import datasheets, part_search, part_spacing, powerlab_route, routing_check, zone_edit  # PowerLab patch
  from commands.schematic_handlers import SchematicHandlersMixin
  from commands.wire_manager import WireManager
  from resources.resource_definitions import RESOURCE_DEFINITIONS, handle_resource_read
@@ -17534,16 +17784,17 @@ index c6ac305..01fc0de 100644
              "get_design_rules": self.design_rule_commands.get_design_rules,
              "run_drc": self.design_rule_commands.run_drc,
              "get_drc_violations": self.design_rule_commands.get_drc_violations,
-@@ -624,6 +630,8 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -624,6 +630,9 @@ class KiCADInterface(SchematicHandlersMixin):
              # Datasheet commands
              "enrich_datasheets": self._handle_enrich_datasheets,
              "get_datasheet_url": self._handle_get_datasheet_url,
 +            "fetch_datasheet": datasheets.fetch,  # PowerLab patch
 +            "read_datasheet": datasheets.read,  # PowerLab patch
++            "search_lcsc_catalog": part_search.search,  # PowerLab patch
              # Schematic commands
              "create_schematic": self._handle_create_schematic,
              "load_schematic": self._handle_load_schematic,
-@@ -693,6 +701,8 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -693,6 +702,8 @@ class KiCADInterface(SchematicHandlersMixin):
              "add_schematic_hierarchical_label": self._handle_add_schematic_hierarchical_label,
              "add_schematic_text": self._handle_add_schematic_text,
              "list_schematic_texts": self._handle_list_schematic_texts,
@@ -17552,7 +17803,7 @@ index c6ac305..01fc0de 100644
              "add_sheet_pin": self._handle_add_sheet_pin,
              "import_svg_logo": self._handle_import_svg_logo,
              # UI/Process management commands
-@@ -732,10 +742,16 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -732,10 +743,16 @@ class KiCADInterface(SchematicHandlersMixin):
              "remove_library_table_entry": remove_library_table_entry,
              "set_library_table_uri": set_library_table_uri,
              # Freerouting autoroute commands
@@ -17570,7 +17821,7 @@ index c6ac305..01fc0de 100644
              # Eagle import commands
              "import_eagle_project": self.eagle_commands.import_eagle_project,
              # Schematic migration
-@@ -754,15 +770,21 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -754,15 +771,21 @@ class KiCADInterface(SchematicHandlersMixin):
      IPC_CAPABLE_COMMANDS = {
          # Routing commands
          "route_trace": "_ipc_route_trace",
@@ -17592,7 +17843,7 @@ index c6ac305..01fc0de 100644
          # Board commands
          "add_text": "_ipc_add_text",
          "add_board_text": "_ipc_add_text",
-@@ -771,6 +793,10 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -771,6 +794,10 @@ class KiCADInterface(SchematicHandlersMixin):
          "add_board_outline": "_ipc_add_board_outline",
          "add_mounting_hole": "_ipc_add_mounting_hole",
          "get_layer_list": "_ipc_get_layer_list",
@@ -17603,7 +17854,7 @@ index c6ac305..01fc0de 100644
          # Component commands
          "place_component": "_ipc_place_component",
          "move_component": "_ipc_move_component",
-@@ -779,11 +805,32 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -779,11 +806,32 @@ class KiCADInterface(SchematicHandlersMixin):
          "get_component_list": "_ipc_get_component_list",
          "get_component_properties": "_ipc_get_component_properties",
          "set_footprint_type": "_ipc_set_footprint_type",
@@ -17636,7 +17887,7 @@ index c6ac305..01fc0de 100644
      # Commands that are implemented by the explicit IPC command handlers in
      # command_routes, rather than by the generic IPC_CAPABLE_COMMANDS fast path.
      IPC_DIRECT_COMMANDS = {
-@@ -1021,6 +1068,14 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -1021,6 +1069,14 @@ class KiCADInterface(SchematicHandlersMixin):
                  ):
                      self._downgrade_session_to_swig()
  
@@ -17651,7 +17902,7 @@ index c6ac305..01fc0de 100644
              # Check if we can use IPC for this command (real-time UI sync).
              # A session pinned to SWIG never routes board commands over IPC,
              # even when IPC is connected — the GUI may hold a stale copy of
-@@ -1075,6 +1130,22 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -1075,6 +1131,22 @@ class KiCADInterface(SchematicHandlersMixin):
              if handler:
                  # Execute the command
                  result = handler(params)
@@ -17674,7 +17925,7 @@ index c6ac305..01fc0de 100644
                  logger.debug(f"Command result: {result}")
  
                  # Add backend indicator
-@@ -1231,11 +1302,15 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -1231,11 +1303,15 @@ class KiCADInterface(SchematicHandlersMixin):
          "replace_board_outline",
          "delete_graphic",
          "update_graphic",
@@ -17690,7 +17941,7 @@ index c6ac305..01fc0de 100644
          "refill_zones",
          "import_svg_logo",
          "sync_schematic_to_board",
-@@ -1848,6 +1923,576 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -1848,6 +1924,576 @@ class KiCADInterface(SchematicHandlersMixin):
          state = self._dirty_state(board_path)
          return {"success": True, "boardPath": board_path, **state}
  
@@ -18267,7 +18518,7 @@ index c6ac305..01fc0de 100644
      def _handle_batch_move_components(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """Batch move wrapper that preserves the external-edit save guard."""
          if getattr(self, "session_backend", None) == "ipc" and not self._ipc_session_alive():
-@@ -4667,6 +5312,59 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -4667,6 +5313,59 @@ class KiCADInterface(SchematicHandlersMixin):
              logger.error(traceback.format_exc())
              return {"success": False, "message": str(e)}
  
@@ -18327,7 +18578,7 @@ index c6ac305..01fc0de 100644
      def _handle_get_elements_in_region(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """List all wires, labels, and symbols within a rectangular region"""
          logger.info("Getting elements in schematic region")
-@@ -4677,7 +5375,8 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -4677,7 +5376,8 @@ class KiCADInterface(SchematicHandlersMixin):
  
              schematic_path = params.get("schematicPath")
              if not schematic_path:
@@ -18337,7 +18588,7 @@ index c6ac305..01fc0de 100644
  
              x1 = float(params.get("x1", 0))
              y1 = float(params.get("y1", 0))
-@@ -4948,6 +5647,10 @@ print("ok")
+@@ -4948,6 +5648,10 @@ print("ok")
                          }
                      self.board = reloaded
                      self._update_command_handlers()
@@ -18348,7 +18599,7 @@ index c6ac305..01fc0de 100644
                      logger.info("Zone fill subprocess succeeded")
                      return {
                          "success": True,
-@@ -4982,47 +5685,30 @@ print("ok")
+@@ -4982,47 +5686,30 @@ print("ok")
      # =========================================================================
  
      def _ipc_route_trace(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -18415,7 +18666,7 @@ index c6ac305..01fc0de 100644
  
      def _ipc_route_arc_trace(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for route_arc_trace - adds copper arc with real-time UI update"""
-@@ -5079,6 +5765,65 @@ print("ok")
+@@ -5079,6 +5766,65 @@ print("ok")
              logger.error(f"IPC route_arc_trace error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -18481,7 +18732,7 @@ index c6ac305..01fc0de 100644
      def _ipc_add_via(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for add_via - adds via with real-time UI update"""
          try:
-@@ -5131,21 +5876,37 @@ print("ok")
+@@ -5131,21 +5877,37 @@ print("ok")
              net = params.get("net")
              clearance = params.get("clearance", 0.5)
              min_width = params.get("minWidth", 0.25)
@@ -18526,7 +18777,7 @@ index c6ac305..01fc0de 100644
  
              success = self.ipc_board_api.add_zone(
                  points=formatted_points,
-@@ -5156,6 +5917,7 @@ print("ok")
+@@ -5156,6 +5918,7 @@ print("ok")
                  priority=priority,
                  fill_mode=fill_type,
                  name=name,
@@ -18534,7 +18785,7 @@ index c6ac305..01fc0de 100644
              )
  
              return {
-@@ -5179,6 +5941,65 @@ print("ok")
+@@ -5179,6 +5942,65 @@ print("ok")
              logger.error(f"IPC add_copper_pour error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -18600,7 +18851,7 @@ index c6ac305..01fc0de 100644
      def _ipc_refill_zones(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for refill_zones - refills all zones with real-time UI update"""
          try:
-@@ -5204,12 +6025,18 @@ print("ok")
+@@ -5204,12 +6026,18 @@ print("ok")
              layer = params.get("layer", "F.SilkS")
              size = params.get("size", 1.0)
              rotation = params.get("rotation", 0)
@@ -18621,7 +18872,7 @@ index c6ac305..01fc0de 100644
                  "success": success,
                  "message": (
                      f"Added text '{text}' (visible in KiCAD UI)"
-@@ -5217,6 +6044,10 @@ print("ok")
+@@ -5217,6 +6045,10 @@ print("ok")
                      else "Failed to add text"
                  ),
              }
@@ -18632,7 +18883,7 @@ index c6ac305..01fc0de 100644
          except Exception as e:
              logger.error(f"IPC add_text error: {e}")
              return {"success": False, "message": str(e)}
-@@ -5349,6 +6180,19 @@ print("ok")
+@@ -5349,6 +6181,19 @@ print("ok")
                  x = x * 0.0254
                  y = y * 0.0254
  
@@ -18652,7 +18903,7 @@ index c6ac305..01fc0de 100644
              success = self.ipc_board_api.move_component(
                  reference=reference, x=x, y=y, rotation=rotation
              )
-@@ -5356,7 +6200,9 @@ print("ok")
+@@ -5356,7 +6201,9 @@ print("ok")
              return {
                  "success": success,
                  "message": (
@@ -18663,7 +18914,7 @@ index c6ac305..01fc0de 100644
                      if success
                      else "Failed to move component"
                  ),
-@@ -5456,11 +6302,306 @@ print("ok")
+@@ -5456,11 +6303,306 @@ print("ok")
              return {"success": False, "message": str(e)}
  
      def _ipc_delete_trace(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -18975,7 +19226,7 @@ index c6ac305..01fc0de 100644
  
      def _ipc_query_traces(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for query_traces - reads traces from the live KiCAD board."""
-@@ -5558,11 +6699,20 @@ print("ok")
+@@ -5558,11 +6700,20 @@ print("ok")
          and correctly generates PCB_SHAPE arcs for rounded corners.
          """
          shape = params.get("shape", "rectangle")
@@ -18996,7 +19247,7 @@ index c6ac305..01fc0de 100644
              return self.board_commands.add_board_outline(params)
  
          try:
-@@ -5614,6 +6764,50 @@ print("ok")
+@@ -5614,6 +6765,50 @@ print("ok")
              logger.error(f"IPC add_board_outline error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -19047,7 +19298,7 @@ index c6ac305..01fc0de 100644
      def _ipc_add_mounting_hole(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for add_mounting_hole - adds mounting hole with real-time UI update"""
          try:
-@@ -5833,6 +7027,100 @@ print("ok")
+@@ -5833,6 +7028,100 @@ print("ok")
              logger.error(f"IPC set_footprint_type error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -20753,10 +21004,10 @@ index 0000000..2d30edb
 +    return max((abs(_turn(_sub(pts[i], pts[i - 1]), _sub(pts[i + 1], pts[i])))
 +                for i in range(1, len(pts) - 1)), default=0.0)
 diff --git a/src/command-timeout.ts b/src/command-timeout.ts
-index dfd876c..1dc91bc 100644
+index dfd876c..76430a0 100644
 --- a/src/command-timeout.ts
 +++ b/src/command-timeout.ts
-@@ -35,6 +35,19 @@ export const LONG_RUNNING_COMMANDS = [
+@@ -35,6 +35,20 @@ export const LONG_RUNNING_COMMANDS = [
    "list_schematic_labels",
    "get_schematic_view",
    "digikey_check_library_availability",
@@ -20773,10 +21024,11 @@ index dfd876c..1dc91bc 100644
 +  "batch_add_no_connects", // PowerLab patch (#91)
 +  "batch_edit_schematic_components", // PowerLab patch (#91)
 +  "fetch_datasheet", // PowerLab patch: a download, or waits for the user's browser download
++  "search_lcsc_catalog", // PowerLab patch: up to two web requests of 30 s each
  ] as const;
  
  /**
-@@ -66,6 +79,13 @@ export function computeCommandTimeout(command: string, params?: unknown): number
+@@ -66,6 +80,13 @@ export function computeCommandTimeout(command: string, params?: unknown): number
      return Math.max(budgetMs, LONG_COMMAND_TIMEOUT_MS);
    }
  
@@ -21032,10 +21284,10 @@ index d3737bc..b227256 100644
    // Suggest Placement Tool
    // ------------------------------------------------------
 diff --git a/src/tools/datasheet.ts b/src/tools/datasheet.ts
-index 94dffc6..642f205 100644
+index 94dffc6..7466cbf 100644
 --- a/src/tools/datasheet.ts
 +++ b/src/tools/datasheet.ts
-@@ -109,4 +109,67 @@ Example: get_datasheet_url("C179739")
+@@ -109,4 +109,98 @@ Example: get_datasheet_url("C179739")
        };
      },
    );
@@ -21068,6 +21320,37 @@ index 94dffc6..642f205 100644
 +    },
 +    async (args: any) => {
 +      const result = await callKicadScript("fetch_datasheet", args);
++      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
++    },
++  );
++
++  // PowerLab patch: catalogue search for component research (commands/part_search.py)
++  server.tool(
++    "search_lcsc_catalog",
++    "Find candidate parts in the LCSC/JLCPCB catalogue through jlcsearch (tscircuit's free index; no account or key). " +
++      "Modes: search (free text over part number and description, e.g. 'PSMN1R0-30YLD' or '100V mosfet LFPAK', optional package), " +
++      "table (a parametric table such as mosfets, diodes, capacitors, resistors, ldos, voltage_regulators, buck_boost_converters, boost_converters, fuses, microcontrollers, usb_c_connectors, " +
++      "filtered with filters like {drain_source_voltage_min: 100, continuous_drain_current_min: 50} in SI units), " +
++      "tables (the tables, or one table's fields). No tables for gate drivers, current-sense amplifiers, op-amps or inductors: use search for those. " +
++      "Each part comes with its LCSC number (fetch_datasheet's lcsc), part number, package, stock, price tiers in USD and the catalogue's parameters. " +
++      "The service ignores filters it doesn't know (booleans like is_schottky); the tool checks every filter on the rows it gets and lists those under ignoredByService. " +
++      "Catalogue values are LCSC's parsed parameters and can be missing or wrong: check shortlisted parts in their datasheets.",
++    {
++      mode: z.enum(["search", "table", "tables"]).optional().describe("Default: table when table is given, else search"),
++      query: z.string().optional().describe("search: part number or words"),
++      table: z.string().optional().describe("table / tables: a jlcsearch table name, e.g. mosfets"),
++      filters: z
++        .record(z.union([z.number(), z.string(), z.boolean()]))
++        .optional()
++        .describe("table: <field>_min / <field>_max for numbers (V, A, ohm, F, Hz, W), <field> for text or true/false, e.g. {drain_source_voltage_min: 100}"),
++      package: z.string().optional().describe("Only this package, as LCSC writes it, e.g. 'LFPAK-56', 'SOT-23', '0603'"),
++      sortBy: z.string().optional().describe("Sort by priceUsd, stock or a parameter field (fetches 100 rows first)"),
++      descending: z.boolean().optional().describe("With sortBy: largest first"),
++      inStock: z.boolean().optional().describe("Only parts in stock (default true)"),
++      limit: z.number().optional().describe("Parts returned (default 25, at most 100)"),
++    },
++    async (args: any) => {
++      const result = await callKicadScript("search_lcsc_catalog", args);
 +      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
 +    },
 +  );
@@ -21438,7 +21721,7 @@ index d9942f7..392ad7d 100644
    server.tool(
      "export_dsn",
 diff --git a/src/tools/registry.ts b/src/tools/registry.ts
-index 902f7b1..4367268 100644
+index 902f7b1..286d919 100644
 --- a/src/tools/registry.ts
 +++ b/src/tools/registry.ts
 @@ -36,7 +36,10 @@ export const toolCategories: ToolCategory[] = [
@@ -21492,11 +21775,11 @@ index 902f7b1..4367268 100644
      tools: ["search_parts_registry", "get_registry_part", "download_registry_part"],
    },
 +  {
-+    // PowerLab patch: a datasheet library the panel reads, and the LCSC URL tools
++    // PowerLab patch: a datasheet library the panel reads, catalogue search, and the LCSC URL tools
 +    name: "datasheet",
 +    description:
-+      "Datasheets: keep manufacturer PDFs in a local library (download, or the user's browser download when a site blocks programs), read their sections, search them and render pages or tables as images",
-+    tools: ["fetch_datasheet", "read_datasheet", "get_datasheet_url", "enrich_datasheets"],
++      "Component research and datasheets: search the LCSC/JLCPCB catalogue by text or parameters (stock, price), keep manufacturer PDFs in a local library (download, LCSC's copy, or the user's browser download when a site blocks programs), read their sections, search them and render pages or tables as images",
++    tools: ["search_lcsc_catalog", "fetch_datasheet", "read_datasheet", "get_datasheet_url", "enrich_datasheets"],
 +  },
    {
      name: "digikey",
