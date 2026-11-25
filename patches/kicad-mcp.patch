@@ -1980,6 +1980,54 @@ index 4fd6044..b205dd7 100644
  
          # Per-pin uuids — KiCad writes a (pin "N" (uuid ...)) for every pin of the placed
          # unit; their absence is a primary cause of editor crashes when the symbol is dragged.
+diff --git a/python/commands/footprint.py b/python/commands/footprint.py
+index da9acd5..7c19787 100644
+--- a/python/commands/footprint.py
++++ b/python/commands/footprint.py
+@@ -543,7 +543,7 @@ class FootprintCreator:
+             Optional description string.
+         scope : str
+             "project" (writes fp-lib-table next to .kicad_pro) or
+-            "global"  (writes to ~/.config/kicad/9.0/fp-lib-table).
++            "global"  (writes to KiCad's own fp-lib-table, kicad_config_dir()).
+         project_path : str or None
+             Path to the .kicad_pro file or its directory (needed for scope="project").
+ 
+@@ -568,26 +568,14 @@ class FootprintCreator:
+                 table_dir = pretty.parent
+             table_path = table_dir / "fp-lib-table"
+         else:  # global
+-            cfg_dirs = [
+-                Path(os.environ.get("APPDATA", "")) / "kicad" / "9.0",
+-                Path.home() / ".config" / "kicad" / "9.0",
+-                Path.home() / ".local" / "share" / "kicad" / "9.0",
+-            ]
+-            table_path = None
+-            for d in cfg_dirs:
+-                candidate = d / "fp-lib-table"
+-                if candidate.exists():
+-                    table_path = candidate
+-                    break
+-            if table_path is None:
+-                # Create in first writable config dir
+-                for d in cfg_dirs:
+-                    try:
+-                        d.mkdir(parents=True, exist_ok=True)
+-                        table_path = d / "fp-lib-table"
+-                        break
+-                    except OSError:
+-                        continue
++            from utils.platform_helper import kicad_config_dir
++
++            cfg_dir = kicad_config_dir()
++            table_path = cfg_dir / "fp-lib-table"
++            try:
++                cfg_dir.mkdir(parents=True, exist_ok=True)
++            except OSError:
++                table_path = None
+             if table_path is None:
+                 return {"success": False, "error": "Could not find or create global fp-lib-table"}
+ 
 diff --git a/python/commands/freerouting.py b/python/commands/freerouting.py
 index 0c12af2..cedd101 100644
 --- a/python/commands/freerouting.py
@@ -16074,6 +16122,43 @@ index bfd1f86..6352a3c 100644
      @staticmethod
      def _find_sheet_blocks(content: str) -> List[tuple]:
          """Return (start, end) spans of every top-level (sheet ...) block.
+diff --git a/python/commands/symbol_creator.py b/python/commands/symbol_creator.py
+index 0bd673c..fefec09 100644
+--- a/python/commands/symbol_creator.py
++++ b/python/commands/symbol_creator.py
+@@ -292,24 +292,14 @@ class SymbolCreator:
+                 table_dir = sym_path.parent
+             table_path = table_dir / "sym-lib-table"
+         else:
+-            cfg_dirs = [
+-                Path(os.environ.get("APPDATA", "")) / "kicad" / "9.0",
+-                Path.home() / ".config" / "kicad" / "9.0",
+-            ]
+-            table_path = None
+-            for d in cfg_dirs:
+-                candidate = d / "sym-lib-table"
+-                if candidate.exists():
+-                    table_path = candidate
+-                    break
+-            if table_path is None:
+-                for d in cfg_dirs:
+-                    try:
+-                        d.mkdir(parents=True, exist_ok=True)
+-                        table_path = d / "sym-lib-table"
+-                        break
+-                    except OSError:
+-                        continue
++            from utils.platform_helper import kicad_config_dir
++
++            cfg_dir = kicad_config_dir()
++            table_path = cfg_dir / "sym-lib-table"
++            try:
++                cfg_dir.mkdir(parents=True, exist_ok=True)
++            except OSError:
++                table_path = None
+             if table_path is None:
+                 return {"success": False, "error": "Could not find/create global sym-lib-table"}
+ 
 diff --git a/python/commands/update_symbol_from_library.py b/python/commands/update_symbol_from_library.py
 index f876f4b..582a074 100644
 --- a/python/commands/update_symbol_from_library.py
@@ -19878,6 +19963,45 @@ index fa3297d..74be243 100644
          candidates.extend(
              [
                  Path("/Applications/KiCad/KiCad.app/Contents/MacOS") / name,
+diff --git a/python/utils/platform_helper.py b/python/utils/platform_helper.py
+index 64861fe..0cb42f9 100644
+--- a/python/utils/platform_helper.py
++++ b/python/utils/platform_helper.py
+@@ -392,6 +392,34 @@ class PlatformHelper:
+ 
+ 
+ # Convenience function for quick platform detection
++def kicad_config_dir() -> Path:
++    """KiCad's user settings folder for the newest KiCad on this computer, where the global
++    sym-lib-table and fp-lib-table live: %APPDATA%\\kicad\\<ver> on Windows,
++    ~/Library/Preferences/kicad/<ver> on macOS, ~/.config/kicad/<ver> on Linux.
++
++    The newest version folder that exists wins (10.0 before 9.0); with none, 10.0. Never a
++    relative path: an empty APPDATA (macOS, Linux) used to make it "kicad/9.0" in the working
++    directory, i.e. inside the user's project."""
++    if sys.platform == "win32" and os.environ.get("APPDATA"):
++        base = Path(os.environ["APPDATA"]) / "kicad"
++    elif sys.platform == "win32":
++        base = Path.home() / "AppData" / "Roaming" / "kicad"
++    elif sys.platform == "darwin":
++        base = Path.home() / "Library" / "Preferences" / "kicad"
++    else:
++        base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "kicad"
++
++    def version(d: Path):
++        try:
++            return tuple(int(x) for x in d.name.split("."))
++        except ValueError:
++            return None
++
++    found = sorted((d for d in base.glob("*.*") if d.is_dir() and version(d)), key=version,
++                   reverse=True) if base.is_dir() else []
++    return found[0] if found else base / "10.0"
++
++
+ def detect_platform() -> dict:
+     """
+     Detect platform and return useful information
 diff --git a/python/utils/region_box.py b/python/utils/region_box.py
 new file mode 100644
 index 0000000..a15e7d3
@@ -21696,6 +21820,101 @@ index bc5f7ae..3dbf1c6 100644
  
  
  @pytest.mark.unit
+diff --git a/tests/test_global_lib_tables.py b/tests/test_global_lib_tables.py
+new file mode 100644
+index 0000000..c9e5b95
+--- /dev/null
++++ b/tests/test_global_lib_tables.py
+@@ -0,0 +1,89 @@
++"""
++Global library tables go to KiCad's own settings folder on every platform.
++
++register_symbol_library / register_footprint_library with scope "global" looked for
++%APPDATA%\\kicad\\9.0. With no APPDATA (macOS, Linux) that is the relative path
++"kicad/9.0", so the table was written into the working directory (the user's project),
++and KiCad 10 never read it.
++"""
++
++import sys
++from pathlib import Path
++
++import pytest
++
++sys.path.insert(0, str(Path(__file__).parent.parent / "python"))
++
++from commands.footprint import FootprintCreator
++from commands.symbol_creator import SymbolCreator
++from utils import platform_helper
++from utils.platform_helper import kicad_config_dir
++
++
++@pytest.fixture
++def home(tmp_path, monkeypatch):
++    home = tmp_path / "home"
++    home.mkdir()
++    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
++    monkeypatch.delenv("APPDATA", raising=False)
++    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
++    return home
++
++
++@pytest.mark.parametrize(
++    "plat, parts",
++    [
++        ("darwin", ("Library", "Preferences", "kicad")),
++        ("linux", (".config", "kicad")),
++        ("win32", ("AppData", "Roaming", "kicad")),
++    ],
++)
++def test_config_dir_per_platform(home, monkeypatch, plat, parts):
++    monkeypatch.setattr(platform_helper.sys, "platform", plat)
++    assert kicad_config_dir() == home.joinpath(*parts, "10.0")
++
++
++def test_appdata_on_windows(home, tmp_path, monkeypatch):
++    monkeypatch.setattr(platform_helper.sys, "platform", "win32")
++    monkeypatch.setenv("APPDATA", str(tmp_path / "roaming"))
++    assert kicad_config_dir() == tmp_path / "roaming" / "kicad" / "10.0"
++
++
++def test_newest_existing_version_wins(home, monkeypatch):
++    monkeypatch.setattr(platform_helper.sys, "platform", "darwin")
++    base = home / "Library" / "Preferences" / "kicad"
++    for v in ("8.0", "9.0", "10.0", "colors"):
++        (base / v).mkdir(parents=True)
++    (base / "11.0").write_text("not a folder")
++    assert kicad_config_dir() == base / "10.0"
++    (base / "10.99").mkdir()
++    assert kicad_config_dir() == base / "10.99"
++
++
++def test_never_relative(home, monkeypatch):
++    for plat in ("darwin", "linux", "win32"):
++        monkeypatch.setattr(platform_helper.sys, "platform", plat)
++        assert kicad_config_dir().is_absolute()
++
++
++@pytest.mark.parametrize("kind", ["symbol", "footprint"])
++def test_global_register_writes_kicad_table_not_project(home, tmp_path, monkeypatch, kind):
++    monkeypatch.setattr(platform_helper.sys, "platform", "darwin")
++    project = tmp_path / "project"
++    project.mkdir()
++    monkeypatch.chdir(project)
++    if kind == "symbol":
++        lib = project / "Parts.kicad_sym"
++        result = SymbolCreator().register_symbol_library(str(lib), scope="global")
++        table = "sym-lib-table"
++    else:
++        lib = project / "Parts.pretty"
++        lib.mkdir()
++        result = FootprintCreator().register_footprint_library(str(lib), scope="global")
++        table = "fp-lib-table"
++
++    assert result["success"], result
++    expected = home / "Library" / "Preferences" / "kicad" / "10.0" / table
++    assert Path(result["table_path"]) == expected
++    assert "Parts" in expected.read_text()
++    assert not (project / "kicad").exists()
 diff --git a/tests/test_kicad_common_env_resolution.py b/tests/test_kicad_common_env_resolution.py
 index 168e3a2..3293e49 100644
 --- a/tests/test_kicad_common_env_resolution.py
