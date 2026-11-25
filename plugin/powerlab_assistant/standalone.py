@@ -44,7 +44,7 @@ def serve(srv, on_toggle, on_outdated):
             conn, _ = srv.accept()
             with conn:
                 parts = conn.recv(64).split()
-                if not parts or parts[0] not in (b"toggle", b"show"):
+                if not parts or parts[0] != b"toggle":
                     continue
                 if len(parts) > 1 and parts[1].decode() != STAMP:
                     conn.sendall(b"restart")
@@ -54,7 +54,7 @@ def serve(srv, on_toggle, on_outdated):
                     editor = parts[2].decode() if len(parts) > 2 else ""
                     pid = parts[3].decode() if len(parts) > 3 else ""
                     wx.CallAfter(on_toggle, editor if editor in EDITOR_TITLES else "schematic",
-                                 int(pid) if pid.isdigit() else 0, parts[0] == b"show")
+                                 int(pid) if pid.isdigit() else 0, parts[4:5] == [b"show"])
 
     threading.Thread(target=loop, daemon=True).start()
 

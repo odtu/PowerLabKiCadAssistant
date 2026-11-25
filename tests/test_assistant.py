@@ -1494,17 +1494,36 @@ class ShortcutTests(unittest.TestCase):
     def test_show_never_hides_the_panel(self):
         with open(os.path.join(ROOT, "plugin", "powerlab_assistant", "standalone.py"), encoding="utf-8") as f:
             text = f.read()
-        self.assertIn('parts[0] not in (b"toggle", b"show")', text)
+        self.assertIn('parts[4:5] == [b"show"]', text)
         self.assertIn("elif panel.IsShown() and not show:", text)
         from powerlab_assistant import launch
 
         sent = []
-        with mock.patch.object(launch, "toggle_running_panel",
-                               lambda editor, pid, verb="toggle": sent.append(verb) or True), \
-                mock.patch.object(launch.instances, "ensure_placeholder", lambda: None):
+
+        class Conn:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def sendall(self, data):
+                sent.append(data.decode())
+
+            def settimeout(self, t):
+                pass
+
+            def recv(self, n):
+                return b"ok"
+
+        with mock.patch.object(launch.socket, "create_connection", lambda *a, **k: Conn()), \
+                mock.patch.object(launch.instances, "ensure_placeholder", lambda: None), \
+                mock.patch.object(launch, "code_stamp", lambda: "123"):
             launch.toggle("python", "symbol", 11, show=True)
             launch.toggle("python", "pcb", 11)
-        self.assertEqual(sent, ["show", "toggle"])
+        # "toggle" first even for show: a panel from before show ignored any other first
+        # word without answering (the shortcut then did nothing), but restarts on a new stamp.
+        self.assertEqual(sent, ["toggle 123 symbol 11 show", "toggle 123 pcb 11"])
 
     def test_installer_makes_the_shortcuts_and_uninstaller_removes_them(self):
         with open(os.path.join(ROOT, "install.ps1"), encoding="utf-8") as f:
