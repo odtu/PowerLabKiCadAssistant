@@ -53,7 +53,11 @@ class SessionsTests(unittest.TestCase):
         return path
 
     def test_folder_name_is_claude_codes(self):
-        self.assertEqual(sessions.encoded("/Users/a/Documents/test.v2"), "-Users-a-Documents-test-v2")
+        # Every character but letters and digits becomes '-', the drive's colon on Windows too.
+        if os.name == "nt":
+            self.assertEqual(sessions.encoded("C:\\Users\\a\\Documents\\test.v2"), "C--Users-a-Documents-test-v2")
+        else:
+            self.assertEqual(sessions.encoded("/Users/a/Documents/test.v2"), "-Users-a-Documents-test-v2")
         self.assertEqual(sessions.session_folder(self.project, self.root), self.folder)
 
     def test_a_run_cut_off_at_the_usage_limit(self):
