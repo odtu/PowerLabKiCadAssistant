@@ -21,8 +21,16 @@ if (Test-Path $configPath) {
 $userSite = (& $python -c "import site; print(site.USER_SITE)").Trim()
 $KiCadDocs = Split-Path (Split-Path (Split-Path $userSite -Parent) -Parent) -Parent
 
-foreach ($dir in @((Join-Path $KiCadDocs "scripting\plugins\powerlab_assistant"), (Join-Path $KiCadDocs "plugins\powerlab-assistant"))) {
+$panelDir = Join-Path $KiCadDocs "scripting\plugins\powerlab_assistant"
+foreach ($dir in @($panelDir, (Join-Path $KiCadDocs "plugins\powerlab-assistant"))) {
     if ((Test-Path $dir) -and (Ask "Remove plugin folder $dir ?")) { Remove-Item -Recurse -Force $dir }
+}
+# The "PowerLab Assistant" shortcuts run the panel's folder: they go with it.
+if (-not (Test-Path $panelDir)) {
+    foreach ($folder in @([Environment]::GetFolderPath("Programs"), [Environment]::GetFolderPath("Desktop"))) {
+        $link = Join-Path $folder "PowerLab Assistant.lnk"
+        if (Test-Path $link) { Remove-Item -Force $link }
+    }
 }
 
 $skills = @(Get-ChildItem (Join-Path $env:USERPROFILE ".claude\skills") -Directory -Filter "powerlab-*" -ErrorAction SilentlyContinue)

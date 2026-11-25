@@ -44,7 +44,7 @@ def serve(srv, on_toggle, on_outdated):
             conn, _ = srv.accept()
             with conn:
                 parts = conn.recv(64).split()
-                if not parts or parts[0] != b"toggle":
+                if not parts or parts[0] not in (b"toggle", b"show"):
                     continue
                 if len(parts) > 1 and parts[1].decode() != STAMP:
                     conn.sendall(b"restart")
@@ -54,7 +54,7 @@ def serve(srv, on_toggle, on_outdated):
                     editor = parts[2].decode() if len(parts) > 2 else ""
                     pid = parts[3].decode() if len(parts) > 3 else ""
                     wx.CallAfter(on_toggle, editor if editor in EDITOR_TITLES else "schematic",
-                                 int(pid) if pid.isdigit() else 0)
+                                 int(pid) if pid.isdigit() else 0, parts[0] == b"show")
 
     threading.Thread(target=loop, daemon=True).start()
 
@@ -103,11 +103,11 @@ def main():
         srv.close()
         app.ExitMainLoop()
 
-    def toggle(editor, pid):
+    def toggle(editor, pid, show=False):
         panel = panels.get(pid)
         if not panel:
             open_panel(editor, pid)
-        elif panel.IsShown():
+        elif panel.IsShown() and not show:
             panel.Hide()
         else:
             panel.source.editor = editor  # the button's editor, until the user clicks into the other one

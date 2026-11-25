@@ -301,6 +301,25 @@ foreach ($pair in @(@("plugin\powerlab_assistant", $PanelDest), @("plugin\powerl
 }
 Ok "Panel, PCB button -> $PanelDest"
 Ok "Schematic button  -> $ButtonDest"
+
+# "PowerLab Assistant" shortcut: shows the panel of the KiCad in use from any of its windows.
+# KiCad 10 has no plugin buttons in the symbol and footprint editors or the project manager.
+# The desktop one only on a first install, or if it is still there (a user may have deleted it).
+$shell = New-Object -ComObject WScript.Shell
+$startMenuLink = Join-Path ([Environment]::GetFolderPath("Programs")) "PowerLab Assistant.lnk"
+$desktopLink = Join-Path ([Environment]::GetFolderPath("Desktop")) "PowerLab Assistant.lnk"
+$links = @($startMenuLink)
+if (-not $Update -or (Test-Path $desktopLink)) { $links += $desktopLink }
+foreach ($path in $links) {
+    $link = $shell.CreateShortcut($path)
+    $link.TargetPath = Join-Path $KiCadBin "pythonw.exe"
+    $link.Arguments = "`"" + (Join-Path $PanelDest "open_panel.py") + "`""
+    $link.WorkingDirectory = $env:USERPROFILE
+    $link.IconLocation = (Join-Path $PanelDest "app_icon.ico") + ",0"
+    $link.Description = "Show the PowerLab Assistant panel of the KiCad in use"
+    $link.Save()
+}
+Ok "Shortcut 'PowerLab Assistant' -> $(if ($links.Count -gt 1) { 'Start menu and desktop' } else { 'Start menu' })"
 $null = Save-Config
 
 # ---- 4b. Skills and the tools they need ------------------------------------

@@ -1474,6 +1474,51 @@ class OnePanelTests(unittest.TestCase):
         self.assertIn("Board file: " + os.path.join(self.project, "esp.kicad_pcb"), snap.context)
 
 
+class ShortcutTests(unittest.TestCase):
+    """The Start menu / desktop shortcut opens the panel of the KiCad in use, from any window
+    (KiCad 10 has no plugin buttons in the symbol and footprint editors)."""
+
+    def test_picks_the_frontmost_kicad_and_its_editor(self):
+        from powerlab_assistant import open_panel
+
+        titles = {1: "Downloads", 2: "", 3: "*Lab:LM5106 — Symbol Editor", 4: "esp — PCB Editor",
+                  5: "esp — KiCad 10.0", 6: "PowerLab Assistant — esp"}
+        pids = {1: 900, 2: 11, 3: 11, 4: 22, 5: 11, 6: 950}  # 900: Explorer, 950: the panel
+        exe = lambda pid: (0, "kicad.exe") if pid in (11, 22) else None
+        pick = lambda order: open_panel.pick_kicad(order, titles.get, pids.get, exe, sources.EDITOR_TITLES)
+        self.assertEqual(pick([1, 6, 2, 3, 4]), (11, "symbol"))  # untitled windows skipped
+        self.assertEqual(pick([4, 3]), (22, "pcb"))
+        self.assertEqual(pick([5, 4]), (11, "schematic"))  # the project manager: no editor
+        self.assertEqual(pick([1, 6]), (0, ""))
+
+    def test_show_never_hides_the_panel(self):
+        with open(os.path.join(ROOT, "plugin", "powerlab_assistant", "standalone.py"), encoding="utf-8") as f:
+            text = f.read()
+        self.assertIn('parts[0] not in (b"toggle", b"show")', text)
+        self.assertIn("elif panel.IsShown() and not show:", text)
+        from powerlab_assistant import launch
+
+        sent = []
+        with mock.patch.object(launch, "toggle_running_panel",
+                               lambda editor, pid, verb="toggle": sent.append(verb) or True), \
+                mock.patch.object(launch.instances, "ensure_placeholder", lambda: None):
+            launch.toggle("python", "symbol", 11, show=True)
+            launch.toggle("python", "pcb", 11)
+        self.assertEqual(sent, ["show", "toggle"])
+
+    def test_installer_makes_the_shortcuts_and_uninstaller_removes_them(self):
+        with open(os.path.join(ROOT, "install.ps1"), encoding="utf-8") as f:
+            install = f.read()
+        with open(os.path.join(ROOT, "uninstall.ps1"), encoding="utf-8") as f:
+            uninstall = f.read()
+        self.assertIn('(Join-Path $PanelDest "open_panel.py")', install)
+        self.assertIn('Join-Path $KiCadBin "pythonw.exe"', install)
+        self.assertIn('(Join-Path $PanelDest "app_icon.ico")', install)
+        self.assertTrue(os.path.isfile(os.path.join(ROOT, "plugin", "powerlab_assistant", "app_icon.ico")))
+        self.assertIn('"PowerLab Assistant.lnk"', uninstall)
+        self.assertTrue(install.isascii() and uninstall.isascii())
+
+
 class LibraryEditorTitleTests(unittest.TestCase):
     """The symbol and footprint editors' window titles are all the panel learns from them."""
 
