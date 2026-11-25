@@ -9,6 +9,7 @@ or, if the plugin code changed since this copy started, asks it to quit so a fre
 import ctypes
 import os
 import socket
+import sys
 import threading
 import time
 
@@ -65,6 +66,9 @@ def main():
         except (AttributeError, OSError):
             pass
     app = wx.App(False)
+    if sys.platform == "darwin":
+        from .kicad_window_mac import set_dock_icon
+        set_dock_icon(os.path.join(os.path.dirname(__file__), "app_icon.png"))
     claude = find_claude()
     if not claude:
         wx.MessageBox(INSTALL_HELP, "PowerLab Assistant", wx.OK | wx.ICON_WARNING)

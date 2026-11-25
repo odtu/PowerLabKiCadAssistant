@@ -211,5 +211,17 @@
  "After you turn one on in System Settings, press Check again. If it still shows as not allowed, restart KiCad.": "सिस्टम सेटिंग्स में कोई अनुमति चालू करने के बाद \"फिर जाँचें\" दबाएँ। अगर वह अब भी अनुमति नहीं है दिखे, तो KiCad फिर से शुरू करें।",
  "Close": "बंद करें",
  "Ask": "अनुमति माँगें",
- "Open Settings": "सेटिंग्स खोलें"
+ "Open Settings": "सेटिंग्स खोलें",
+ "Quick answers, fewest tokens": "तेज़ जवाब, सबसे कम टोकन",
+ "Everyday work": "रोज़ का काम",
+ "Thorough (panel default)": "गहन (पैनल का डिफ़ॉल्ट)",
+ "Hard problems and long tasks": "कठिन समस्याएँ और लंबे काम",
+ "Deepest; slowest and most tokens": "सबसे गहरा; सबसे धीमा और सबसे ज़्यादा टोकन",
+ "Effort": "प्रयास",
+ "Choose the Claude model and how hard it thinks": "Claude मॉडल चुनें और वह कितना सोचे",
+ "Opus": "Opus",
+ "Sonnet": "Sonnet",
+ "Haiku": "Haiku",
+ "Fable": "Fable",
+ "Keep the panel above other windows": "पैनल को दूसरी विंडो के ऊपर रखें"
 }

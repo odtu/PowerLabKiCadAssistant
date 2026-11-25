@@ -211,5 +211,17 @@
  "After you turn one on in System Settings, press Check again. If it still shows as not allowed, restart KiCad.": "Увімкнувши дозвіл у Системних параметрах, натисніть «Перевірити знову». Якщо він досі не дозволений, перезапустіть KiCad.",
  "Close": "Закрити",
  "Ask": "Запитати",
- "Open Settings": "Відкрити параметри"
+ "Open Settings": "Відкрити параметри",
+ "Quick answers, fewest tokens": "Швидкі відповіді, найменше токенів",
+ "Everyday work": "Щоденна робота",
+ "Thorough (panel default)": "Ретельно (типово для панелі)",
+ "Hard problems and long tasks": "Складні задачі й довга робота",
+ "Deepest; slowest and most tokens": "Найглибше; найповільніше й найбільше токенів",
+ "Effort": "Зусилля",
+ "Choose the Claude model and how hard it thinks": "Виберіть модель Claude і наскільки глибоко вона думає",
+ "Opus": "Opus",
+ "Sonnet": "Sonnet",
+ "Haiku": "Haiku",
+ "Fable": "Fable",
+ "Keep the panel above other windows": "Тримати панель поверх інших вікон"
 }

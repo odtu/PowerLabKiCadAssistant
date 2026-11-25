@@ -211,5 +211,17 @@
  "After you turn one on in System Settings, press Check again. If it still shows as not allowed, restart KiCad.": "Sistem Ayarları'nda bir izni açtıktan sonra Yeniden kontrol et'e basın. Hâlâ izin yok görünüyorsa KiCad'i yeniden başlatın.",
  "Close": "Kapat",
  "Ask": "İste",
- "Open Settings": "Ayarları aç"
+ "Open Settings": "Ayarları aç",
+ "Quick answers, fewest tokens": "Hızlı yanıtlar, en az token",
+ "Everyday work": "Günlük işler",
+ "Thorough (panel default)": "Kapsamlı (panel varsayılanı)",
+ "Hard problems and long tasks": "Zor problemler ve uzun görevler",
+ "Deepest; slowest and most tokens": "En derin; en yavaş ve en çok token",
+ "Effort": "Çaba",
+ "Choose the Claude model and how hard it thinks": "Claude modelini ve ne kadar düşüneceğini seçin",
+ "Opus": "Opus",
+ "Sonnet": "Sonnet",
+ "Haiku": "Haiku",
+ "Fable": "Fable",
+ "Keep the panel above other windows": "Paneli diğer pencerelerin üstünde tut"
 }
