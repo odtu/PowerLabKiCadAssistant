@@ -24,14 +24,11 @@ def code_stamp():
                        for f in os.listdir(PACKAGE) if f.endswith((".py", ".html")))))
 
 
-def toggle_running_panel(editor, kicad_pid, show=False):
-    """True if a current panel handled the click; False if one must be started.
-    show never hides the panel (the Start menu shortcut, open_panel.py). It goes last, after
-    the code stamp: a panel older than it ignored any other first word, but restarts on a
-    stamp it doesn't know."""
+def toggle_running_panel(editor, kicad_pid):
+    """True if a current panel handled the click; False if one must be started."""
     try:
         with socket.create_connection(("127.0.0.1", PORT), timeout=0.5) as conn:
-            conn.sendall(f"toggle {code_stamp()} {editor} {kicad_pid}{' show' if show else ''}".encode())
+            conn.sendall(f"toggle {code_stamp()} {editor} {kicad_pid}".encode())
             conn.settimeout(2)
             reply = conn.recv(16)
     except OSError:
@@ -60,9 +57,8 @@ def start_panel(python, editor, kicad_pid):
     subprocess.Popen([python, "-c", bootstrap], env=env, cwd=os.path.expanduser("~"), **detach)
 
 
-def toggle(python, editor, kicad_pid, show=False):
-    """kicad_pid: process id of the KiCad the button is in (0 if unknown). show: bring the
-    panel up even if it is open already, instead of hiding it."""
+def toggle(python, editor, kicad_pid):
+    """kicad_pid: process id of the KiCad the button is in (0 if unknown)."""
     instances.ensure_placeholder()  # before the user starts another KiCad
-    if not toggle_running_panel(editor, kicad_pid, show):
+    if not toggle_running_panel(editor, kicad_pid):
         start_panel(python, editor, kicad_pid)
