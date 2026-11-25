@@ -101,5 +101,25 @@ class PinTests(unittest.TestCase):
         self.assertIn("post({type:'on_top'", html)
 
 
+class BoardSyncedTests(unittest.TestCase):
+    def check(self, tool, result):
+        import json
+        return panel.kicad_has_board_file(tool, [{"type": "text", "text": json.dumps(result)}])
+
+    def test_kicad_saved_or_reloaded_the_board(self):
+        live = {"success": True, "_backend": "ipc", "_realtime": True}
+        self.assertTrue(self.check("mcp__kicad__save_board", live))
+        self.assertTrue(self.check("mcp__kicad__sync_schematic_to_board", dict(live, liveNote="reloaded")))
+
+    def test_anything_else_is_not(self):
+        live = {"success": True, "_backend": "ipc", "_realtime": True}
+        self.assertFalse(self.check("mcp__kicad__move_component", live))  # only in KiCad's memory
+        self.assertFalse(self.check("mcp__kicad__save_board", dict(live, _realtime=False)))
+        self.assertFalse(self.check("mcp__kicad__save_board", dict(live, success=False)))
+        self.assertFalse(self.check("mcp__kicad__edit_component", dict(
+            live, liveNote="x", warnings=["Saved to the board file, but KiCad did not reload it"])))
+        self.assertFalse(panel.kicad_has_board_file("mcp__kicad__save_board", "not json"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -301,6 +301,25 @@ DETAIL_KEYS = ("name", "symbol_name", "footprint_name", "library", "reference", 
                "file_path", "path", "pattern", "query", "url", "command")
 BOARD_CHANGED = ("Board changed on disk. Use File → Revert in KiCad to load it "
                  "(unsaved KiCad edits will be lost).")
+
+
+def kicad_has_board_file(tool, content):
+    """Whether a kicad tool's result says KiCad's open board now matches the board file: KiCad
+    saved it itself (save_board, live), or saved, had the file edited and reloaded it (a
+    live-via-file command's liveNote). After that, the file changing isn't news to KiCad."""
+    if isinstance(content, list):
+        content = "".join(b.get("text", "") for b in content if isinstance(b, dict))
+    try:
+        result = json.loads(content) if isinstance(content, str) else None
+    except ValueError:
+        return False
+    if not isinstance(result, dict) or not result.get("success") or result.get("_realtime") is not True:
+        return False
+    if any("did not reload" in str(w) for w in result.get("warnings") or []):
+        return False
+    return tool == "mcp__kicad__save_board" or bool(result.get("liveNote"))
+
+
 SCHEMATIC_CHANGED = ("Claude changed the schematic, but you have unsaved edits in KiCad, so it "
                      "wasn't reloaded automatically. Reloading drops those edits.")
 
@@ -516,6 +535,7 @@ class ClaudePanel(wx.Frame):
         self.stale_session = False
         self.fresh = False  # the next message continues the chat in a new session (continue_note)
         self.watched = {}
+        self.kicad_tools = {}  # tool id -> name, for kicad tools of this run (board_synced)
         self.started = 0.0
         self.last_text = ""
         self.got_result = False
@@ -1288,6 +1308,7 @@ class ClaudePanel(wx.Frame):
         self.retry = (text, files) if self.session_id and not fresh else None
         report.note_event("send", self.source.editor)
         self.watched = {p: os.path.getmtime(p) for p in snap.watch if os.path.isfile(p)}
+        self.kicad_tools = {}
         self.started = time.time()
         self.last_text = ""
         self.got_result = False
@@ -1390,6 +1411,8 @@ class ClaudePanel(wx.Frame):
                     name, detail = describe_tool(block.get("name", ""), args)
                     self.say("tool", id=block.get("id"), name=name, detail=detail)
                     self.set_activity("tool", name)
+                    if block.get("name", "").startswith("mcp__kicad__"):
+                        self.kicad_tools[block.get("id")] = block["name"]
                     self.image_reads[block.get("id")] = (
                         tool_kind(block.get("name", "")),
                         args.get("file_path", "") if block.get("name") == "Read" else "")
@@ -1410,6 +1433,9 @@ class ClaudePanel(wx.Frame):
                         detail = " ".join(b.get("text", "") for b in detail if isinstance(b, dict))
                     detail = str(detail)[:200]
                 name, image = self.image_reads.pop(block.get("tool_use_id"), ("tool", ""))
+                tool = self.kicad_tools.pop(block.get("tool_use_id"), "")
+                if tool and not failed and kicad_has_board_file(tool, block.get("content")):
+                    self.board_synced()
                 slip = failed and (name in OWN_TOOLS or bool(REFUSED.search(detail)))
                 self.say("tool_done", id=block.get("tool_use_id"), error=failed and not slip,
                          **({"slip": True} if slip else {}), text=detail)
@@ -1456,6 +1482,13 @@ class ClaudePanel(wx.Frame):
                 self.fresh = True
                 self.emit("note", level="info", text="This chat got long. To save tokens, your next "
                           "message continues it with only your last prompts and the project.")
+
+    def board_synced(self):
+        """KiCad wrote or reloaded the board file itself: its changes so far aren't a reason to
+        ask the user for File → Revert (BOARD_CHANGED), only later ones are."""
+        for path in self.watched:
+            if path.endswith(".kicad_pcb") and os.path.isfile(path):
+                self.watched[path] = os.path.getmtime(path)
 
     def ask_sign_in(self, text):
         """Claude Code isn't signed in, or its sign-in expired: once per message, offer the

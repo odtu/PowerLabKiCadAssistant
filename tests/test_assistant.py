@@ -368,7 +368,7 @@ class ChatHistoryTests(unittest.TestCase):
         except ImportError as exc:
             self.skipTest(f"panel needs wx.html2: {exc}")
         names = ("say", "save_chat", "open_chat", "handle", "finished", "show_image", "set_activity",
-                 "show_review", "show_plan")
+                 "show_review", "show_plan", "board_synced")
 
         class Fake:
             pass
@@ -380,6 +380,7 @@ class ChatHistoryTests(unittest.TestCase):
         panel.session_id, panel.chat_cwd, panel.events = None, None, []
         panel.retry, panel.stale_session, panel.proc = None, False, None
         panel.got_result, panel.watched, panel.image_reads = False, {}, {}
+        panel.kicad_tools = {}
         panel.review_writes, panel.review_mds, panel.plan_writes = {}, [], {}
         panel.last_text, panel.limits, panel.started, panel.effort = "", [], 0.0, "high"
         panel.activity, panel.activity_sent = ("waiting", ""), time.time()
@@ -391,6 +392,36 @@ class ChatHistoryTests(unittest.TestCase):
         panel.load_page = lambda: panel.emitted.clear()
         panel.SetTitle = lambda title: setattr(panel, "title", title)
         return panel
+
+    def test_board_saved_by_kicad_is_not_reported_as_changed_on_disk(self):
+        """KiCad saving the board itself (or reloading it after a live-via-file edit) isn't a
+        reason to ask for File → Revert; a write KiCad didn't see still is."""
+        import json
+        panel = self.fake_panel()
+        board = os.path.join(self.tmp.name, "demo.kicad_pcb")
+        with open(board, "w") as f:
+            f.write("(kicad_pcb)")
+        os.utime(board, (1000, 1000))
+        panel.watched = {board: 1000.0}
+
+        def run(tool_id, tool, result):
+            panel.handle({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": tool_id, "name": tool, "input": {}}]}})
+            panel.handle({"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": tool_id,
+                 "content": [{"type": "text", "text": json.dumps(result)}]}]}})
+
+        os.utime(board, (2000, 2000))  # KiCad saves
+        run("t1", "mcp__kicad__save_board", {"success": True, "_backend": "ipc", "_realtime": True})
+        self.assertEqual(panel.watched[board], 2000.0)
+        os.utime(board, (3000, 3000))  # KiCad saves, the file is edited, KiCad reloads
+        run("t2", "mcp__kicad__replace_component", {"success": True, "_realtime": True,
+                                                     "liveNote": "KiCad reloaded it."})
+        self.assertEqual(panel.watched[board], 3000.0)
+        os.utime(board, (4000, 4000))  # written behind KiCad's back
+        run("t3", "mcp__kicad__route_trace", {"success": True, "_backend": "swig", "_realtime": False})
+        run("t4", "mcp__kicad__move_component", {"success": True, "_backend": "ipc", "_realtime": True})
+        self.assertEqual(panel.watched[board], 3000.0)  # still differs: the warning stays
 
     def write_old(self, editor, session_id, events):
         """A chat saved by 0.5, when each editor had its own panel and chat."""
