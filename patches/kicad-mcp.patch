@@ -17327,7 +17327,7 @@ index 6f9a813..a2d32a8 100644
              # Create outline polyline
              outline = PolyLine()
 diff --git a/python/kicad_interface.py b/python/kicad_interface.py
-index c6ac305..c6ccd4e 100644
+index c6ac305..01fc0de 100644
 --- a/python/kicad_interface.py
 +++ b/python/kicad_interface.py
 @@ -36,6 +36,7 @@ if sys.platform == "win32":
@@ -17525,7 +17525,7 @@ index c6ac305..c6ccd4e 100644
          "refill_zones",
          "import_svg_logo",
          "sync_schematic_to_board",
-@@ -1848,6 +1923,567 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -1848,6 +1923,576 @@ class KiCADInterface(SchematicHandlersMixin):
          state = self._dirty_state(board_path)
          return {"success": True, "boardPath": board_path, **state}
  
@@ -17555,7 +17555,7 @@ index c6ac305..c6ccd4e 100644
 +        """
 +        from commands.route_cleanup import STEPS, clean_up
 +
-+        board_path = params.get("boardPath") or self._authoritative_board_path()
++        board_path = self._saved_board_path(params)
 +        if not board_path or not os.path.isfile(str(board_path)):
 +            return {
 +                "success": False,
@@ -17604,7 +17604,7 @@ index c6ac305..c6ccd4e 100644
 +        """Put back the saved board from before the last autoroute run (PowerLab patch)."""
 +        from commands import autoroute_backup
 +
-+        board_path = params.get("boardPath") or self._authoritative_board_path()
++        board_path = self._saved_board_path(params)
 +        if not board_path:
 +            return {
 +                "success": False,
@@ -17646,6 +17646,15 @@ index c6ac305..c6ccd4e 100644
 +                "there: a save in KiCad would write the routed board back."
 +            ),
 +        }
++
++    def _saved_board_path(self, params: Dict[str, Any]) -> Optional[str]:
++        """The saved board a tool that reads the .kicad_pcb file works on (PowerLab patch): the
++        boardPath it names, as given (a wrong one is reported, never swapped for another), else
++        this session's or the one KiCad has open. Live sessions never call open_board, so the
++        session's board alone answered "No saved board" while KiCad had one open."""
++        if params.get("boardPath"):
++            return params["boardPath"]
++        return self._board_path_to_load(params)
 +
 +    def _board_path_to_load(self, params: Dict[str, Any]) -> Optional[str]:
 +        """The saved board a "No board is loaded" command should use (PowerLab patch, #57):
@@ -17915,7 +17924,7 @@ index c6ac305..c6ccd4e 100644
 +
 +    def _handle_check_part_spacing(self, params: Dict[str, Any]) -> Dict[str, Any]:
 +        """Part-to-part spacing and keep-out areas on the saved board (PowerLab patch)."""
-+        board_path = params.get("boardPath") or self._authoritative_board_path()
++        board_path = self._saved_board_path(params)
 +        if not board_path or not os.path.isfile(str(board_path)):
 +            return {"success": False, "message": "No saved board",
 +                    "errorDetails": "Open the board with open_board, or pass boardPath"}
@@ -17934,7 +17943,7 @@ index c6ac305..c6ccd4e 100644
 +
 +    def _handle_check_routing(self, params: Dict[str, Any]) -> Dict[str, Any]:
 +        """Routing style (angles, corners, kinks, detours, pad entries) on the saved board (PowerLab patch)."""
-+        board_path = params.get("boardPath") or self._authoritative_board_path()
++        board_path = self._saved_board_path(params)
 +        if not board_path or not os.path.isfile(str(board_path)):
 +            return {"success": False, "message": "No saved board",
 +                    "errorDetails": "Open the board with open_board, or pass boardPath"}
@@ -17953,7 +17962,7 @@ index c6ac305..c6ccd4e 100644
 +
 +    def _handle_powerlab_route(self, params: Dict[str, Any]) -> Dict[str, Any]:
 +        """Start the PowerLab router on the saved board, in the background (PowerLab patch)."""
-+        board_path = params.get("boardPath") or self._authoritative_board_path()
++        board_path = self._saved_board_path(params)
 +        if not board_path or not os.path.isfile(str(board_path)):
 +            return {
 +                "success": False,
@@ -17998,7 +18007,7 @@ index c6ac305..c6ccd4e 100644
 +
 +    def _handle_powerlab_route_status(self, params: Dict[str, Any]) -> Dict[str, Any]:
 +        """Wait for a PowerLab router run, then put its result on the board (PowerLab patch)."""
-+        board_path = params.get("boardPath") or self._authoritative_board_path()
++        board_path = self._saved_board_path(params)
 +        if not board_path:
 +            return {"success": False, "message": "No board", "errorDetails": "Pass boardPath"}
 +        board_path = os.path.abspath(str(board_path))
@@ -18093,7 +18102,7 @@ index c6ac305..c6ccd4e 100644
      def _handle_batch_move_components(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """Batch move wrapper that preserves the external-edit save guard."""
          if getattr(self, "session_backend", None) == "ipc" and not self._ipc_session_alive():
-@@ -4667,6 +5303,59 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -4667,6 +5312,59 @@ class KiCADInterface(SchematicHandlersMixin):
              logger.error(traceback.format_exc())
              return {"success": False, "message": str(e)}
  
@@ -18153,7 +18162,7 @@ index c6ac305..c6ccd4e 100644
      def _handle_get_elements_in_region(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """List all wires, labels, and symbols within a rectangular region"""
          logger.info("Getting elements in schematic region")
-@@ -4677,7 +5366,8 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -4677,7 +5375,8 @@ class KiCADInterface(SchematicHandlersMixin):
  
              schematic_path = params.get("schematicPath")
              if not schematic_path:
@@ -18163,7 +18172,7 @@ index c6ac305..c6ccd4e 100644
  
              x1 = float(params.get("x1", 0))
              y1 = float(params.get("y1", 0))
-@@ -4948,6 +5638,10 @@ print("ok")
+@@ -4948,6 +5647,10 @@ print("ok")
                          }
                      self.board = reloaded
                      self._update_command_handlers()
@@ -18174,7 +18183,7 @@ index c6ac305..c6ccd4e 100644
                      logger.info("Zone fill subprocess succeeded")
                      return {
                          "success": True,
-@@ -4982,47 +5676,30 @@ print("ok")
+@@ -4982,47 +5685,30 @@ print("ok")
      # =========================================================================
  
      def _ipc_route_trace(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -18241,7 +18250,7 @@ index c6ac305..c6ccd4e 100644
  
      def _ipc_route_arc_trace(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for route_arc_trace - adds copper arc with real-time UI update"""
-@@ -5079,6 +5756,65 @@ print("ok")
+@@ -5079,6 +5765,65 @@ print("ok")
              logger.error(f"IPC route_arc_trace error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -18307,7 +18316,7 @@ index c6ac305..c6ccd4e 100644
      def _ipc_add_via(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for add_via - adds via with real-time UI update"""
          try:
-@@ -5131,21 +5867,37 @@ print("ok")
+@@ -5131,21 +5876,37 @@ print("ok")
              net = params.get("net")
              clearance = params.get("clearance", 0.5)
              min_width = params.get("minWidth", 0.25)
@@ -18352,7 +18361,7 @@ index c6ac305..c6ccd4e 100644
  
              success = self.ipc_board_api.add_zone(
                  points=formatted_points,
-@@ -5156,6 +5908,7 @@ print("ok")
+@@ -5156,6 +5917,7 @@ print("ok")
                  priority=priority,
                  fill_mode=fill_type,
                  name=name,
@@ -18360,7 +18369,7 @@ index c6ac305..c6ccd4e 100644
              )
  
              return {
-@@ -5179,6 +5932,65 @@ print("ok")
+@@ -5179,6 +5941,65 @@ print("ok")
              logger.error(f"IPC add_copper_pour error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -18426,7 +18435,7 @@ index c6ac305..c6ccd4e 100644
      def _ipc_refill_zones(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for refill_zones - refills all zones with real-time UI update"""
          try:
-@@ -5204,12 +6016,18 @@ print("ok")
+@@ -5204,12 +6025,18 @@ print("ok")
              layer = params.get("layer", "F.SilkS")
              size = params.get("size", 1.0)
              rotation = params.get("rotation", 0)
@@ -18447,7 +18456,7 @@ index c6ac305..c6ccd4e 100644
                  "success": success,
                  "message": (
                      f"Added text '{text}' (visible in KiCAD UI)"
-@@ -5217,6 +6035,10 @@ print("ok")
+@@ -5217,6 +6044,10 @@ print("ok")
                      else "Failed to add text"
                  ),
              }
@@ -18458,7 +18467,7 @@ index c6ac305..c6ccd4e 100644
          except Exception as e:
              logger.error(f"IPC add_text error: {e}")
              return {"success": False, "message": str(e)}
-@@ -5349,6 +6171,19 @@ print("ok")
+@@ -5349,6 +6180,19 @@ print("ok")
                  x = x * 0.0254
                  y = y * 0.0254
  
@@ -18478,7 +18487,7 @@ index c6ac305..c6ccd4e 100644
              success = self.ipc_board_api.move_component(
                  reference=reference, x=x, y=y, rotation=rotation
              )
-@@ -5356,7 +6191,9 @@ print("ok")
+@@ -5356,7 +6200,9 @@ print("ok")
              return {
                  "success": success,
                  "message": (
@@ -18489,7 +18498,7 @@ index c6ac305..c6ccd4e 100644
                      if success
                      else "Failed to move component"
                  ),
-@@ -5456,11 +6293,306 @@ print("ok")
+@@ -5456,11 +6302,306 @@ print("ok")
              return {"success": False, "message": str(e)}
  
      def _ipc_delete_trace(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -18801,7 +18810,7 @@ index c6ac305..c6ccd4e 100644
  
      def _ipc_query_traces(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for query_traces - reads traces from the live KiCAD board."""
-@@ -5558,11 +6690,20 @@ print("ok")
+@@ -5558,11 +6699,20 @@ print("ok")
          and correctly generates PCB_SHAPE arcs for rounded corners.
          """
          shape = params.get("shape", "rectangle")
@@ -18822,7 +18831,7 @@ index c6ac305..c6ccd4e 100644
              return self.board_commands.add_board_outline(params)
  
          try:
-@@ -5614,6 +6755,50 @@ print("ok")
+@@ -5614,6 +6764,50 @@ print("ok")
              logger.error(f"IPC add_board_outline error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -18873,7 +18882,7 @@ index c6ac305..c6ccd4e 100644
      def _ipc_add_mounting_hole(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for add_mounting_hole - adds mounting hole with real-time UI update"""
          try:
-@@ -5833,6 +7018,100 @@ print("ok")
+@@ -5833,6 +7027,100 @@ print("ok")
              logger.error(f"IPC set_footprint_type error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -22886,6 +22895,106 @@ index 0000000..04dc2b6
 +    from kicad_interface import KiCADInterface
 +
 +    assert "edit_component" in KiCADInterface.LIVE_VIA_FILE_COMMANDS
+diff --git a/tests/test_saved_board_path.py b/tests/test_saved_board_path.py
+new file mode 100644
+index 0000000..9aad7a8
+--- /dev/null
++++ b/tests/test_saved_board_path.py
+@@ -0,0 +1,94 @@
++"""
++Tools that read the saved .kicad_pcb (check_routing, check_part_spacing, powerlab_route,
++powerlab_route_status, clean_up_routing, undo_autoroute) find the board KiCad has open.
++
++In a live session Claude never calls open_board, so the session had no board path and
++these tools answered "No saved board" although KiCad had the board open and saved.
++"""
++
++import sys
++from pathlib import Path
++from typing import Any
++from unittest.mock import MagicMock, patch
++
++import pytest
++
++sys.path.insert(0, str(Path(__file__).parent.parent / "python"))
++
++
++def _iface(open_board=None) -> Any:
++    with patch("kicad_interface.USE_IPC_BACKEND", True):
++        from kicad_interface import KiCADInterface
++
++        iface = KiCADInterface.__new__(KiCADInterface)
++    iface.use_ipc = True
++    iface.board = None
++    iface.session_backend = "ipc"
++    iface.session_board_path = None
++    iface.ipc_backend = MagicMock()
++    iface.ipc_backend.get_open_board_path.return_value = open_board
++    return iface
++
++
++@pytest.fixture
++def board(tmp_path):
++    path = tmp_path / "demo.kicad_pcb"
++    path.write_text("(kicad_pcb)")
++    return path
++
++
++def test_kicads_open_board_when_the_session_has_none(board):
++    assert _iface(str(board))._saved_board_path({}) == str(board)
++
++
++def test_named_board_wins(board, tmp_path):
++    other = tmp_path / "other.kicad_pcb"
++    other.write_text("(kicad_pcb)")
++    assert _iface(str(board))._saved_board_path({"boardPath": str(other)}) == str(other)
++
++
++def test_a_wrong_named_board_is_kept_so_the_tool_reports_it(board, tmp_path):
++    missing = str(tmp_path / "missing.kicad_pcb")
++    assert _iface(str(board))._saved_board_path({"boardPath": missing}) == missing
++
++
++def test_session_board_before_kicads(board, tmp_path):
++    other = tmp_path / "other.kicad_pcb"
++    other.write_text("(kicad_pcb)")
++    iface = _iface(str(other))
++    iface.session_board_path = str(board)
++    assert iface._saved_board_path({}) == str(board)
++
++
++def test_none_when_nothing_is_open():
++    assert _iface(None)._saved_board_path({}) is None
++
++
++def test_check_routing_runs_on_kicads_open_board(board):
++    iface = _iface(str(board))
++    with patch("kicad_interface.routing_check.check", return_value={"success": True}) as check, \
++            patch.object(iface, "_live_kicad_board", return_value=None):
++        result = iface._handle_check_routing({"nets": ["N1"]})
++    assert result["success"]
++    assert check.call_args[0][0] == str(board.resolve())
++
++
++def test_check_routing_still_says_no_saved_board_without_one():
++    iface = _iface(None)
++    result = iface._handle_check_routing({})
++    assert not result["success"] and result["message"] == "No saved board"
++
++
++@pytest.mark.parametrize(
++    "handler",
++    ["_handle_check_routing", "_handle_check_part_spacing", "_handle_powerlab_route",
++     "_handle_powerlab_route_status", "_handle_clean_up_routing", "_handle_undo_autoroute"],
++)
++def test_every_saved_board_tool_uses_the_shared_lookup(handler):
++    import inspect
++
++    from kicad_interface import KiCADInterface
++
++    source = inspect.getsource(getattr(KiCADInterface, handler))
++    assert "self._saved_board_path(params)" in source
++    assert 'params.get("boardPath") or self._authoritative_board_path()' not in source
 diff --git a/tests/test_schema_param_names.py b/tests/test_schema_param_names.py
 index 995406c..48afecd 100644
 --- a/tests/test_schema_param_names.py
