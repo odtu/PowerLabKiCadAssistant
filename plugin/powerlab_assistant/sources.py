@@ -111,9 +111,94 @@ def is_kicad_schematic(text):
     return "(lib_id" in text or "(label" in text or "(wire" in text or "(kicad_sch" in text
 
 
-EDITOR_TITLES = {"pcb": "PCB Editor", "schematic": "Schematic Editor"}
+EDITOR_TITLES = {"pcb": "PCB Editor", "schematic": "Schematic Editor",
+                 "symbol": "Symbol Editor", "footprint": "Footprint Editor"}
 LOCATE_TIMEOUT_MS = 5000
-EDITOR_NAMES = {"pcb": "PCB editor", "schematic": "schematic editor"}
+EDITOR_NAMES = {"pcb": "PCB editor", "schematic": "schematic editor",
+                "symbol": "symbol editor", "footprint": "footprint editor"}
+# KiCad 10 has toolbar room for plugin buttons only in the schematic and PCB editors
+# (control.IPCPlugin), so the panel opened there follows the user into these two.
+LIBRARY_EDITORS = {"symbol": ("sym-lib-table", "symbol", "schematic"),
+                   "footprint": ("fp-lib-table", "footprint", "board")}
+
+
+def library_item(title):
+    """What a symbol or footprint editor's title says it shows, or None if nothing:
+    '*Device:R [Read Only Library] — Symbol Editor' -> {item: 'Device:R', lib: 'Device',
+    name: 'R', modified: True, tag: 'Read Only Library', copy: False}. 'R5 [from esp.kicad_pcb]'
+    is a part's own copy from the board (or schematic): item is its reference. Every tag
+    KiCad writes is in square brackets, so '[no symbol loaded]' reads as nothing in any language."""
+    head = title.rsplit("—", 1)[0].strip() if "—" in title else title.strip()
+    modified = head.startswith("*")
+    head = head.lstrip("*").strip()
+    tag = ""
+    if head.endswith("]") and "[" in head:
+        tag = head[head.rindex("[") + 1:-1]
+        head = head[:head.rindex("[")].strip()
+    if not head:
+        return None
+    copy = bool(tag) and tag.lower().startswith("from ")
+    lib, _, name = head.partition(":") if not copy else ("", "", head)
+    return {"item": head, "lib": lib if name else "", "name": name or head,
+            "modified": modified, "tag": tag, "copy": copy}
+
+
+def kicad_path_vars(project_dir=""):
+    """KiCad's path variables: its own library folders, kicad_common.json's, the environment's."""
+    found = {}
+    share = os.path.join(os.path.dirname(config.kicad_bin()), "share", "kicad") if config.kicad_bin() else ""
+    if config.IS_MAC and config.kicad_bin():  # KiCad.app/Contents/SharedSupport
+        share = os.path.join(os.path.dirname(config.kicad_bin()), "SharedSupport")
+    if share:
+        for var, folder in (("SYMBOL_DIR", "symbols"), ("FOOTPRINT_DIR", "footprints"),
+                            ("3DMODEL_DIR", "3dmodels")):
+            found["KICAD10_" + var] = os.path.join(share, folder)
+    try:
+        with open(os.path.join(config.KICAD_CONFIG, "kicad_common.json"), encoding="utf-8") as f:
+            found.update(json.load(f).get("environment", {}).get("vars", {}) or {})
+    except (OSError, ValueError, AttributeError):
+        pass
+    found.update(os.environ)
+    if project_dir:
+        found["KIPRJMOD"] = project_dir
+    return found
+
+
+def library_file(table, nickname, project_dir=""):
+    """Where a library nickname points: the project's table first, then KiCad's global one,
+    and the tables they include (KiCad 10's global table names KiCad's own as type "Table").
+    Path variables are filled in where they're known; None if no table names it."""
+    variables = kicad_path_vars(project_dir)
+    expand = lambda uri: re.sub(r"\$\{(\w+)\}", lambda m: variables.get(m.group(1), m.group(0)), uri)
+    tables = ([os.path.join(project_dir, table)] if project_dir else []) + \
+        [os.path.join(config.KICAD_CONFIG, table)]
+    seen = set()
+    while tables:
+        path = tables.pop(0)
+        if os.path.normcase(path) in seen:
+            continue
+        seen.add(os.path.normcase(path))
+        try:
+            with open(path, encoding="utf-8") as f:
+                text = f.read()
+        except OSError:
+            continue
+        included = []
+        for entry in re.split(r"\(lib\s", text)[1:]:
+            name, kind, uri = (_table_field(entry, key) for key in ("name", "type", "uri"))
+            if kind == "Table" and uri:
+                included.append(os.path.normpath(expand(uri)))
+            elif name == nickname and uri:
+                full = expand(uri)
+                return full if "${" in full else os.path.normpath(full)
+        tables[:0] = included  # before the next top-level table, as KiCad nests them
+    return None
+
+
+def _table_field(entry, key):
+    """A field of a library-table entry, quoted or not."""
+    found = re.search(r'\(%s\s+(?:"((?:[^"\\]|\\.)*)"|([^\s()"]+))\s*\)' % key, entry)
+    return (found.group(1) if found.group(1) is not None else found.group(2)) if found else ""
 
 
 def schematic_files(project_dir):
@@ -121,7 +206,9 @@ def schematic_files(project_dir):
 
 
 class KiCadSource:
-    """Both editors of one KiCad, for its panel: the toolbar button in either shows or hides it.
+    """The editors of one KiCad, for its panel: the toolbar button in the schematic or PCB
+    editor shows or hides it, and it follows the user into the symbol and footprint editors
+    (KiCad 10 has no plugin buttons there), whose window titles say what they show.
 
     The board and its selected footprints come from KiCad's API. KiCad 10's schematic API only
     reports which schematic is open (no selection, save or revert): the schematic selection is
@@ -142,7 +229,7 @@ class KiCadSource:
     lock = threading.RLock()  # each instance gets its own in __init__
 
     def __init__(self, editor="schematic", pid=0):
-        self.editor = editor  # the editor the user worked in last ("pcb" or "schematic")
+        self.editor = editor  # the editor the user worked in last (a key of EDITOR_TITLES)
         self.pid = pid  # the KiCad process this panel belongs to; 0: whichever KiCad answers
         self.socket = None  # its API's ipc:// address, None while it has none
         self.token = None  # first connect: the token KiCad put in the launch environment
@@ -301,18 +388,68 @@ class KiCadSource:
         wx.CallLater(40, check)
 
 
+    def library_editors(self):
+        """{"symbol"/"footprint": what it shows (library_item), {} when nothing} for each of
+        this KiCad's library editors that is open."""
+        found = {}
+        for editor in LIBRARY_EDITORS:
+            window = kicad_window.find_editor(EDITOR_TITLES[editor], pid=self.pid)
+            if window:
+                found[editor] = library_item(kicad_window.window_text(window)) or {}
+        return found
+
+    def manager_project(self):
+        """The .kicad_pro of the project manager's open project (its window title is
+        '<project> — KiCad 10.0'), from KiCad's recent-projects list; "" if unknown."""
+        window = kicad_window.find_editor("KiCad 10.0", pid=self.pid)
+        name = kicad_window.window_text(window).rsplit(" — ", 1)[0].lstrip("*").strip() if window else ""
+        if not name:
+            return ""
+        try:
+            with open(os.path.join(config.KICAD_CONFIG, "kicad.json"), encoding="utf-8") as f:
+                history = json.load(f).get("system", {}).get("file_history", [])
+        except (OSError, ValueError, KeyError, AttributeError):
+            return ""
+        for pro in history:
+            if os.path.splitext(os.path.basename(pro))[0] == name and os.path.isfile(pro):
+                return pro
+        return ""
+
+    def library_state(self, editor, item, project_dir):
+        """One line of message state about a symbol or footprint editor."""
+        table, kind, origin = LIBRARY_EDITORS[editor]
+        name = EDITOR_NAMES[editor].capitalize()
+        if not item:
+            return f"{name}: open, no {kind} loaded"
+        unsaved = ", with unsaved changes" if item["modified"] else ""
+        if item["copy"]:
+            return (f"{name}: editing {item['item']}'s own {kind}, opened from the {origin} "
+                    f"(saving it there updates the {origin} only, not a library){unsaved}")
+        if not item["lib"]:
+            return f"{name}: new {kind} {item['item']}, not saved to a library yet{unsaved}"
+        path = library_file(table, item["lib"], project_dir)
+        where = f"library file {path}" if path else f"library {item['lib']} (not in the {table}s)"
+        read_only = ", read-only library" if item["tag"] else ""
+        return f"{name}: editing {item['item']} from {where}{read_only}{unsaved}"
+
     def snapshot(self):
         from kipy.proto.common.types.base_types_pb2 import DocumentType
 
         self.track_editor()
         board = self.open_document(DocumentType.DOCTYPE_PCB)
         sch = self.open_document(DocumentType.DOCTYPE_SCHEMATIC)
-        if not board and not sch:
+        libs = self.library_editors()
+        if not board and not sch and not libs:
             return Snapshot(os.path.expanduser("~"), ["No schematic or board open"],
                             "You were launched from KiCad, but no schematic or board is open.",
                             "No schematic or board open")
-        project_dir = (board or sch)[1] or (self.project_dir(sch[0]) if sch else None) or ""
-        stem = os.path.splitext((board or sch)[0])[0]
+        if self.editor not in libs and (self.editor in LIBRARY_EDITORS or not board and not sch):
+            # that library editor closed since, or only library editors are open
+            self.editor = "pcb" if board else "schematic" if sch else next(iter(libs))
+        pro = "" if board or sch else self.manager_project()  # only a library editor is open
+        doc = board or sch or (os.path.basename(pro), os.path.dirname(pro))
+        project_dir = doc[1] or (self.project_dir(sch[0]) if sch else None) or ""
+        stem = os.path.splitext(doc[0])[0]
         board_path = os.path.join(project_dir, board[0] if board else stem + ".kicad_pcb")
         sch_path = os.path.join(project_dir, sch[0] if sch else stem + ".kicad_sch")
         footprints = self.board_selection() if board else []
@@ -322,16 +459,20 @@ class KiCadSource:
             hwnd = self.editor_window()
             sheet = kicad_window.current_sheet(hwnd) if hwnd else ""
 
-        if self.editor == "pcb" and board or not sch:
-            chips, selected = [board[0]], footprints
+        if self.editor in LIBRARY_EDITORS:
+            item = libs[self.editor]
+            chips, selected = [f"{LIBRARY_EDITORS[self.editor][1].capitalize()}: {item['item']}"
+                               if item else EDITOR_TITLES[self.editor]], []
+        elif self.editor == "pcb" and board or not sch:
+            chips, selected = [board[0] if board else EDITOR_TITLES["pcb"]], footprints
         else:
             chips, selected = [f"Sheet: {sheet.split('/')[-1]}" if sheet else sch[0]], \
                 [p.split(" (")[0] for p in self.selected]
         if selected:
             chips.append("Selected: " + short_list(selected))
 
-        context = ["You were launched from KiCad. This one panel serves both the PCB editor and "
-                   "the schematic editor."]
+        context = ["You were launched from KiCad. This one panel serves the PCB editor, the "
+                   "schematic editor, and the symbol and footprint editors."]
         if project_dir:
             context.append(f"KiCad project folder: {project_dir}")
             if sch or os.path.isfile(sch_path):
@@ -348,8 +489,18 @@ class KiCadSource:
                if getattr(kicad_window, "DRIVES_COPY", True) else
                "schematic selection is what the user last copied with Cmd+C in the schematic "
                "editor; ask them to select and copy parts if it matters)."),
-            library_context(),
         ]
+        if libs:
+            context.append(
+                "The symbol and footprint editors have no API in KiCad 10: change symbols and "
+                "footprints in their library files (.kicad_sym, or .kicad_mod in a .pretty folder) "
+                "with the kicad MCP tools. These editors show their own copy of the part: before "
+                "changing a part the user has open with unsaved changes, ask them to save it in "
+                "the editor first, or their next save there overwrites your change; afterwards, "
+                "tell them to open the part again if the editor doesn't show the change yet. A "
+                "part opened from the schematic or board is that placed part's own copy: changing "
+                "its library doesn't change the placed part until it is updated from the library.")
+        context.append(library_context())
         state = [f"The user is working in the {EDITOR_NAMES[self.editor]}."]
         if board:
             state += [f"PCB editor: board {board[0]}",
@@ -361,6 +512,7 @@ class KiCadSource:
                       "Selected in the schematic editor: " + (", ".join(self.selected) or "nothing")]
         else:
             state.append("Schematic editor: not open")
+        state += [self.library_state(editor, item, project_dir) for editor, item in libs.items()]
         watch = schematic_files(project_dir) + ([board_path] if project_dir and os.path.isfile(board_path) else [])
         return Snapshot(
             cwd=project_dir or os.path.expanduser("~"),

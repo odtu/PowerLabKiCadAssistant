@@ -4,6 +4,7 @@
 """
 
 import base64
+import json
 import math
 import os
 import re
@@ -1386,8 +1387,12 @@ class OnePanelTests(unittest.TestCase):
         self.source.poll_clipboard = lambda: None
         window = types.SimpleNamespace(
             foreground_title=lambda pid=0: self.foreground,
-            find_editor=lambda kind="Schematic Editor", pid=0: 1 if "schematic" in self.open else None,
+            find_editor=lambda kind="Schematic Editor", pid=0: (
+                kind if kind == "Schematic Editor" and "schematic" in self.open or kind in self.windows
+                else None),
+            window_text=lambda window: self.windows.get(window, ""),
             current_sheet=lambda hwnd: "esp/Power")
+        self.windows = {}  # other KiCad windows: what find_editor looks for -> their title
         old, sources.kicad_window = sources.kicad_window, window
         self.addCleanup(setattr, sources, "kicad_window", old)
 
@@ -1422,6 +1427,104 @@ class OnePanelTests(unittest.TestCase):
         self.assertIn("Root schematic:", snap.context)
         self.open = set()
         self.assertEqual(self.source.snapshot().chips, ["No schematic or board open"])
+
+    def test_follows_the_symbol_and_footprint_editors(self):
+        # KiCad 10 has no plugin buttons there, so the panel opened from another editor follows.
+        with open(os.path.join(self.project, "sym-lib-table"), "w", encoding="utf-8") as f:
+            f.write('(sym_lib_table\n  (version 7)\n'
+                    '  (lib (name "Lab")(type "KiCad")(uri "${KIPRJMOD}/lib/Lab.kicad_sym")(options "")(descr ""))\n)\n')
+        self.windows = {"Symbol Editor": "*Lab:LM5106 — Symbol Editor",
+                        "Footprint Editor": "R5 [from esp.kicad_pcb] — Footprint Editor"}
+        self.foreground = "*Lab:LM5106 — Symbol Editor"
+        snap = self.source.snapshot()
+        self.assertEqual(self.source.editor, "symbol")
+        self.assertEqual(snap.chips, ["Symbol: Lab:LM5106"])
+        self.assertIn("The user is working in the symbol editor.", snap.state)
+        self.assertIn("Symbol editor: editing Lab:LM5106 from library file "
+                      + os.path.join(self.project, "lib", "Lab.kicad_sym") + ", with unsaved changes",
+                      snap.state)
+        self.assertIn("Footprint editor: editing R5's own footprint, opened from the board", snap.state)
+        self.assertIn("symbol and footprint editors have no API", snap.context)
+        self.assertIn("Selected footprints in the PCB editor: C5, U2", snap.state)  # still seen
+        self.foreground = "R5 [from esp.kicad_pcb] — Footprint Editor"
+        self.assertEqual(self.source.snapshot().chips, ["Footprint: R5"])
+        # The footprint editor closes: back to the editors the panel can see.
+        del self.windows["Footprint Editor"]
+        self.foreground = "PowerLab Assistant"
+        snap = self.source.snapshot()
+        self.assertEqual(self.source.editor, "pcb")
+        self.assertNotIn("Footprint editor", snap.state)
+
+    def test_library_editor_alone_uses_the_project_managers_project(self):
+        self.open = set()
+        self.windows = {"Symbol Editor": "[no symbol loaded] — Symbol Editor",
+                        "KiCad 10.0": "esp — KiCad 10.0"}
+        self.foreground = self.windows["Symbol Editor"]
+        cfg = os.path.join(self.project, "cfg")
+        os.makedirs(cfg)
+        with open(os.path.join(cfg, "kicad.json"), "w", encoding="utf-8") as f:
+            json.dump({"system": {"file_history": [os.path.join(self.project, "esp.kicad_pro")]}}, f)
+        self.source.editor = "schematic"  # its button opened the panel; it's closed since
+        with mock.patch.object(sources.config, "KICAD_CONFIG", cfg):
+            snap = self.source.snapshot()
+        self.assertEqual(snap.cwd, self.project)
+        self.assertEqual(snap.chips, ["Symbol Editor"])
+        self.assertIn("The user is working in the symbol editor.", snap.state)
+        self.assertIn("Symbol editor: open, no symbol loaded", snap.state)
+        self.assertIn("Board file: " + os.path.join(self.project, "esp.kicad_pcb"), snap.context)
+
+
+class LibraryEditorTitleTests(unittest.TestCase):
+    """The symbol and footprint editors' window titles are all the panel learns from them."""
+
+    def test_titles(self):
+        item = sources.library_item
+        self.assertEqual(item("Device:R — Symbol Editor"),
+                         {"item": "Device:R", "lib": "Device", "name": "R", "modified": False,
+                          "tag": "", "copy": False})
+        r = item("*Device:R [Read Only Library] — Symbol Editor")
+        self.assertEqual((r["lib"], r["modified"], r["tag"]), ("Device", True, "Read Only Library"))
+        r = item("U3 [from esp.kicad_pcb] — Footprint Editor")
+        self.assertEqual((r["item"], r["lib"], r["copy"]), ("U3", "", True))
+        r = item("*MyPad [Unsaved] — Footprint Editor")
+        self.assertEqual((r["item"], r["lib"], r["copy"], r["modified"]), ("MyPad", "", False, True))
+        self.assertIsNone(item("[no symbol loaded] — Symbol Editor"))
+        self.assertIsNone(item("[keine Fußabdruck geladen] — Footprint Editor"))  # any language
+
+    def test_library_file_project_table_first_then_global(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project, cfg = os.path.join(tmp, "p"), os.path.join(tmp, "cfg")
+            os.makedirs(project)
+            os.makedirs(cfg)
+            with open(os.path.join(project, "fp-lib-table"), "w", encoding="utf-8") as f:
+                f.write('(fp_lib_table (version 7)\n  (lib (name "Mine")(type "KiCad")'
+                        '(uri "${KIPRJMOD}/Mine.pretty")(options "")(descr ""))\n)')
+            with open(os.path.join(tmp, "kicad-fp-lib-table"), "w", encoding="utf-8") as f:
+                f.write('(fp_lib_table\n\t(version 7)\n'
+                        '\t(lib (name Resistor_SMD) (type KiCad) (uri ${KICAD10_FOOTPRINT_DIR}/Resistor_SMD.pretty)'
+                        ' (options "") (descr ""))\n)')
+            with open(os.path.join(cfg, "fp-lib-table"), "w", encoding="utf-8") as f:
+                f.write('(fp_lib_table (version 7)\n'
+                        '  (lib (name "KiCad") (type "Table") (uri "%s") (options "") (descr ""))\n'
+                        % os.path.join(tmp, "kicad-fp-lib-table").replace("\\", "/") +
+                        '  (lib (name "Lab")(type "KiCad")(uri "${LABFP}/Lab.pretty")(options "")(descr ""))\n'
+                        '  (lib (name "Mine")(type "KiCad")(uri "/elsewhere/Mine.pretty")(options "")(descr ""))\n'
+                        '  (lib (name "Odd")(type "KiCad")(uri "${NOT_SET_ANYWHERE}/Odd.pretty")(options "")(descr ""))\n)')
+            with open(os.path.join(cfg, "kicad_common.json"), "w", encoding="utf-8") as f:
+                json.dump({"environment": {"vars": {"LABFP": os.path.join(tmp, "lab")}}}, f)
+            with mock.patch.object(sources.config, "KICAD_CONFIG", cfg):
+                self.assertEqual(sources.library_file("fp-lib-table", "Mine", project),
+                                 os.path.join(project, "Mine.pretty"))
+                self.assertEqual(sources.library_file("fp-lib-table", "Lab", project),
+                                 os.path.join(tmp, "lab", "Lab.pretty"))
+                fp_dir = os.path.join(tmp, "share", "footprints")
+                with mock.patch.object(sources, "kicad_path_vars",
+                                       lambda project_dir="": {"KICAD10_FOOTPRINT_DIR": fp_dir}):
+                    self.assertEqual(sources.library_file("fp-lib-table", "Resistor_SMD", project),
+                                     os.path.join(fp_dir, "Resistor_SMD.pretty"))  # KiCad's own table
+                self.assertEqual(sources.library_file("fp-lib-table", "Odd"),
+                                 "${NOT_SET_ANYWHERE}/Odd.pretty")  # left as KiCad has it
+                self.assertIsNone(sources.library_file("fp-lib-table", "Nowhere", project))
 
 
 class TwoKiCadsTests(unittest.TestCase):

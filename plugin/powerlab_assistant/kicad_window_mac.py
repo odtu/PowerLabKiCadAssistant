@@ -396,7 +396,7 @@ def menu_bar(pid):
 # internat/<lang>/kicad.mo) turn those into what is on screen. Which language KiCad uses
 # is read off its menu bar: the catalogue whose "&File" is there.
 
-EDITOR_KINDS = ("Schematic Editor", "PCB Editor")
+EDITOR_KINDS = ("Schematic Editor", "PCB Editor", "Symbol Editor", "Footprint Editor")
 _catalogs = {}  # language folder -> {msgid: translation}
 _languages = {}  # KiCad pid -> its catalogue ({} for English)
 
