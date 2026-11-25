@@ -225,5 +225,17 @@
  "Open transcript": "Открыть расшифровку",
  "Continue in a new chat": "Продолжить в новом чате",
  "Claude Code no longer has this conversation (it deletes them after about a month).": "У Claude Code больше нет этого разговора (он удаляет их примерно через месяц).",
- "Couldn't write the transcript.": "Не удалось записать расшифровку."
+ "Couldn't write the transcript.": "Не удалось записать расшифровку.",
+ "Quick answers, fewest tokens": "Быстрые ответы, меньше всего токенов",
+ "Everyday work": "Повседневная работа",
+ "Thorough (panel default)": "Тщательно (по умолчанию в панели)",
+ "Hard problems and long tasks": "Сложные задачи и долгая работа",
+ "Deepest; slowest and most tokens": "Глубже всего; медленнее всего и больше всего токенов",
+ "Effort": "Усилие",
+ "Choose the Claude model and how hard it thinks": "Выберите модель Claude и насколько глубоко она думает",
+ "Opus": "Opus",
+ "Sonnet": "Sonnet",
+ "Haiku": "Haiku",
+ "Fable": "Fable",
+ "Keep the panel above other windows": "Держать панель поверх других окон"
 }

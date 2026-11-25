@@ -1980,6 +1980,54 @@ index 4fd6044..b205dd7 100644
  
          # Per-pin uuids — KiCad writes a (pin "N" (uuid ...)) for every pin of the placed
          # unit; their absence is a primary cause of editor crashes when the symbol is dragged.
+diff --git a/python/commands/footprint.py b/python/commands/footprint.py
+index da9acd5..7c19787 100644
+--- a/python/commands/footprint.py
++++ b/python/commands/footprint.py
+@@ -543,7 +543,7 @@ class FootprintCreator:
+             Optional description string.
+         scope : str
+             "project" (writes fp-lib-table next to .kicad_pro) or
+-            "global"  (writes to ~/.config/kicad/9.0/fp-lib-table).
++            "global"  (writes to KiCad's own fp-lib-table, kicad_config_dir()).
+         project_path : str or None
+             Path to the .kicad_pro file or its directory (needed for scope="project").
+ 
+@@ -568,26 +568,14 @@ class FootprintCreator:
+                 table_dir = pretty.parent
+             table_path = table_dir / "fp-lib-table"
+         else:  # global
+-            cfg_dirs = [
+-                Path(os.environ.get("APPDATA", "")) / "kicad" / "9.0",
+-                Path.home() / ".config" / "kicad" / "9.0",
+-                Path.home() / ".local" / "share" / "kicad" / "9.0",
+-            ]
+-            table_path = None
+-            for d in cfg_dirs:
+-                candidate = d / "fp-lib-table"
+-                if candidate.exists():
+-                    table_path = candidate
+-                    break
+-            if table_path is None:
+-                # Create in first writable config dir
+-                for d in cfg_dirs:
+-                    try:
+-                        d.mkdir(parents=True, exist_ok=True)
+-                        table_path = d / "fp-lib-table"
+-                        break
+-                    except OSError:
+-                        continue
++            from utils.platform_helper import kicad_config_dir
++
++            cfg_dir = kicad_config_dir()
++            table_path = cfg_dir / "fp-lib-table"
++            try:
++                cfg_dir.mkdir(parents=True, exist_ok=True)
++            except OSError:
++                table_path = None
+             if table_path is None:
+                 return {"success": False, "error": "Could not find or create global fp-lib-table"}
+ 
 diff --git a/python/commands/freerouting.py b/python/commands/freerouting.py
 index 0c12af2..cedd101 100644
 --- a/python/commands/freerouting.py
@@ -15980,6 +16028,137 @@ index ee10775..b63d79a 100644
      def _extract_components_from_schematic(self, schematic_path: str) -> List[Dict[str, str]]:
          """Run kicad-cli netlist export and return the flat list of components.
  
+diff --git a/python/commands/schematic_hierarchy.py b/python/commands/schematic_hierarchy.py
+index bfd1f86..6352a3c 100644
+--- a/python/commands/schematic_hierarchy.py
++++ b/python/commands/schematic_hierarchy.py
+@@ -55,6 +55,28 @@ class SchematicHierarchyCommands:
+             except ValueError:
+                 rel_str = str(subsheet_path).replace("\\", "/")
+ 
++            content = parent_file.read_text(encoding="utf-8")
++            parent_uuid_match = re.search(r"\(uuid\s+\"?([0-9a-fA-F-]+)\"?\)", content)
++            parent_uuid = parent_uuid_match.group(1) if parent_uuid_match else ""
++            existing_pages = re.findall(r'\(page\s+"(\d+)"\)', content)
++            next_page = max((int(p) for p in existing_pages), default=0) + 1
++            # Since KiCad 7 (file version 20221110) a sheet's page number lives in its own
++            # (instances ...) block; the parent's (sheet_instances ...) only holds "/" and KiCad
++            # ignores other paths there. A sheet without one loaded with no page number, and
++            # KiCad then numbered it and called the schematic "automatically fixed" (modified)
++            # at every load.
++            version_match = re.search(r"\(version\s+(\d+)\)", content)
++            modern = not version_match or int(version_match.group(1)) >= 20221110
++            instances_block = ""
++            if modern:
++                instances_block = (
++                    f"    (instances\n"
++                    f'      (project "{escape_sexpr_string(self._project_name(parent_file))}"\n'
++                    f'        (path "/{parent_uuid}" (page "{next_page}"))\n'
++                    f"      )\n"
++                    f"    )\n"
++                )
++
+             sheet_block_uuid = str(uuid.uuid4())
+             name_x, name_y = round(x + 2.54, 4), round(y - 1.27, 4)
+             file_x, file_y = round(x + 2.54, 4), round(y + h + 1.27, 4)
+@@ -72,21 +94,20 @@ class SchematicHierarchyCommands:
+                 f" (at {file_x} {file_y} 0)\n"
+                 f"      (effects (font (size 1.27 1.27)) (justify left bottom))\n"
+                 f"    )\n"
++                f"{instances_block}"
+                 f"  )\n"
+             )
+ 
+-            content = parent_file.read_text(encoding="utf-8")
+-            parent_uuid_match = re.search(r"\(uuid\s+([0-9a-fA-F-]+)\)", content)
+-            parent_uuid = parent_uuid_match.group(1) if parent_uuid_match else ""
+-            existing_pages = re.findall(r'\(page\s+"(\d+)"\)', content)
+-            next_page = max((int(p) for p in existing_pages), default=0) + 1
+-
+             instance_path = (
+                 f"/{parent_uuid}/{sheet_block_uuid}" if parent_uuid else f"/{sheet_block_uuid}"
+             )
+             path_entry = f'    (path "{instance_path}" (page "{next_page}"))\n'
+ 
+             insert_at = content.rfind("(sheet_instances")
++            if insert_at == -1 and modern:
++                # (sheet_instances is only needed for an old file's page entry: put the
++                # sheet before the file's closing parenthesis.
++                insert_at = content.rstrip().rfind(")")
+             if insert_at == -1:
+                 return {"success": False, "message": "Could not find (sheet_instances in schematic"}
+             # rfind returns a raw character offset; on files where
+@@ -106,6 +127,16 @@ class SchematicHierarchyCommands:
+                 content = content[:line_start] + sheet_block + content[line_start:]
+ 
+             si_start = content.rfind("(sheet_instances")
++            if modern or si_start == -1:
++                parent_file.write_text(content, encoding="utf-8")
++                self.fix_subsheet_instances(str(parent_file), content)
++                return {
++                    "success": True,
++                    "sheet_uuid": sheet_block_uuid,
++                    "sheet_name": sheet_name,
++                    "subsheet_path": rel_str,
++                    "page": next_page,
++                }
+             depth = 0
+             si_close = len(content) - 1
+             for i in range(si_start, len(content)):
+@@ -138,6 +169,16 @@ class SchematicHierarchyCommands:
+             logger.error(traceback.format_exc())
+             return {"success": False, "message": str(e)}
+ 
++    @staticmethod
++    def _project_name(parent_file: Path) -> str:
++        """The KiCad project a sheet belongs to: the .kicad_pro next to it (the one named like
++        the schematic first), else the schematic's own name."""
++        pros = sorted(parent_file.parent.glob("*.kicad_pro"))
++        for pro in pros:
++            if pro.stem == parent_file.stem:
++                return pro.stem
++        return pros[0].stem if len(pros) == 1 else parent_file.stem
++
+     @staticmethod
+     def _find_sheet_blocks(content: str) -> List[tuple]:
+         """Return (start, end) spans of every top-level (sheet ...) block.
+diff --git a/python/commands/symbol_creator.py b/python/commands/symbol_creator.py
+index 0bd673c..fefec09 100644
+--- a/python/commands/symbol_creator.py
++++ b/python/commands/symbol_creator.py
+@@ -292,24 +292,14 @@ class SymbolCreator:
+                 table_dir = sym_path.parent
+             table_path = table_dir / "sym-lib-table"
+         else:
+-            cfg_dirs = [
+-                Path(os.environ.get("APPDATA", "")) / "kicad" / "9.0",
+-                Path.home() / ".config" / "kicad" / "9.0",
+-            ]
+-            table_path = None
+-            for d in cfg_dirs:
+-                candidate = d / "sym-lib-table"
+-                if candidate.exists():
+-                    table_path = candidate
+-                    break
+-            if table_path is None:
+-                for d in cfg_dirs:
+-                    try:
+-                        d.mkdir(parents=True, exist_ok=True)
+-                        table_path = d / "sym-lib-table"
+-                        break
+-                    except OSError:
+-                        continue
++            from utils.platform_helper import kicad_config_dir
++
++            cfg_dir = kicad_config_dir()
++            table_path = cfg_dir / "sym-lib-table"
++            try:
++                cfg_dir.mkdir(parents=True, exist_ok=True)
++            except OSError:
++                table_path = None
+             if table_path is None:
+                 return {"success": False, "error": "Could not find/create global sym-lib-table"}
+ 
 diff --git a/python/commands/update_symbol_from_library.py b/python/commands/update_symbol_from_library.py
 index f876f4b..582a074 100644
 --- a/python/commands/update_symbol_from_library.py
@@ -17148,7 +17327,7 @@ index 6f9a813..a2d32a8 100644
              # Create outline polyline
              outline = PolyLine()
 diff --git a/python/kicad_interface.py b/python/kicad_interface.py
-index c6ac305..c6ccd4e 100644
+index c6ac305..01fc0de 100644
 --- a/python/kicad_interface.py
 +++ b/python/kicad_interface.py
 @@ -36,6 +36,7 @@ if sys.platform == "win32":
@@ -17346,7 +17525,7 @@ index c6ac305..c6ccd4e 100644
          "refill_zones",
          "import_svg_logo",
          "sync_schematic_to_board",
-@@ -1848,6 +1923,567 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -1848,6 +1923,576 @@ class KiCADInterface(SchematicHandlersMixin):
          state = self._dirty_state(board_path)
          return {"success": True, "boardPath": board_path, **state}
  
@@ -17376,7 +17555,7 @@ index c6ac305..c6ccd4e 100644
 +        """
 +        from commands.route_cleanup import STEPS, clean_up
 +
-+        board_path = params.get("boardPath") or self._authoritative_board_path()
++        board_path = self._saved_board_path(params)
 +        if not board_path or not os.path.isfile(str(board_path)):
 +            return {
 +                "success": False,
@@ -17425,7 +17604,7 @@ index c6ac305..c6ccd4e 100644
 +        """Put back the saved board from before the last autoroute run (PowerLab patch)."""
 +        from commands import autoroute_backup
 +
-+        board_path = params.get("boardPath") or self._authoritative_board_path()
++        board_path = self._saved_board_path(params)
 +        if not board_path:
 +            return {
 +                "success": False,
@@ -17467,6 +17646,15 @@ index c6ac305..c6ccd4e 100644
 +                "there: a save in KiCad would write the routed board back."
 +            ),
 +        }
++
++    def _saved_board_path(self, params: Dict[str, Any]) -> Optional[str]:
++        """The saved board a tool that reads the .kicad_pcb file works on (PowerLab patch): the
++        boardPath it names, as given (a wrong one is reported, never swapped for another), else
++        this session's or the one KiCad has open. Live sessions never call open_board, so the
++        session's board alone answered "No saved board" while KiCad had one open."""
++        if params.get("boardPath"):
++            return params["boardPath"]
++        return self._board_path_to_load(params)
 +
 +    def _board_path_to_load(self, params: Dict[str, Any]) -> Optional[str]:
 +        """The saved board a "No board is loaded" command should use (PowerLab patch, #57):
@@ -17736,7 +17924,7 @@ index c6ac305..c6ccd4e 100644
 +
 +    def _handle_check_part_spacing(self, params: Dict[str, Any]) -> Dict[str, Any]:
 +        """Part-to-part spacing and keep-out areas on the saved board (PowerLab patch)."""
-+        board_path = params.get("boardPath") or self._authoritative_board_path()
++        board_path = self._saved_board_path(params)
 +        if not board_path or not os.path.isfile(str(board_path)):
 +            return {"success": False, "message": "No saved board",
 +                    "errorDetails": "Open the board with open_board, or pass boardPath"}
@@ -17755,7 +17943,7 @@ index c6ac305..c6ccd4e 100644
 +
 +    def _handle_check_routing(self, params: Dict[str, Any]) -> Dict[str, Any]:
 +        """Routing style (angles, corners, kinks, detours, pad entries) on the saved board (PowerLab patch)."""
-+        board_path = params.get("boardPath") or self._authoritative_board_path()
++        board_path = self._saved_board_path(params)
 +        if not board_path or not os.path.isfile(str(board_path)):
 +            return {"success": False, "message": "No saved board",
 +                    "errorDetails": "Open the board with open_board, or pass boardPath"}
@@ -17774,7 +17962,7 @@ index c6ac305..c6ccd4e 100644
 +
 +    def _handle_powerlab_route(self, params: Dict[str, Any]) -> Dict[str, Any]:
 +        """Start the PowerLab router on the saved board, in the background (PowerLab patch)."""
-+        board_path = params.get("boardPath") or self._authoritative_board_path()
++        board_path = self._saved_board_path(params)
 +        if not board_path or not os.path.isfile(str(board_path)):
 +            return {
 +                "success": False,
@@ -17819,7 +18007,7 @@ index c6ac305..c6ccd4e 100644
 +
 +    def _handle_powerlab_route_status(self, params: Dict[str, Any]) -> Dict[str, Any]:
 +        """Wait for a PowerLab router run, then put its result on the board (PowerLab patch)."""
-+        board_path = params.get("boardPath") or self._authoritative_board_path()
++        board_path = self._saved_board_path(params)
 +        if not board_path:
 +            return {"success": False, "message": "No board", "errorDetails": "Pass boardPath"}
 +        board_path = os.path.abspath(str(board_path))
@@ -17914,7 +18102,7 @@ index c6ac305..c6ccd4e 100644
      def _handle_batch_move_components(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """Batch move wrapper that preserves the external-edit save guard."""
          if getattr(self, "session_backend", None) == "ipc" and not self._ipc_session_alive():
-@@ -4667,6 +5303,59 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -4667,6 +5312,59 @@ class KiCADInterface(SchematicHandlersMixin):
              logger.error(traceback.format_exc())
              return {"success": False, "message": str(e)}
  
@@ -17974,7 +18162,7 @@ index c6ac305..c6ccd4e 100644
      def _handle_get_elements_in_region(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """List all wires, labels, and symbols within a rectangular region"""
          logger.info("Getting elements in schematic region")
-@@ -4677,7 +5366,8 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -4677,7 +5375,8 @@ class KiCADInterface(SchematicHandlersMixin):
  
              schematic_path = params.get("schematicPath")
              if not schematic_path:
@@ -17984,7 +18172,7 @@ index c6ac305..c6ccd4e 100644
  
              x1 = float(params.get("x1", 0))
              y1 = float(params.get("y1", 0))
-@@ -4948,6 +5638,10 @@ print("ok")
+@@ -4948,6 +5647,10 @@ print("ok")
                          }
                      self.board = reloaded
                      self._update_command_handlers()
@@ -17995,7 +18183,7 @@ index c6ac305..c6ccd4e 100644
                      logger.info("Zone fill subprocess succeeded")
                      return {
                          "success": True,
-@@ -4982,47 +5676,30 @@ print("ok")
+@@ -4982,47 +5685,30 @@ print("ok")
      # =========================================================================
  
      def _ipc_route_trace(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -18062,7 +18250,7 @@ index c6ac305..c6ccd4e 100644
  
      def _ipc_route_arc_trace(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for route_arc_trace - adds copper arc with real-time UI update"""
-@@ -5079,6 +5756,65 @@ print("ok")
+@@ -5079,6 +5765,65 @@ print("ok")
              logger.error(f"IPC route_arc_trace error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -18128,7 +18316,7 @@ index c6ac305..c6ccd4e 100644
      def _ipc_add_via(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for add_via - adds via with real-time UI update"""
          try:
-@@ -5131,21 +5867,37 @@ print("ok")
+@@ -5131,21 +5876,37 @@ print("ok")
              net = params.get("net")
              clearance = params.get("clearance", 0.5)
              min_width = params.get("minWidth", 0.25)
@@ -18173,7 +18361,7 @@ index c6ac305..c6ccd4e 100644
  
              success = self.ipc_board_api.add_zone(
                  points=formatted_points,
-@@ -5156,6 +5908,7 @@ print("ok")
+@@ -5156,6 +5917,7 @@ print("ok")
                  priority=priority,
                  fill_mode=fill_type,
                  name=name,
@@ -18181,7 +18369,7 @@ index c6ac305..c6ccd4e 100644
              )
  
              return {
-@@ -5179,6 +5932,65 @@ print("ok")
+@@ -5179,6 +5941,65 @@ print("ok")
              logger.error(f"IPC add_copper_pour error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -18247,7 +18435,7 @@ index c6ac305..c6ccd4e 100644
      def _ipc_refill_zones(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for refill_zones - refills all zones with real-time UI update"""
          try:
-@@ -5204,12 +6016,18 @@ print("ok")
+@@ -5204,12 +6025,18 @@ print("ok")
              layer = params.get("layer", "F.SilkS")
              size = params.get("size", 1.0)
              rotation = params.get("rotation", 0)
@@ -18268,7 +18456,7 @@ index c6ac305..c6ccd4e 100644
                  "success": success,
                  "message": (
                      f"Added text '{text}' (visible in KiCAD UI)"
-@@ -5217,6 +6035,10 @@ print("ok")
+@@ -5217,6 +6044,10 @@ print("ok")
                      else "Failed to add text"
                  ),
              }
@@ -18279,7 +18467,7 @@ index c6ac305..c6ccd4e 100644
          except Exception as e:
              logger.error(f"IPC add_text error: {e}")
              return {"success": False, "message": str(e)}
-@@ -5349,6 +6171,19 @@ print("ok")
+@@ -5349,6 +6180,19 @@ print("ok")
                  x = x * 0.0254
                  y = y * 0.0254
  
@@ -18299,7 +18487,7 @@ index c6ac305..c6ccd4e 100644
              success = self.ipc_board_api.move_component(
                  reference=reference, x=x, y=y, rotation=rotation
              )
-@@ -5356,7 +6191,9 @@ print("ok")
+@@ -5356,7 +6200,9 @@ print("ok")
              return {
                  "success": success,
                  "message": (
@@ -18310,7 +18498,7 @@ index c6ac305..c6ccd4e 100644
                      if success
                      else "Failed to move component"
                  ),
-@@ -5456,11 +6293,306 @@ print("ok")
+@@ -5456,11 +6302,306 @@ print("ok")
              return {"success": False, "message": str(e)}
  
      def _ipc_delete_trace(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -18622,7 +18810,7 @@ index c6ac305..c6ccd4e 100644
  
      def _ipc_query_traces(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for query_traces - reads traces from the live KiCAD board."""
-@@ -5558,11 +6690,20 @@ print("ok")
+@@ -5558,11 +6699,20 @@ print("ok")
          and correctly generates PCB_SHAPE arcs for rounded corners.
          """
          shape = params.get("shape", "rectangle")
@@ -18643,7 +18831,7 @@ index c6ac305..c6ccd4e 100644
              return self.board_commands.add_board_outline(params)
  
          try:
-@@ -5614,6 +6755,50 @@ print("ok")
+@@ -5614,6 +6764,50 @@ print("ok")
              logger.error(f"IPC add_board_outline error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -18694,7 +18882,7 @@ index c6ac305..c6ccd4e 100644
      def _ipc_add_mounting_hole(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for add_mounting_hole - adds mounting hole with real-time UI update"""
          try:
-@@ -5833,6 +7018,100 @@ print("ok")
+@@ -5833,6 +7027,100 @@ print("ok")
              logger.error(f"IPC set_footprint_type error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -19784,6 +19972,45 @@ index fa3297d..74be243 100644
          candidates.extend(
              [
                  Path("/Applications/KiCad/KiCad.app/Contents/MacOS") / name,
+diff --git a/python/utils/platform_helper.py b/python/utils/platform_helper.py
+index 64861fe..0cb42f9 100644
+--- a/python/utils/platform_helper.py
++++ b/python/utils/platform_helper.py
+@@ -392,6 +392,34 @@ class PlatformHelper:
+ 
+ 
+ # Convenience function for quick platform detection
++def kicad_config_dir() -> Path:
++    """KiCad's user settings folder for the newest KiCad on this computer, where the global
++    sym-lib-table and fp-lib-table live: %APPDATA%\\kicad\\<ver> on Windows,
++    ~/Library/Preferences/kicad/<ver> on macOS, ~/.config/kicad/<ver> on Linux.
++
++    The newest version folder that exists wins (10.0 before 9.0); with none, 10.0. Never a
++    relative path: an empty APPDATA (macOS, Linux) used to make it "kicad/9.0" in the working
++    directory, i.e. inside the user's project."""
++    if sys.platform == "win32" and os.environ.get("APPDATA"):
++        base = Path(os.environ["APPDATA"]) / "kicad"
++    elif sys.platform == "win32":
++        base = Path.home() / "AppData" / "Roaming" / "kicad"
++    elif sys.platform == "darwin":
++        base = Path.home() / "Library" / "Preferences" / "kicad"
++    else:
++        base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "kicad"
++
++    def version(d: Path):
++        try:
++            return tuple(int(x) for x in d.name.split("."))
++        except ValueError:
++            return None
++
++    found = sorted((d for d in base.glob("*.*") if d.is_dir() and version(d)), key=version,
++                   reverse=True) if base.is_dir() else []
++    return found[0] if found else base / "10.0"
++
++
+ def detect_platform() -> dict:
+     """
+     Detect platform and return useful information
 diff --git a/python/utils/region_box.py b/python/utils/region_box.py
 new file mode 100644
 index 0000000..a15e7d3
@@ -21602,6 +21829,101 @@ index bc5f7ae..3dbf1c6 100644
  
  
  @pytest.mark.unit
+diff --git a/tests/test_global_lib_tables.py b/tests/test_global_lib_tables.py
+new file mode 100644
+index 0000000..c9e5b95
+--- /dev/null
++++ b/tests/test_global_lib_tables.py
+@@ -0,0 +1,89 @@
++"""
++Global library tables go to KiCad's own settings folder on every platform.
++
++register_symbol_library / register_footprint_library with scope "global" looked for
++%APPDATA%\\kicad\\9.0. With no APPDATA (macOS, Linux) that is the relative path
++"kicad/9.0", so the table was written into the working directory (the user's project),
++and KiCad 10 never read it.
++"""
++
++import sys
++from pathlib import Path
++
++import pytest
++
++sys.path.insert(0, str(Path(__file__).parent.parent / "python"))
++
++from commands.footprint import FootprintCreator
++from commands.symbol_creator import SymbolCreator
++from utils import platform_helper
++from utils.platform_helper import kicad_config_dir
++
++
++@pytest.fixture
++def home(tmp_path, monkeypatch):
++    home = tmp_path / "home"
++    home.mkdir()
++    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
++    monkeypatch.delenv("APPDATA", raising=False)
++    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
++    return home
++
++
++@pytest.mark.parametrize(
++    "plat, parts",
++    [
++        ("darwin", ("Library", "Preferences", "kicad")),
++        ("linux", (".config", "kicad")),
++        ("win32", ("AppData", "Roaming", "kicad")),
++    ],
++)
++def test_config_dir_per_platform(home, monkeypatch, plat, parts):
++    monkeypatch.setattr(platform_helper.sys, "platform", plat)
++    assert kicad_config_dir() == home.joinpath(*parts, "10.0")
++
++
++def test_appdata_on_windows(home, tmp_path, monkeypatch):
++    monkeypatch.setattr(platform_helper.sys, "platform", "win32")
++    monkeypatch.setenv("APPDATA", str(tmp_path / "roaming"))
++    assert kicad_config_dir() == tmp_path / "roaming" / "kicad" / "10.0"
++
++
++def test_newest_existing_version_wins(home, monkeypatch):
++    monkeypatch.setattr(platform_helper.sys, "platform", "darwin")
++    base = home / "Library" / "Preferences" / "kicad"
++    for v in ("8.0", "9.0", "10.0", "colors"):
++        (base / v).mkdir(parents=True)
++    (base / "11.0").write_text("not a folder")
++    assert kicad_config_dir() == base / "10.0"
++    (base / "10.99").mkdir()
++    assert kicad_config_dir() == base / "10.99"
++
++
++def test_never_relative(home, monkeypatch):
++    for plat in ("darwin", "linux", "win32"):
++        monkeypatch.setattr(platform_helper.sys, "platform", plat)
++        assert kicad_config_dir().is_absolute()
++
++
++@pytest.mark.parametrize("kind", ["symbol", "footprint"])
++def test_global_register_writes_kicad_table_not_project(home, tmp_path, monkeypatch, kind):
++    monkeypatch.setattr(platform_helper.sys, "platform", "darwin")
++    project = tmp_path / "project"
++    project.mkdir()
++    monkeypatch.chdir(project)
++    if kind == "symbol":
++        lib = project / "Parts.kicad_sym"
++        result = SymbolCreator().register_symbol_library(str(lib), scope="global")
++        table = "sym-lib-table"
++    else:
++        lib = project / "Parts.pretty"
++        lib.mkdir()
++        result = FootprintCreator().register_footprint_library(str(lib), scope="global")
++        table = "fp-lib-table"
++
++    assert result["success"], result
++    expected = home / "Library" / "Preferences" / "kicad" / "10.0" / table
++    assert Path(result["table_path"]) == expected
++    assert "Parts" in expected.read_text()
++    assert not (project / "kicad").exists()
 diff --git a/tests/test_kicad_common_env_resolution.py b/tests/test_kicad_common_env_resolution.py
 index 168e3a2..3293e49 100644
 --- a/tests/test_kicad_common_env_resolution.py
@@ -22573,6 +22895,106 @@ index 0000000..04dc2b6
 +    from kicad_interface import KiCADInterface
 +
 +    assert "edit_component" in KiCADInterface.LIVE_VIA_FILE_COMMANDS
+diff --git a/tests/test_saved_board_path.py b/tests/test_saved_board_path.py
+new file mode 100644
+index 0000000..9aad7a8
+--- /dev/null
++++ b/tests/test_saved_board_path.py
+@@ -0,0 +1,94 @@
++"""
++Tools that read the saved .kicad_pcb (check_routing, check_part_spacing, powerlab_route,
++powerlab_route_status, clean_up_routing, undo_autoroute) find the board KiCad has open.
++
++In a live session Claude never calls open_board, so the session had no board path and
++these tools answered "No saved board" although KiCad had the board open and saved.
++"""
++
++import sys
++from pathlib import Path
++from typing import Any
++from unittest.mock import MagicMock, patch
++
++import pytest
++
++sys.path.insert(0, str(Path(__file__).parent.parent / "python"))
++
++
++def _iface(open_board=None) -> Any:
++    with patch("kicad_interface.USE_IPC_BACKEND", True):
++        from kicad_interface import KiCADInterface
++
++        iface = KiCADInterface.__new__(KiCADInterface)
++    iface.use_ipc = True
++    iface.board = None
++    iface.session_backend = "ipc"
++    iface.session_board_path = None
++    iface.ipc_backend = MagicMock()
++    iface.ipc_backend.get_open_board_path.return_value = open_board
++    return iface
++
++
++@pytest.fixture
++def board(tmp_path):
++    path = tmp_path / "demo.kicad_pcb"
++    path.write_text("(kicad_pcb)")
++    return path
++
++
++def test_kicads_open_board_when_the_session_has_none(board):
++    assert _iface(str(board))._saved_board_path({}) == str(board)
++
++
++def test_named_board_wins(board, tmp_path):
++    other = tmp_path / "other.kicad_pcb"
++    other.write_text("(kicad_pcb)")
++    assert _iface(str(board))._saved_board_path({"boardPath": str(other)}) == str(other)
++
++
++def test_a_wrong_named_board_is_kept_so_the_tool_reports_it(board, tmp_path):
++    missing = str(tmp_path / "missing.kicad_pcb")
++    assert _iface(str(board))._saved_board_path({"boardPath": missing}) == missing
++
++
++def test_session_board_before_kicads(board, tmp_path):
++    other = tmp_path / "other.kicad_pcb"
++    other.write_text("(kicad_pcb)")
++    iface = _iface(str(other))
++    iface.session_board_path = str(board)
++    assert iface._saved_board_path({}) == str(board)
++
++
++def test_none_when_nothing_is_open():
++    assert _iface(None)._saved_board_path({}) is None
++
++
++def test_check_routing_runs_on_kicads_open_board(board):
++    iface = _iface(str(board))
++    with patch("kicad_interface.routing_check.check", return_value={"success": True}) as check, \
++            patch.object(iface, "_live_kicad_board", return_value=None):
++        result = iface._handle_check_routing({"nets": ["N1"]})
++    assert result["success"]
++    assert check.call_args[0][0] == str(board.resolve())
++
++
++def test_check_routing_still_says_no_saved_board_without_one():
++    iface = _iface(None)
++    result = iface._handle_check_routing({})
++    assert not result["success"] and result["message"] == "No saved board"
++
++
++@pytest.mark.parametrize(
++    "handler",
++    ["_handle_check_routing", "_handle_check_part_spacing", "_handle_powerlab_route",
++     "_handle_powerlab_route_status", "_handle_clean_up_routing", "_handle_undo_autoroute"],
++)
++def test_every_saved_board_tool_uses_the_shared_lookup(handler):
++    import inspect
++
++    from kicad_interface import KiCADInterface
++
++    source = inspect.getsource(getattr(KiCADInterface, handler))
++    assert "self._saved_board_path(params)" in source
++    assert 'params.get("boardPath") or self._authoritative_board_path()' not in source
 diff --git a/tests/test_schema_param_names.py b/tests/test_schema_param_names.py
 index 995406c..48afecd 100644
 --- a/tests/test_schema_param_names.py
@@ -22622,6 +23044,47 @@ index 7fd9dfa..4cebe47 100644
          )
          monkeypatch.setattr(sb, "DynamicSymbolLoader", fake_loader_cls)
          fake_pins = types.SimpleNamespace(
+diff --git a/tests/test_schematic_hierarchy.py b/tests/test_schematic_hierarchy.py
+index 8da57df..682c07b 100644
+--- a/tests/test_schematic_hierarchy.py
++++ b/tests/test_schematic_hierarchy.py
+@@ -41,8 +41,10 @@ class TestAddHierarchicalSheet:
+         assert "(sheet " in content
+         assert '"Sheet name" "Power"' in content
+         assert '"Sheet file" "sub.kicad_sch"' in content
+-        # a sheet_instances path entry for the new sheet block was added
+-        assert f'/{ "abcd-1234" }/{ r["sheet_uuid"] }' in content
++        # KiCad 7+ reads the page from the sheet's own (instances ...), not from the
++        # parent's sheet_instances (which keeps "/" only)
++        assert '(project "top"\n        (path "/abcd-1234" (page "2"))' in content
++        assert f'/abcd-1234/{r["sheet_uuid"]}' not in content
+ 
+     def test_sheet_block_starts_its_own_line(self, tmp_path):
+         """#298: rfind gives a raw char offset; when (sheet_instances does not
+@@ -180,8 +182,8 @@ class TestRemoveHierarchicalSheet:
+         assert r["success"] is False
+ 
+     def test_roundtrip_add_then_remove_modern(self, tmp_path):
+-        # add_hierarchical_sheet writes the modern format with a top-level
+-        # sheet_instances path entry; remove must clean both the block and that entry.
++        # add_hierarchical_sheet writes the page into the sheet block's own (instances ...),
++        # so removing the block removes it; the root page entry stays.
+         parent = tmp_path / "top.kicad_sch"
+         parent.write_text(
+             '(kicad_sch (uuid abcd-1234)\n  (sheet_instances (path "/" (page "1")))\n)'
+@@ -199,10 +201,10 @@ class TestRemoveHierarchicalSheet:
+ 
+         rem = c.remove_hierarchical_sheet({"schematicPath": str(parent), "sheetName": "Power"})
+         assert rem["success"] is True
+-        assert rem["removed_instance_path"] is True
+         content = parent.read_text()
+         assert "power.kicad_sch" not in content
+-        assert add["sheet_uuid"] not in content  # sheet_instances path entry gone too
++        assert add["sheet_uuid"] not in content
++        assert "(instances" not in content
+         assert '(path "/" (page "1"))' in content  # root page entry preserved
+ 
+ 
 diff --git a/tests/test_schematic_text_edit.py b/tests/test_schematic_text_edit.py
 new file mode 100644
 index 0000000..2d98d57
@@ -22704,6 +23167,115 @@ index 0000000..2d98d57
 +    assert _texts(sch)["Boxed"]["kind"] == "text_box"
 +    assert WireManager.delete_text(sch, uuid_="11111111-2222-3333-4444-555555555555")["success"]
 +    assert "Boxed" not in _texts(sch)
+diff --git a/tests/test_sheet_page_instances.py b/tests/test_sheet_page_instances.py
+new file mode 100644
+index 0000000..0f98a64
+--- /dev/null
++++ b/tests/test_sheet_page_instances.py
+@@ -0,0 +1,103 @@
++"""
++A sheet linked by add_hierarchical_sheet keeps its page number where KiCad 7+ reads it.
++
++Since file version 20221110 KiCad reads a sheet's page from the sheet's own
++(instances (project ...) (path "/<parent uuid>" (page "N"))) block and ignores every path but
++"/" in the parent's (sheet_instances ...). Sheets linked with only a sheet_instances entry
++loaded without a page number, so KiCad renumbered them and reported "An error was found when
++loading the schematic that has been automatically fixed" at every load, with the schematic
++marked modified.
++"""
++
++import sys
++from pathlib import Path
++from unittest.mock import patch
++
++import pytest
++import sexpdata
++from sexpdata import Symbol
++
++sys.path.insert(0, str(Path(__file__).parent.parent / "python"))
++
++ROOT = """(kicad_sch
++\t(version 20260306)
++\t(generator "eeschema")
++\t(generator_version "10.0")
++\t(uuid f78b695b-b3e2-45e6-8fcd-1c1dbe7166a9)
++\t(paper "A4")
++\t(lib_symbols)
++\t(sheet_instances
++\t\t(path "/"
++\t\t\t(page "1")
++\t\t)
++\t)
++\t(embedded_fonts no)
++)
++"""
++
++
++@pytest.fixture
++def commands():
++    with patch("kicad_interface.USE_IPC_BACKEND", False):
++        from kicad_interface import KiCADInterface
++
++        iface = KiCADInterface()
++    from commands.schematic_hierarchy import SchematicHierarchyCommands
++
++    return SchematicHierarchyCommands(iface)
++
++
++def _sheets(content):
++    return [i for i in sexpdata.loads(content) if isinstance(i, list) and i and i[0] == Symbol("sheet")]
++
++
++def _find(tree, name):
++    return next(i for i in tree if isinstance(i, list) and i and i[0] == Symbol(name))
++
++
++def test_page_goes_into_the_sheets_own_instances(commands, tmp_path):
++    (tmp_path / "board.kicad_pro").write_text("{}")
++    root = tmp_path / "board.kicad_sch"
++    root.write_text(ROOT)
++    for i, name in enumerate(["Power", "MCU"]):
++        result = commands.add_hierarchical_sheet(
++            {"schematicPath": str(root), "subsheetPath": str(tmp_path / f"{name}.kicad_sch"),
++             "sheetName": name, "position": {"x": 30 + 80 * i, "y": 100}})
++        assert result["success"], result
++        assert result["page"] == i + 2
++
++    content = root.read_text()
++    sheets = _sheets(content)
++    assert len(sheets) == 2
++    for page, sheet in zip(["2", "3"], sheets):
++        project = _find(_find(sheet, "instances"), "project")
++        assert project[1] == "board"
++        path = _find(project, "path")
++        assert path[1] == "/f78b695b-b3e2-45e6-8fcd-1c1dbe7166a9"
++        assert _find(path, "page")[1] == page
++
++    # The root's sheet_instances keeps "/" only, as KiCad writes it.
++    sheet_instances = _find(sexpdata.loads(content), "sheet_instances")
++    assert [p[1] for p in sheet_instances[1:]] == ["/"]
++    # The rest of the file is untouched.
++    assert content.rstrip().endswith("(embedded_fonts no)\n)")
++
++
++def test_old_file_keeps_sheet_instances_entry(commands, tmp_path):
++    root = tmp_path / "old.kicad_sch"
++    root.write_text('(kicad_sch (version 20211123) (uuid abcd-1234) '
++                    '(sheet_instances (path "/" (page "1"))))')
++    result = commands.add_hierarchical_sheet(
++        {"schematicPath": str(root), "subsheetPath": str(tmp_path / "p.kicad_sch"), "sheetName": "P"})
++    assert result["success"], result
++    content = root.read_text()
++    assert "(instances" not in content
++    assert '(page "2")' in content
++
++
++def test_project_name_without_kicad_pro_is_the_schematics(commands, tmp_path):
++    root = tmp_path / "top.kicad_sch"
++    root.write_text(ROOT)
++    commands.add_hierarchical_sheet(
++        {"schematicPath": str(root), "subsheetPath": str(tmp_path / "p.kicad_sch"), "sheetName": "P"})
++    assert '(project "top"' in root.read_text()
 diff --git a/tests/test_update_symbol_from_library.py b/tests/test_update_symbol_from_library.py
 index 6119fce..57ba624 100644
 --- a/tests/test_update_symbol_from_library.py

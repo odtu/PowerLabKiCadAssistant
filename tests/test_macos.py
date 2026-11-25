@@ -411,6 +411,22 @@ class MacPermissionTests(unittest.TestCase):
         self.assertIn(mac.ax_window_titles(os.getpid()), (None, []))  # no windows here
 
 
+class DockIconTests(unittest.TestCase):
+    """The panel runs on KiCad's Python, so the Dock showed Python's rocket for it."""
+
+    def test_panel_sets_its_dock_icon_on_macos(self):
+        with open(os.path.join(ROOT, "plugin", "powerlab_assistant", "standalone.py"), encoding="utf-8") as f:
+            source = f.read()
+        self.assertIn('set_dock_icon(os.path.join(os.path.dirname(__file__), "app_icon.png"))', source)
+        self.assertIn('if sys.platform == "darwin":', source)
+        self.assertTrue(os.path.isfile(os.path.join(ROOT, "plugin", "powerlab_assistant", "app_icon.png")))
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS")
+    def test_a_missing_image_is_not_set(self):
+        from powerlab_assistant import kicad_window_mac
+        self.assertFalse(kicad_window_mac.set_dock_icon(os.path.join(ROOT, "no-such-icon.png")))
+
+
 class MacSocketTests(unittest.TestCase):
     @unittest.skipUnless(hasattr(socket, "AF_UNIX") and os.name != "nt", "Unix sockets")
     def test_lists_only_sockets(self):

@@ -225,5 +225,17 @@
  "Open transcript": "打开记录",
  "Continue in a new chat": "在新对话中继续",
  "Claude Code no longer has this conversation (it deletes them after about a month).": "Claude Code 已不再保存此对话（约一个月后删除）。",
- "Couldn't write the transcript.": "无法写入记录。"
+ "Couldn't write the transcript.": "无法写入记录。",
+ "Quick answers, fewest tokens": "快速回答，token 最少",
+ "Everyday work": "日常工作",
+ "Thorough (panel default)": "周全（面板默认）",
+ "Hard problems and long tasks": "难题和长任务",
+ "Deepest; slowest and most tokens": "最深入；最慢、token 最多",
+ "Effort": "思考强度",
+ "Choose the Claude model and how hard it thinks": "选择 Claude 模型及思考深度",
+ "Opus": "Opus",
+ "Sonnet": "Sonnet",
+ "Haiku": "Haiku",
+ "Fable": "Fable",
+ "Keep the panel above other windows": "让面板保持在其他窗口之上"
 }

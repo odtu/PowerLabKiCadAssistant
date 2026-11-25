@@ -225,5 +225,17 @@
  "Open transcript": "トランスクリプトを開く",
  "Continue in a new chat": "新しいチャットで続ける",
  "Claude Code no longer has this conversation (it deletes them after about a month).": "Claude Code にはこの会話がもう残っていません（約 1 か月後に削除されます）。",
- "Couldn't write the transcript.": "トランスクリプトを書き出せませんでした。"
+ "Couldn't write the transcript.": "トランスクリプトを書き出せませんでした。",
+ "Quick answers, fewest tokens": "すばやい回答、トークン最小",
+ "Everyday work": "普段の作業",
+ "Thorough (panel default)": "じっくり（パネルの既定）",
+ "Hard problems and long tasks": "難しい問題や長い作業",
+ "Deepest; slowest and most tokens": "最も深く、最も遅く、トークン最大",
+ "Effort": "思考量",
+ "Choose the Claude model and how hard it thinks": "Claude のモデルと思考の深さを選択",
+ "Opus": "Opus",
+ "Sonnet": "Sonnet",
+ "Haiku": "Haiku",
+ "Fable": "Fable",
+ "Keep the panel above other windows": "パネルを他のウィンドウより手前に表示"
 }

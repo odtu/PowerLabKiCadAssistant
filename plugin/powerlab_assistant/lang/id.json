@@ -225,5 +225,17 @@
  "Open transcript": "Buka transkrip",
  "Continue in a new chat": "Lanjutkan di obrolan baru",
  "Claude Code no longer has this conversation (it deletes them after about a month).": "Claude Code tidak lagi menyimpan percakapan ini (dihapus setelah sekitar satu bulan).",
- "Couldn't write the transcript.": "Transkrip tidak dapat ditulis."
+ "Couldn't write the transcript.": "Transkrip tidak dapat ditulis.",
+ "Quick answers, fewest tokens": "Jawaban cepat, token paling sedikit",
+ "Everyday work": "Pekerjaan sehari-hari",
+ "Thorough (panel default)": "Menyeluruh (bawaan panel)",
+ "Hard problems and long tasks": "Masalah sulit dan tugas panjang",
+ "Deepest; slowest and most tokens": "Paling dalam; paling lambat dan token terbanyak",
+ "Effort": "Upaya",
+ "Choose the Claude model and how hard it thinks": "Pilih model Claude dan seberapa dalam ia berpikir",
+ "Opus": "Opus",
+ "Sonnet": "Sonnet",
+ "Haiku": "Haiku",
+ "Fable": "Fable",
+ "Keep the panel above other windows": "Jaga panel di atas jendela lain"
 }

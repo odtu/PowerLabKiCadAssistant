@@ -5,7 +5,7 @@ the KiCad MCP server).
     python tools/mcp_patch.py regen [DIR]    # write DIR's changes back into the patch
 
 DIR defaults to %LOCALAPPDATA%\\PowerLabKiCadAssistant\\KiCAD-MCP-Server, the checkout
-install.ps1 makes. The pin and the repository come from install.ps1. `regen` keeps the
+install.ps1 makes (on macOS, install.sh's in ~/Library/Application Support). The pin and the repository come from install.ps1. `regen` keeps the
 license header (everything before the first `diff --git`) and leaves the patch alone when
 only git's abbreviated `index` lines differ, so a different clone doesn't count as a change.
 """
@@ -70,8 +70,9 @@ def main(argv):
     if len(argv) < 2 or argv[1] not in ("checkout", "regen") or (argv[1] == "checkout" and len(argv) < 3):
         print(__doc__)
         return 2
-    where = argv[2] if len(argv) > 2 else os.path.join(
-        os.environ.get("LOCALAPPDATA", ""), "PowerLabKiCadAssistant", "KiCAD-MCP-Server")
+    local = os.environ.get("LOCALAPPDATA") or os.path.expanduser(
+        "~/Library/Application Support" if sys.platform == "darwin" else "~/.local/share")
+    where = argv[2] if len(argv) > 2 else os.path.join(local, "PowerLabKiCadAssistant", "KiCAD-MCP-Server")
     if argv[1] == "checkout":
         checkout(where)
         print(f"{where}: {pin()[1]} with patches/kicad-mcp.patch applied")

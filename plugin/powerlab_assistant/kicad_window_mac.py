@@ -801,6 +801,23 @@ def _runtime():
     return _objc
 
 
+def set_dock_icon(path):
+    """The panel runs on KiCad's Python, so the Dock showed Python's rocket for it. Show the
+    PowerLab icon instead (NSApp's applicationIconImage, for as long as the process runs).
+    Returns True if it was set."""
+    try:
+        objc = _runtime()
+        image = objc.send(objc.send(objc.cls("NSImage"), "alloc"), "initWithContentsOfFile:",
+                          objc.string(path), argtypes=(ctypes.c_void_p,))
+        if not image:
+            return False
+        app = objc.send(objc.cls("NSApplication"), "sharedApplication")
+        objc.send(app, "setApplicationIconImage:", image, restype=None, argtypes=(ctypes.c_void_p,))
+        return True
+    except (OSError, AttributeError, TypeError):
+        return False
+
+
 def clipboard_sequence():
     """NSPasteboard's changeCount: it changes whenever anything is copied."""
     try:

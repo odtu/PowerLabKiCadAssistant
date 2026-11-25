@@ -225,5 +225,17 @@
  "Open transcript": "فتح النص",
  "Continue in a new chat": "المتابعة في محادثة جديدة",
  "Claude Code no longer has this conversation (it deletes them after about a month).": "لم يعد Claude Code يحتفظ بهذه المحادثة (يحذفها بعد شهر تقريباً).",
- "Couldn't write the transcript.": "تعذّرت كتابة النص."
+ "Couldn't write the transcript.": "تعذّرت كتابة النص.",
+ "Quick answers, fewest tokens": "إجابات سريعة، أقل عدد من الرموز",
+ "Everyday work": "العمل اليومي",
+ "Thorough (panel default)": "شامل (الافتراضي في اللوحة)",
+ "Hard problems and long tasks": "مشكلات صعبة ومهام طويلة",
+ "Deepest; slowest and most tokens": "الأعمق؛ الأبطأ والأكثر استهلاكاً للرموز",
+ "Effort": "الجهد",
+ "Choose the Claude model and how hard it thinks": "اختر نموذج Claude ومدى تعمقه في التفكير",
+ "Opus": "Opus",
+ "Sonnet": "Sonnet",
+ "Haiku": "Haiku",
+ "Fable": "Fable",
+ "Keep the panel above other windows": "إبقاء اللوحة فوق النوافذ الأخرى"
 }

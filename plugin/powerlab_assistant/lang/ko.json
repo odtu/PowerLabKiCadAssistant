@@ -225,5 +225,17 @@
  "Open transcript": "대화 기록 열기",
  "Continue in a new chat": "새 채팅에서 이어 가기",
  "Claude Code no longer has this conversation (it deletes them after about a month).": "Claude Code에 이 대화가 더 이상 없습니다(약 한 달 뒤 삭제됨).",
- "Couldn't write the transcript.": "대화 기록을 저장하지 못했습니다."
+ "Couldn't write the transcript.": "대화 기록을 저장하지 못했습니다.",
+ "Quick answers, fewest tokens": "빠른 답변, 가장 적은 토큰",
+ "Everyday work": "일상 작업",
+ "Thorough (panel default)": "꼼꼼하게(패널 기본값)",
+ "Hard problems and long tasks": "어려운 문제와 긴 작업",
+ "Deepest; slowest and most tokens": "가장 깊게, 가장 느리고 토큰이 가장 많음",
+ "Effort": "노력",
+ "Choose the Claude model and how hard it thinks": "Claude 모델과 생각의 깊이 선택",
+ "Opus": "Opus",
+ "Sonnet": "Sonnet",
+ "Haiku": "Haiku",
+ "Fable": "Fable",
+ "Keep the panel above other windows": "패널을 다른 창 위에 유지"
 }

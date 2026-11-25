@@ -225,5 +225,17 @@
  "Open transcript": "Apri trascrizione",
  "Continue in a new chat": "Continua in una nuova chat",
  "Claude Code no longer has this conversation (it deletes them after about a month).": "Claude Code non ha più questa conversazione (le elimina dopo circa un mese).",
- "Couldn't write the transcript.": "Impossibile scrivere la trascrizione."
+ "Couldn't write the transcript.": "Impossibile scrivere la trascrizione.",
+ "Quick answers, fewest tokens": "Risposte rapide, meno token",
+ "Everyday work": "Lavoro quotidiano",
+ "Thorough (panel default)": "Approfondito (predefinito del pannello)",
+ "Hard problems and long tasks": "Problemi difficili e compiti lunghi",
+ "Deepest; slowest and most tokens": "Il più profondo; il più lento e con più token",
+ "Effort": "Impegno",
+ "Choose the Claude model and how hard it thinks": "Scegli il modello Claude e quanto ragiona",
+ "Opus": "Opus",
+ "Sonnet": "Sonnet",
+ "Haiku": "Haiku",
+ "Fable": "Fable",
+ "Keep the panel above other windows": "Tieni il pannello sopra le altre finestre"
 }

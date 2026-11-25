@@ -225,5 +225,17 @@
  "Open transcript": "ट्रांसक्रिप्ट खोलें",
  "Continue in a new chat": "नई चैट में जारी रखें",
  "Claude Code no longer has this conversation (it deletes them after about a month).": "Claude Code के पास अब यह बातचीत नहीं है (वह लगभग एक महीने बाद उन्हें हटा देता है)।",
- "Couldn't write the transcript.": "ट्रांसक्रिप्ट नहीं लिखा जा सका।"
+ "Couldn't write the transcript.": "ट्रांसक्रिप्ट नहीं लिखा जा सका।",
+ "Quick answers, fewest tokens": "तेज़ जवाब, सबसे कम टोकन",
+ "Everyday work": "रोज़ का काम",
+ "Thorough (panel default)": "गहन (पैनल का डिफ़ॉल्ट)",
+ "Hard problems and long tasks": "कठिन समस्याएँ और लंबे काम",
+ "Deepest; slowest and most tokens": "सबसे गहरा; सबसे धीमा और सबसे ज़्यादा टोकन",
+ "Effort": "प्रयास",
+ "Choose the Claude model and how hard it thinks": "Claude मॉडल चुनें और वह कितना सोचे",
+ "Opus": "Opus",
+ "Sonnet": "Sonnet",
+ "Haiku": "Haiku",
+ "Fable": "Fable",
+ "Keep the panel above other windows": "पैनल को दूसरी विंडो के ऊपर रखें"
 }
