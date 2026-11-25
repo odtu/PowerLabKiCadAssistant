@@ -211,5 +211,16 @@
  "After you turn one on in System Settings, press Check again. If it still shows as not allowed, restart KiCad.": "在“系统设置”中打开后，请点击“重新检查”。如果仍显示未允许，请重启 KiCad。",
  "Close": "关闭",
  "Ask": "请求",
- "Open Settings": "打开设置"
+ "Open Settings": "打开设置",
+ "Quick answers, fewest tokens": "快速回答，token 最少",
+ "Everyday work": "日常工作",
+ "Thorough (panel default)": "周全（面板默认）",
+ "Hard problems and long tasks": "难题和长任务",
+ "Deepest; slowest and most tokens": "最深入；最慢、token 最多",
+ "Effort": "思考强度",
+ "Choose the Claude model and how hard it thinks": "选择 Claude 模型及思考深度",
+ "Opus": "Opus",
+ "Sonnet": "Sonnet",
+ "Haiku": "Haiku",
+ "Fable": "Fable"
 }

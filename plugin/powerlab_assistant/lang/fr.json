@@ -211,5 +211,16 @@
  "After you turn one on in System Settings, press Check again. If it still shows as not allowed, restart KiCad.": "Après en avoir activé une dans Réglages Système, cliquez sur « Vérifier à nouveau ». Si elle apparaît toujours comme non autorisée, redémarrez KiCad.",
  "Close": "Fermer",
  "Ask": "Demander",
- "Open Settings": "Ouvrir les Réglages"
+ "Open Settings": "Ouvrir les Réglages",
+ "Quick answers, fewest tokens": "Réponses rapides, le moins de jetons",
+ "Everyday work": "Travail courant",
+ "Thorough (panel default)": "Approfondi (par défaut du panneau)",
+ "Hard problems and long tasks": "Problèmes difficiles et tâches longues",
+ "Deepest; slowest and most tokens": "Le plus poussé ; le plus lent et le plus de jetons",
+ "Effort": "Effort",
+ "Choose the Claude model and how hard it thinks": "Choisir le modèle Claude et son niveau de réflexion",
+ "Opus": "Opus",
+ "Sonnet": "Sonnet",
+ "Haiku": "Haiku",
+ "Fable": "Fable"
 }

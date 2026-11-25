@@ -16,7 +16,7 @@ import time
 import wx
 import wx.html2
 
-from . import attachments, config, history, i18n, library, plan, report, review, updates, usage
+from . import attachments, config, history, i18n, library, models, plan, report, review, updates, usage
 from .common import CREATE_NO_WINDOW, find_gh, open_console, open_path, open_terminal, clean_env
 
 # Tools Claude may use without asking. Headless runs can't show permission
@@ -86,7 +86,7 @@ ALIVE_EVERY = 3  # seconds; resend an unchanged activity this often, so the page
 # summary. Claude Code has no setting for that in headless runs, so it goes in the request
 # body. Haiku 4.5 rejects it (no adaptive thinking); Fable 5.1 is untested.
 THINKING_SUMMARIES = '{"thinking": {"type": "adaptive", "display": "summarized"}}'
-SUMMARY_MODELS = ("claude-opus-5-5", "claude-sonnet-5-5")
+SUMMARY_MODELS = ("opus", "sonnet")  # aliases (models.py)
 LIVE_THOUGHT_CHARS = 1500  # the end of the thinking so far, shown while Claude thinks
 # Resuming a session sends its whole conversation again with every message. A chat reopened
 # later (its prompt cache long gone), or one past this size, continues in a new session that
@@ -225,11 +225,13 @@ PANEL_NOTE = (
 
 # Model picker: (id passed to --model, menu label, short button label, hint).
 # "" means Claude Code's own default.
+# Claude Code's family aliases: each runs the newest model of its family (models.py), and the
+# picker shows the version it last reported ("Opus 5.5"), else the family name below.
 MODELS = [
-    ("claude-opus-5-5", "Opus 5.5", "Opus 5.5", "Most capable for complex work (panel default)"),
-    ("claude-sonnet-5-5", "Sonnet 5.5", "Sonnet 5.5", "Fast and capable for everyday tasks"),
-    ("claude-haiku-4-5-20251001", "Haiku 4.5", "Haiku 4.5", "Fastest for quick answers"),
-    ("claude-fable-5-1", "Fable 5.1", "Fable 5.1", "May need usage credits on your account"),
+    ("opus", "Opus", "Opus", "Most capable for complex work (panel default)"),
+    ("sonnet", "Sonnet", "Sonnet", "Fast and capable for everyday tasks"),
+    ("haiku", "Haiku", "Haiku", "Fastest for quick answers"),
+    ("fable", "Fable", "Fable", "May need usage credits on your account"),
     ("", "Claude Code default", "Default model", "Whatever Claude Code itself is set to"),
 ]
 # PANEL_NOTE is written for Windows (the PowerShell tool, backslash paths). Elsewhere Claude
@@ -277,9 +279,23 @@ PANEL_NOTE = platform_note(PANEL_NOTE)
 # runs off the GUI thread there. Windows keeps its (fast, Win32) poll on the GUI thread.
 POLL_IN_BACKGROUND = config.IS_MAC
 
-DEFAULT_MODEL = "claude-opus-5-5"
-DEFAULT_EFFORT = "high"  # --effort; settings.json "effort" overrides (low, medium, high, xhigh, max)
+DEFAULT_MODEL = "opus"
+DEFAULT_EFFORT = "high"  # --effort; settings.json "efforts" (per model) or "effort" overrides
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
+NO_EFFORT = {"claude-haiku-4-5-20251001"}  # Haiku 4.5 has no effort setting: the API refuses it
+
+
+def model_efforts(model):
+    """The effort levels a model id takes (none for Haiku 4.5)."""
+    return () if model in NO_EFFORT else EFFORTS
+
+
+def model_items(resolved):
+    """The picker's entries: the alias, its name with the version it runs, its efforts."""
+    return [{"id": i, "label": models.label(i, resolved) if i else l,
+             "short": models.label(i, resolved) if i else s, "hint": h,
+             "efforts": list(model_efforts(models.resolve(i, resolved) or i))}
+            for i, l, s, h in MODELS]
 HTML_PATH = os.path.join(os.path.dirname(__file__), "panel.html")
 DETAIL_KEYS = ("name", "symbol_name", "footprint_name", "library", "reference", "net",
                "file_path", "path", "pattern", "query", "url", "command")
@@ -644,8 +660,7 @@ class ClaudePanel(wx.Frame):
         self.emit("suggestions", items=[{"label": l, "text": t} for l, t in self.source.suggestions])
         if config.IS_MAC:
             self.emit("permissions_available")
-        self.emit("models", current=self.model,
-                  items=[{"id": i, "label": l, "short": s, "hint": h} for i, l, s, h in MODELS])
+        self.emit_models()
         if self.settings.get("notice_version", 0) < config.NOTICE_VERSION:
             self.emit("notice")
         self.emit_attached()
@@ -813,11 +828,22 @@ class ClaudePanel(wx.Frame):
     def msg_reload(self, msg):
         self.reload_editor()
 
+    def emit_models(self):
+        self.emit("models", current=self.model, effort=self.effort,
+                  items=model_items(self.settings.get("resolved")))
+
     def msg_model(self, msg):
         if msg.get("id") in [m[0] for m in MODELS]:
             self.settings["model"] = msg["id"]
             config.save_settings(self.settings)
-            self.emit("model", current=self.model)
+            self.emit("model", current=self.model, effort=self.effort)
+
+    def msg_effort(self, msg):
+        """Effort for the current model, from the next message on (even mid-chat)."""
+        if msg.get("level") in model_efforts(models.resolve(self.model, self.settings.get("resolved")) or self.model):
+            self.settings.setdefault("efforts", {})[self.model] = msg["level"]
+            config.save_settings(self.settings)
+        self.emit("model", current=self.model, effort=self.effort)
 
     def msg_language(self, msg):
         if msg.get("code") in i18n.CODES:
@@ -1113,12 +1139,18 @@ class ClaudePanel(wx.Frame):
 
     @property
     def model(self):
-        return self.settings.get("model", DEFAULT_MODEL)
+        """The picker's alias ("opus"); a full id saved before aliases counts as its family."""
+        return models.alias_of(self.settings.get("model", DEFAULT_MODEL))
 
     @property
     def effort(self):
-        effort = self.settings.get("effort", DEFAULT_EFFORT)
-        return effort if effort in EFFORTS else DEFAULT_EFFORT
+        """The effort chosen for the current model ("" if it takes none). Each model keeps its
+        own; a model never chosen for starts from the old single setting, else high."""
+        levels = model_efforts(models.resolve(self.model, self.settings.get("resolved")) or self.model)
+        if not levels:
+            return ""
+        effort = self.settings.get("efforts", {}).get(self.model) or self.settings.get("effort", DEFAULT_EFFORT)
+        return effort if effort in levels else DEFAULT_EFFORT
 
     def api_env(self):
         """Point Claude's kicad tools at this panel's KiCad (another may be open)."""
@@ -1229,7 +1261,8 @@ class ClaudePanel(wx.Frame):
         self.fresh = False
         if self.model:
             args += ["--model", self.model]
-        args += ["--effort", self.effort]
+        if self.effort:  # read at every message: a change applies to the next one
+            args += ["--effort", self.effort]
         args += ["--allowedTools", ",".join(ALLOWED_TOOLS)]
         args += ["--disallowedTools", ",".join(DISALLOWED_TOOLS + install_denies())]
 
@@ -1297,6 +1330,12 @@ class ClaudePanel(wx.Frame):
         if kind == "system" and msg.get("subtype") == "init":
             self.session_id = msg.get("session_id")
             self.save_chat()
+            ran = msg.get("model") or ""
+            if self.model in models.ALIASES and models.alias_of(ran) == self.model \
+                    and self.settings.get("resolved", {}).get(self.model) != ran:
+                self.settings.setdefault("resolved", {})[self.model] = ran  # a new release
+                config.save_settings(self.settings)
+                self.emit_models()
         elif kind == "system" and msg.get("subtype") == "api_retry":
             self.set_activity("retry")
         elif kind == "system" and msg.get("subtype") == "thinking_tokens":
@@ -1390,12 +1429,11 @@ class ClaudePanel(wx.Frame):
                               f"claude result {msg.get('subtype', 'error')}")})
             turns = msg.get("num_turns") or 0
             secs = time.time() - self.started
-            labels = {i: l for i, l, _, _ in MODELS if i}
             main, helpers = usage.models(msg, self.model)
-            helpers = [labels.get(m, m) for m in helpers]
+            helpers = [models.pretty(m) for m in helpers]
             tokens, window = usage.context(msg)
             self.say("meta", text=f"{secs:.0f}s" + (f" · {turns} steps" if turns > 1 else "")
-                      + (f" · {labels.get(main, main)} · {self.effort} effort" if main else "")
+                      + (f" · {models.pretty(main)}" + (f" · {self.effort} effort" if self.effort else "") if main else "")
                       + (f" · Claude Code's helper: {', '.join(helpers)}" if helpers else ""))
             text, tip = usage.summary(self.limits, tokens, window)
             self.emit("usage", text=text, tip=tip)

@@ -385,6 +385,7 @@ class ChatHistoryTests(unittest.TestCase):
         panel.activity, panel.activity_sent = ("waiting", ""), time.time()
         panel.thinking_tokens = 0
         panel.thought, panel.thought_started, panel.summaries_on = "", 0.0, False
+        panel.model, panel.settings = "", {}
         panel.emitted = []
         panel.emit = lambda kind, **data: panel.emitted.append(dict(data, kind=kind))
         panel.load_page = lambda: panel.emitted.clear()
@@ -2995,7 +2996,7 @@ class PanelDefaultsTests(unittest.TestCase):
 
     def test_default_is_opus_high_effort(self):
         c = self.constants()
-        self.assertEqual(c["DEFAULT_MODEL"], "claude-opus-5-5")
+        self.assertEqual(c["DEFAULT_MODEL"], "opus")  # an alias: always the newest Opus
         self.assertEqual(c["DEFAULT_EFFORT"], "high")
         self.assertIn(c["DEFAULT_EFFORT"], c["EFFORTS"])
         self.assertEqual(c["MODELS"][0][0], c["DEFAULT_MODEL"])

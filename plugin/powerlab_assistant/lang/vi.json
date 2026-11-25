@@ -211,5 +211,16 @@
  "After you turn one on in System Settings, press Check again. If it still shows as not allowed, restart KiCad.": "Sau khi bật quyền trong Cài đặt hệ thống, hãy bấm \"Kiểm tra lại\". Nếu vẫn hiện là chưa cho phép, hãy khởi động lại KiCad.",
  "Close": "Đóng",
  "Ask": "Yêu cầu",
- "Open Settings": "Mở Cài đặt"
+ "Open Settings": "Mở Cài đặt",
+ "Quick answers, fewest tokens": "Trả lời nhanh, ít token nhất",
+ "Everyday work": "Công việc hằng ngày",
+ "Thorough (panel default)": "Kỹ lưỡng (mặc định của bảng)",
+ "Hard problems and long tasks": "Vấn đề khó và việc dài",
+ "Deepest; slowest and most tokens": "Sâu nhất; chậm nhất và tốn token nhất",
+ "Effort": "Mức suy nghĩ",
+ "Choose the Claude model and how hard it thinks": "Chọn mô hình Claude và mức độ suy nghĩ",
+ "Opus": "Opus",
+ "Sonnet": "Sonnet",
+ "Haiku": "Haiku",
+ "Fable": "Fable"
 }

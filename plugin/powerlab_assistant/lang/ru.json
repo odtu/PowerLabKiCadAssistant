@@ -211,5 +211,16 @@
  "After you turn one on in System Settings, press Check again. If it still shows as not allowed, restart KiCad.": "Включив разрешение в Системных настройках, нажмите «Проверить снова». Если оно всё ещё не разрешено, перезапустите KiCad.",
  "Close": "Закрыть",
  "Ask": "Запросить",
- "Open Settings": "Открыть настройки"
+ "Open Settings": "Открыть настройки",
+ "Quick answers, fewest tokens": "Быстрые ответы, меньше всего токенов",
+ "Everyday work": "Повседневная работа",
+ "Thorough (panel default)": "Тщательно (по умолчанию в панели)",
+ "Hard problems and long tasks": "Сложные задачи и долгая работа",
+ "Deepest; slowest and most tokens": "Глубже всего; медленнее всего и больше всего токенов",
+ "Effort": "Усилие",
+ "Choose the Claude model and how hard it thinks": "Выберите модель Claude и насколько глубоко она думает",
+ "Opus": "Opus",
+ "Sonnet": "Sonnet",
+ "Haiku": "Haiku",
+ "Fable": "Fable"
 }

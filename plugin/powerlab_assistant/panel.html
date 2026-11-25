@@ -80,6 +80,14 @@ header {
 .sheet .ok { color: var(--ok); margin: 10px 0 0; }
 .sheet .bad { color: var(--err); margin: 10px 0 4px; }
 [hidden] { display: none !important; }
+.model-menu .effort-row { display: flex; align-items: center; gap: 6px; border-top: 1px solid var(--border);
+  margin-top: 4px; border-radius: 0 0 8px 8px; }
+.effort-row .n { flex: 1; }
+.effort-row .v { font-size: 11.5px; color: var(--muted); }
+.effort-row .chev { color: var(--muted); font-size: 13px; }
+[dir=rtl] .effort-row .chev { transform: scaleX(-1); }
+.effort-row.open, .effort-row:hover { background: var(--surface-2); }
+.model-menu.effort-sub { bottom: 0; inset-inline-start: calc(100% + 4px); min-width: 210px; }
 .perm { display: flex; gap: 10px; align-items: flex-start; padding: 9px 0; border-top: 1px solid var(--border); }
 .perm:first-of-type { border-top: 0; }
 .perm .mark { flex: none; width: 18px; text-align: center; font-weight: 700; }
@@ -501,7 +509,7 @@ code { unicode-bidi: isolate; }
   <div class="below">
     <div class="pickers">
     <div class="picker">
-      <button id="model-btn" class="model-btn" data-t-title title="Choose the Claude model"></button>
+      <button id="model-btn" class="model-btn" data-t-title title="Choose the Claude model and how hard it thinks"></button>
       <div id="model-menu" class="model-menu"></div>
     </div>
     <div class="picker">
@@ -1247,8 +1255,8 @@ const app = {
         setStrings(e.strings, e.dir);
         renderLangs(); renderModels(); setBusy(busy);
         break;
-      case 'models': models = e.items; currentModel = e.current; renderModels(); break;
-      case 'model': currentModel = e.current; renderModels(); break;
+      case 'models': models = e.items; currentModel = e.current; currentEffort = e.effort || ''; renderModels(); break;
+      case 'model': currentModel = e.current; currentEffort = e.effort || ''; renderModels(); break;
       case 'suggestions': {
         const box = document.querySelector('.chips');
         if (!box) break;
@@ -1546,22 +1554,61 @@ function renderLibrary(e) {
 }
 
 const CHEVRON ='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m6 15 6-6 6 6"/></svg>';
-let models = [], currentModel = '';
+let models = [], currentModel = '', currentEffort = '';
 const modelBtn = $('model-btn'), modelMenu = $('model-menu');
+const EFFORT_HINTS = {
+  low: () => t('Quick answers, fewest tokens'), medium: () => t('Everyday work'),
+  high: () => t('Thorough (panel default)'), xhigh: () => t('Hard problems and long tasks'),
+  max: () => t('Deepest; slowest and most tokens'),
+};
 
+// One picker, as in the Claude app: the button reads "Opus 5.5 · high". The menu lists the
+// models; under them an "Effort" row opens the chosen model's levels in a menu to its side
+// (each model keeps its own, from the next message on).
 function renderModels() {
   if (!models.length) { modelBtn.style.display = 'none'; return; }
   const cur = models.find(m => m.id === currentModel) || models[0];
+  const levels = cur.efforts || [];
   modelBtn.style.display = '';
-  modelBtn.innerHTML = esc(t(cur.short || cur.label)) + CHEVRON;
+  modelBtn.innerHTML = esc(t(cur.short || cur.label)) + (levels.length && currentEffort ? ' · ' + esc(currentEffort) : '') + CHEVRON;
+  const subOpen = !!modelMenu.querySelector('.effort-sub.open');
   modelMenu.innerHTML = '';
   for (const m of models) {
     const b = document.createElement('button');
     b.className = 'model-opt' + (m.id === cur.id ? ' sel' : '');
     b.innerHTML = `<div class="n">${esc(t(m.label))}</div>` + (m.hint ? `<div class="d">${esc(t(m.hint))}</div>` : '');
-    b.onclick = () => { post({ type: 'model', id: m.id }); closeModels(); input.focus(); };
+    // The menu stays open, so the new model's effort can be picked right after.
+    b.onclick = e => { e.stopPropagation(); post({ type: 'model', id: m.id }); };
     modelMenu.appendChild(b);
   }
+  if (!levels.length) return;
+  const row = document.createElement('button');
+  row.className = 'model-opt effort-row';
+  row.innerHTML = `<span class="n">${esc(t('Effort'))}</span><span class="v">${esc(currentEffort)}</span><span class="chev">›</span>`;
+  const sub = document.createElement('div');
+  sub.className = 'model-menu effort-sub';
+  for (const level of levels) {
+    const b = document.createElement('button');
+    b.className = 'model-opt' + (level === currentEffort ? ' sel' : '');
+    b.innerHTML = `<div class="n">${esc(level)}</div><div class="d">${esc(EFFORT_HINTS[level] ? EFFORT_HINTS[level]() : '')}</div>`;
+    b.onclick = e => { e.stopPropagation(); post({ type: 'effort', level }); closeModels(); input.focus(); };
+    sub.appendChild(b);
+  }
+  const toggle = open => {
+    sub.classList.toggle('open', open); row.classList.toggle('open', open);
+    sub.style.insetInlineStart = '';
+    if (!open) return;
+    // A narrow panel: keep the side menu inside the window, over the model list if need be.
+    const r = sub.getBoundingClientRect(), menu = modelMenu.getBoundingClientRect();
+    const rtl = document.documentElement.dir === 'rtl';
+    const over = rtl ? 8 - r.left : r.right - (window.innerWidth - 8);
+    if (over > 0) sub.style.insetInlineStart = `calc(100% + 4px - ${over}px)`;
+  };
+  row.onclick = e => { e.stopPropagation(); toggle(!sub.classList.contains('open')); };
+  row.onmouseenter = () => toggle(true);
+  modelMenu.querySelectorAll('.model-opt:not(.effort-row)').forEach(o => o.addEventListener('mouseenter', () => toggle(false)));
+  modelMenu.append(row, sub);
+  if (subOpen) toggle(true);
 }
 // The language picker: the panel's text and the language Claude writes in.
 let langs = [], currentLang = 'en';
@@ -1575,7 +1622,7 @@ function closeModels() {
   closeModels();
   menu.classList.toggle('open', open); btn.classList.toggle('open', open);
 }));
-document.addEventListener('click', e => { if (!modelMenu.contains(e.target) && !langMenu.contains(e.target)) closeModels(); });
+document.addEventListener('click', e => { if (![modelMenu, langMenu].some(m => m.contains(e.target))) closeModels(); });
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModels(); });
 
 function renderLangs() {

@@ -211,5 +211,16 @@
  "After you turn one on in System Settings, press Check again. If it still shows as not allowed, restart KiCad.": "بعد تفعيل إذن في إعدادات النظام، اضغط «تحقق مجددًا». إذا ظل يظهر غير مسموح، فأعد تشغيل KiCad.",
  "Close": "إغلاق",
  "Ask": "طلب",
- "Open Settings": "فتح الإعدادات"
+ "Open Settings": "فتح الإعدادات",
+ "Quick answers, fewest tokens": "إجابات سريعة، أقل عدد من الرموز",
+ "Everyday work": "العمل اليومي",
+ "Thorough (panel default)": "شامل (الافتراضي في اللوحة)",
+ "Hard problems and long tasks": "مشكلات صعبة ومهام طويلة",
+ "Deepest; slowest and most tokens": "الأعمق؛ الأبطأ والأكثر استهلاكاً للرموز",
+ "Effort": "الجهد",
+ "Choose the Claude model and how hard it thinks": "اختر نموذج Claude ومدى تعمقه في التفكير",
+ "Opus": "Opus",
+ "Sonnet": "Sonnet",
+ "Haiku": "Haiku",
+ "Fable": "Fable"
 }

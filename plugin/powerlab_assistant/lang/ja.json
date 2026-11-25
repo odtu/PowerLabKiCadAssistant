@@ -211,5 +211,16 @@
  "After you turn one on in System Settings, press Check again. If it still shows as not allowed, restart KiCad.": "システム設定でオンにしたら「再確認」を押してください。まだ許可されていないと表示される場合は、KiCad を再起動してください。",
  "Close": "閉じる",
  "Ask": "許可を求める",
- "Open Settings": "設定を開く"
+ "Open Settings": "設定を開く",
+ "Quick answers, fewest tokens": "すばやい回答、トークン最小",
+ "Everyday work": "普段の作業",
+ "Thorough (panel default)": "じっくり（パネルの既定）",
+ "Hard problems and long tasks": "難しい問題や長い作業",
+ "Deepest; slowest and most tokens": "最も深く、最も遅く、トークン最大",
+ "Effort": "思考量",
+ "Choose the Claude model and how hard it thinks": "Claude のモデルと思考の深さを選択",
+ "Opus": "Opus",
+ "Sonnet": "Sonnet",
+ "Haiku": "Haiku",
+ "Fable": "Fable"
 }

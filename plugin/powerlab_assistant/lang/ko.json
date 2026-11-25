@@ -211,5 +211,16 @@
  "After you turn one on in System Settings, press Check again. If it still shows as not allowed, restart KiCad.": "시스템 설정에서 켠 다음 '다시 확인'을 누르세요. 여전히 허용 안 됨으로 표시되면 KiCad를 다시 시작하세요.",
  "Close": "닫기",
  "Ask": "요청",
- "Open Settings": "설정 열기"
+ "Open Settings": "설정 열기",
+ "Quick answers, fewest tokens": "빠른 답변, 가장 적은 토큰",
+ "Everyday work": "일상 작업",
+ "Thorough (panel default)": "꼼꼼하게(패널 기본값)",
+ "Hard problems and long tasks": "어려운 문제와 긴 작업",
+ "Deepest; slowest and most tokens": "가장 깊게, 가장 느리고 토큰이 가장 많음",
+ "Effort": "노력",
+ "Choose the Claude model and how hard it thinks": "Claude 모델과 생각의 깊이 선택",
+ "Opus": "Opus",
+ "Sonnet": "Sonnet",
+ "Haiku": "Haiku",
+ "Fable": "Fable"
 }

@@ -211,5 +211,16 @@
  "After you turn one on in System Settings, press Check again. If it still shows as not allowed, restart KiCad.": "پس از روشن کردن مجوز در تنظیمات سیستم، «بررسی دوباره» را بزنید. اگر هنوز غیرمجاز نشان داده شد، KiCad را دوباره راه‌اندازی کنید.",
  "Close": "بستن",
  "Ask": "درخواست",
- "Open Settings": "باز کردن تنظیمات"
+ "Open Settings": "باز کردن تنظیمات",
+ "Quick answers, fewest tokens": "پاسخ‌های سریع، کمترین توکن",
+ "Everyday work": "کارهای روزمره",
+ "Thorough (panel default)": "دقیق (پیش‌فرض پنل)",
+ "Hard problems and long tasks": "مسائل دشوار و کارهای طولانی",
+ "Deepest; slowest and most tokens": "عمیق‌ترین؛ کندترین و بیشترین توکن",
+ "Effort": "تلاش",
+ "Choose the Claude model and how hard it thinks": "مدل Claude و میزان فکر کردنش را انتخاب کنید",
+ "Opus": "Opus",
+ "Sonnet": "Sonnet",
+ "Haiku": "Haiku",
+ "Fable": "Fable"
 }

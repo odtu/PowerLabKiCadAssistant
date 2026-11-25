@@ -211,5 +211,16 @@
  "After you turn one on in System Settings, press Check again. If it still shows as not allowed, restart KiCad.": "Setelah mengaktifkan salah satunya di Pengaturan Sistem, tekan \"Periksa lagi\". Jika masih tampil tidak diizinkan, mulai ulang KiCad.",
  "Close": "Tutup",
  "Ask": "Minta",
- "Open Settings": "Buka Pengaturan"
+ "Open Settings": "Buka Pengaturan",
+ "Quick answers, fewest tokens": "Jawaban cepat, token paling sedikit",
+ "Everyday work": "Pekerjaan sehari-hari",
+ "Thorough (panel default)": "Menyeluruh (bawaan panel)",
+ "Hard problems and long tasks": "Masalah sulit dan tugas panjang",
+ "Deepest; slowest and most tokens": "Paling dalam; paling lambat dan token terbanyak",
+ "Effort": "Upaya",
+ "Choose the Claude model and how hard it thinks": "Pilih model Claude dan seberapa dalam ia berpikir",
+ "Opus": "Opus",
+ "Sonnet": "Sonnet",
+ "Haiku": "Haiku",
+ "Fable": "Fable"
 }
