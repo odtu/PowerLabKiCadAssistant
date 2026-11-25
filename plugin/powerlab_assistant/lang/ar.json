@@ -211,5 +211,19 @@
  "After you turn one on in System Settings, press Check again. If it still shows as not allowed, restart KiCad.": "بعد تفعيل إذن في إعدادات النظام، اضغط «تحقق مجددًا». إذا ظل يظهر غير مسموح، فأعد تشغيل KiCad.",
  "Close": "إغلاق",
  "Ask": "طلب",
- "Open Settings": "فتح الإعدادات"
+ "Open Settings": "فتح الإعدادات",
+ "Continue the conversation in the attached transcript ({name}). Read its \"Where it stopped\" section first, check the project's files for what was really done, then carry on from there.": "تابع المحادثة الموجودة في النص المرفق ({name}). اقرأ أولاً قسم \"Where it stopped\"، وتحقق من ملفات المشروع مما أُنجز فعلاً، ثم تابع من هناك.",
+ "stopped at a usage limit": "توقفت عند حد الاستخدام",
+ "stopped with an error": "توقفت بسبب خطأ",
+ "stopped mid-step": "توقفت في منتصف خطوة",
+ "Past conversations": "المحادثات السابقة",
+ "From Claude Code's own records of this project, which it keeps for about a month. A transcript is written into the project's chat-history folder without using any tokens: summarise it with another tool if you like, then attach that to a new chat (+).": "من سجلات Claude Code الخاصة بهذا المشروع، والتي يحتفظ بها لمدة شهر تقريباً. يُكتب النص في مجلد chat-history الخاص بالمشروع دون استهلاك أي رموز: لخّصه بأداة أخرى إن شئت، ثم أرفق الملخص بمحادثة جديدة (+).",
+ "No past conversations on this project.": "لا توجد محادثات سابقة في هذا المشروع.",
+ "{n} messages": "{n} رسائل",
+ "this chat": "هذه المحادثة",
+ "Last: {text}": "الأخيرة: {text}",
+ "Open transcript": "فتح النص",
+ "Continue in a new chat": "المتابعة في محادثة جديدة",
+ "Claude Code no longer has this conversation (it deletes them after about a month).": "لم يعد Claude Code يحتفظ بهذه المحادثة (يحذفها بعد شهر تقريباً).",
+ "Couldn't write the transcript.": "تعذّرت كتابة النص."
 }

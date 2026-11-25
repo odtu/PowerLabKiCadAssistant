@@ -211,5 +211,19 @@
  "After you turn one on in System Settings, press Check again. If it still shows as not allowed, restart KiCad.": "Увімкнувши дозвіл у Системних параметрах, натисніть «Перевірити знову». Якщо він досі не дозволений, перезапустіть KiCad.",
  "Close": "Закрити",
  "Ask": "Запитати",
- "Open Settings": "Відкрити параметри"
+ "Open Settings": "Відкрити параметри",
+ "Continue the conversation in the attached transcript ({name}). Read its \"Where it stopped\" section first, check the project's files for what was really done, then carry on from there.": "Продовж розмову з доданої розшифровки ({name}). Спочатку прочитай розділ \"Where it stopped\", перевір у файлах проєкту, що справді зроблено, і продовжуй з того місця.",
+ "stopped at a usage limit": "зупинено на ліміті використання",
+ "stopped with an error": "зупинено з помилкою",
+ "stopped mid-step": "зупинено посеред кроку",
+ "Past conversations": "Попередні розмови",
+ "From Claude Code's own records of this project, which it keeps for about a month. A transcript is written into the project's chat-history folder without using any tokens: summarise it with another tool if you like, then attach that to a new chat (+).": "З власних записів Claude Code для цього проєкту, які він зберігає близько місяця. Розшифровка записується в папку chat-history проєкту без витрати токенів: за бажання стисніть її іншим інструментом і додайте результат до нового чату (+).",
+ "No past conversations on this project.": "У цьому проєкті немає попередніх розмов.",
+ "{n} messages": "Повідомлень: {n}",
+ "this chat": "цей чат",
+ "Last: {text}": "Останнє: {text}",
+ "Open transcript": "Відкрити розшифровку",
+ "Continue in a new chat": "Продовжити в новому чаті",
+ "Claude Code no longer has this conversation (it deletes them after about a month).": "Claude Code більше не має цієї розмови (він видаляє їх приблизно через місяць).",
+ "Couldn't write the transcript.": "Не вдалося записати розшифровку."
 }

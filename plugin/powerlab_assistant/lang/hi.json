@@ -211,5 +211,19 @@
  "After you turn one on in System Settings, press Check again. If it still shows as not allowed, restart KiCad.": "सिस्टम सेटिंग्स में कोई अनुमति चालू करने के बाद \"फिर जाँचें\" दबाएँ। अगर वह अब भी अनुमति नहीं है दिखे, तो KiCad फिर से शुरू करें।",
  "Close": "बंद करें",
  "Ask": "अनुमति माँगें",
- "Open Settings": "सेटिंग्स खोलें"
+ "Open Settings": "सेटिंग्स खोलें",
+ "Continue the conversation in the attached transcript ({name}). Read its \"Where it stopped\" section first, check the project's files for what was really done, then carry on from there.": "संलग्न ट्रांसक्रिप्ट ({name}) की बातचीत जारी रखें। पहले उसका \"Where it stopped\" भाग पढ़ें, प्रोजेक्ट की फ़ाइलों में जाँचें कि वास्तव में क्या हुआ, फिर वहीं से आगे बढ़ें।",
+ "stopped at a usage limit": "उपयोग सीमा पर रुकी",
+ "stopped with an error": "त्रुटि के साथ रुकी",
+ "stopped mid-step": "एक चरण के बीच में रुकी",
+ "Past conversations": "पिछली बातचीत",
+ "From Claude Code's own records of this project, which it keeps for about a month. A transcript is written into the project's chat-history folder without using any tokens: summarise it with another tool if you like, then attach that to a new chat (+).": "इस प्रोजेक्ट के Claude Code के अपने रिकॉर्ड से, जिन्हें वह लगभग एक महीने तक रखता है। ट्रांसक्रिप्ट बिना कोई टोकन खर्च किए प्रोजेक्ट के chat-history फ़ोल्डर में लिखा जाता है: चाहें तो किसी दूसरे टूल से उसका सारांश बनाएँ और उसे नई चैट (+) में संलग्न करें।",
+ "No past conversations on this project.": "इस प्रोजेक्ट में कोई पिछली बातचीत नहीं है।",
+ "{n} messages": "{n} संदेश",
+ "this chat": "यह चैट",
+ "Last: {text}": "अंतिम: {text}",
+ "Open transcript": "ट्रांसक्रिप्ट खोलें",
+ "Continue in a new chat": "नई चैट में जारी रखें",
+ "Claude Code no longer has this conversation (it deletes them after about a month).": "Claude Code के पास अब यह बातचीत नहीं है (वह लगभग एक महीने बाद उन्हें हटा देता है)।",
+ "Couldn't write the transcript.": "ट्रांसक्रिप्ट नहीं लिखा जा सका।"
 }

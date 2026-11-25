@@ -211,5 +211,19 @@
  "After you turn one on in System Settings, press Check again. If it still shows as not allowed, restart KiCad.": "پس از روشن کردن مجوز در تنظیمات سیستم، «بررسی دوباره» را بزنید. اگر هنوز غیرمجاز نشان داده شد، KiCad را دوباره راه‌اندازی کنید.",
  "Close": "بستن",
  "Ask": "درخواست",
- "Open Settings": "باز کردن تنظیمات"
+ "Open Settings": "باز کردن تنظیمات",
+ "Continue the conversation in the attached transcript ({name}). Read its \"Where it stopped\" section first, check the project's files for what was really done, then carry on from there.": "گفت‌وگوی موجود در متن پیوست ({name}) را ادامه بده. اول بخش \"Where it stopped\" را بخوان، در فایل‌های پروژه بررسی کن واقعاً چه انجام شده، سپس از همان‌جا ادامه بده.",
+ "stopped at a usage limit": "در محدودیت استفاده متوقف شد",
+ "stopped with an error": "با خطا متوقف شد",
+ "stopped mid-step": "در میانهٔ یک گام متوقف شد",
+ "Past conversations": "گفت‌وگوهای پیشین",
+ "From Claude Code's own records of this project, which it keeps for about a month. A transcript is written into the project's chat-history folder without using any tokens: summarise it with another tool if you like, then attach that to a new chat (+).": "از سوابق خود Claude Code برای این پروژه که حدود یک ماه نگه داشته می‌شوند. متن گفت‌وگو بدون مصرف توکن در پوشهٔ chat-history پروژه نوشته می‌شود: اگر خواستید با ابزار دیگری خلاصه‌اش کنید و خلاصه را به یک گفت‌وگوی تازه (+) پیوست کنید.",
+ "No past conversations on this project.": "در این پروژه گفت‌وگوی پیشینی نیست.",
+ "{n} messages": "{n} پیام",
+ "this chat": "همین گفت‌وگو",
+ "Last: {text}": "آخرین: {text}",
+ "Open transcript": "باز کردن متن گفت‌وگو",
+ "Continue in a new chat": "ادامه در گفت‌وگوی تازه",
+ "Claude Code no longer has this conversation (it deletes them after about a month).": "Claude Code دیگر این گفت‌وگو را ندارد (پس از حدود یک ماه پاکشان می‌کند).",
+ "Couldn't write the transcript.": "نوشتن متن گفت‌وگو ممکن نشد."
 }
