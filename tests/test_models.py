@@ -84,5 +84,22 @@ class EffortTests(unittest.TestCase):
         self.assertIn('        if self.effort:  # read at every message', source)
 
 
+class PinTests(unittest.TestCase):
+    def test_floating_follows_the_pin(self):
+        with open(os.path.join(ROOT, "plugin", "powerlab_assistant", "panel.py"), encoding="utf-8") as f:
+            source = f.read()
+        # Windows keeps floating by default; macOS doesn't, until the pin is turned on.
+        self.assertIn('on_top = config.settings().get("on_top", config.IS_WINDOWS)', source)
+        self.assertIn("(wx.STAY_ON_TOP if on_top else 0)", source)
+        self.assertNotIn("wx.DEFAULT_FRAME_STYLE | wx.STAY_ON_TOP |", source)
+        self.assertTrue(callable(getattr(panel.ClaudePanel, "msg_on_top", None)))
+
+    def test_header_has_the_pin(self):
+        with open(os.path.join(ROOT, "plugin", "powerlab_assistant", "panel.html"), encoding="utf-8") as f:
+            html = f.read()
+        self.assertIn('id="pin-btn"', html)
+        self.assertIn("post({type:'on_top'", html)
+
+
 if __name__ == "__main__":
     unittest.main()

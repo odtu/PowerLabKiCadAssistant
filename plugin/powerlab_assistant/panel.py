@@ -499,7 +499,12 @@ class ClaudePanel(wx.Frame):
         # A window of its own (not KiCad's), so it floats over both editors. Not a tool window
         # on macOS: there that's a panel that hides whenever its app isn't the active one, and
         # the panel's app is in the background while the user works in KiCad.
-        style = wx.DEFAULT_FRAME_STYLE | wx.STAY_ON_TOP | (wx.FRAME_TOOL_WINDOW if config.IS_WINDOWS else 0)
+        # Kept above other windows only while the pin in the header is on (settings "on_top";
+        # on by default on Windows, as before, off on macOS, where a floating window covered
+        # every other app too).
+        on_top = config.settings().get("on_top", config.IS_WINDOWS)
+        style = wx.DEFAULT_FRAME_STYLE | (wx.STAY_ON_TOP if on_top else 0) \
+            | (wx.FRAME_TOOL_WINDOW if config.IS_WINDOWS else 0)
         super().__init__(None, title="PowerLab Assistant", style=style)
         self.claude = claude
         self.source = source
@@ -661,6 +666,7 @@ class ClaudePanel(wx.Frame):
         if config.IS_MAC:
             self.emit("permissions_available")
         self.emit_models()
+        self.emit("on_top", value=bool(self.GetWindowStyleFlag() & wx.STAY_ON_TOP))
         if self.settings.get("notice_version", 0) < config.NOTICE_VERSION:
             self.emit("notice")
         self.emit_attached()
@@ -844,6 +850,15 @@ class ClaudePanel(wx.Frame):
             self.settings.setdefault("efforts", {})[self.model] = msg["level"]
             config.save_settings(self.settings)
         self.emit("model", current=self.model, effort=self.effort)
+
+    def msg_on_top(self, msg):
+        """The pin in the header: keep the panel above other windows, or not."""
+        on_top = bool(msg.get("value"))
+        style = self.GetWindowStyleFlag()
+        self.SetWindowStyleFlag(style | wx.STAY_ON_TOP if on_top else style & ~wx.STAY_ON_TOP)
+        self.settings["on_top"] = on_top
+        config.save_settings(self.settings)
+        self.emit("on_top", value=bool(self.GetWindowStyleFlag() & wx.STAY_ON_TOP))
 
     def msg_language(self, msg):
         if msg.get("code") in i18n.CODES:
