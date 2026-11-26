@@ -272,12 +272,14 @@ class FetchTests(TempDirs):
         self.assertEqual(out["copy"], "lcsc")
         self.assertEqual((out["lcsc"], out["mpn"]), ("C100", "TPX100X"))
         self.assertIn("HTTP 403", out["makerRefused"])
-        self.assertEqual(out["printedDate"], "14 December 2015")
-        self.assertIn("dated 14 December 2015", out["note"])
         self.assertIn("ldx-datasheet.pdf", Handler.paths[-1])  # the page's own datasheet, not a related part's
         self.assertTrue(all(a.startswith("PowerLabKiCadAssistant") for a in Handler.agents[-3:]))
         again = ds.fetch({"part": "TPX100", "maker": "Lab"})
         self.assertEqual(again["copy"], "lcsc")
+        if not has_mupdf():
+            return  # the printed date is read from the PDF's text, which needs PyMuPDF
+        self.assertEqual(out["printedDate"], "14 December 2015")
+        self.assertIn("dated 14 December 2015", out["note"])
         self.assertIn("dated 14 December 2015", again["note"])  # the date goes with every later use
 
     def test_lcsc_alone_and_a_different_part_refused(self):

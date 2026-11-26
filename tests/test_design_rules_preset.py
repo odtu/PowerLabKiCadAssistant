@@ -111,7 +111,7 @@ class PresetTests(unittest.TestCase):
 
     def test_preset_matches_the_skill_table(self):
         """The 1 oz preset is the Constraints table of powerlab-pcb-design-rules §2.6."""
-        skill = os.path.join(ROOT, "skills", "powerlab-pcb-design-rules", "SKILL.md")
+        skill = os.path.join(ROOT, "skills", "powerlab-pcb-design-rules", "fab-and-drc.md")
         with open(skill, encoding="utf-8") as f:
             text = f.read()
         section = text.split("### 2.6", 1)[1].split("**Default net classes:**", 1)[0]

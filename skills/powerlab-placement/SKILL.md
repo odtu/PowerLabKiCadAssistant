@@ -10,7 +10,7 @@ Most placement mistakes are block mistakes: the gate driver on the wrong side of
 For example, on TestPCB2 the DRV8323 sat between legs A and B, so its gate lines were 8–12 mm to leg A, 20–24 mm to leg B and 37–40 mm to leg C. One of the lab's own motor drivers has the same parts on a round board: the three MOSFETs are on the bottom about 21° apart, the DRV8323 is on top right behind the middle leg, and the MCU went round the board to where there was room.
 
 ## 1. Collect
-- `design-requirements.md`, the design rules (`powerlab-pcb-design-rules` §3.1, §3.2), and the schematic's `LAYOUT:` notes.
+- `design-requirements.md`, the design rules (`powerlab-pcb-design-rules` §3.1, §3.2, in its `layout.md`), and the schematic's `LAYOUT:` notes.
 - The outline, the keep-outs and the fixed parts: connectors, mounting holes (§3.1: ask plated + GND or NPTH), switches, anything the enclosure decides.
 - The functional blocks, by schematic sheet and function: power input, each half-bridge leg, gate driver, each converter, MCU, sensors, communication, debug. For each, write down:
   - its anchor part (the IC or switch the rest gathers round);
