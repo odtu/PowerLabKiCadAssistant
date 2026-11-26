@@ -19,6 +19,16 @@ from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+
+def design_rules(*parts):
+    """powerlab-pcb-design-rules: SKILL.md and its part files (#119), or just the parts named."""
+    folder = os.path.join(ROOT, "skills", "powerlab-pcb-design-rules")
+    text = ""
+    for name in parts or ("SKILL.md", "schematic.md", "fab-and-drc.md", "layout.md"):
+        with open(os.path.join(folder, name), encoding="utf-8") as f:
+            text += f.read()
+    return text
+
 # Outside KiCad (e.g. GitHub Actions) there's no pcbnew or wx. The code under test
 # only needs them at import time, so stand-ins are enough.
 try:
@@ -242,9 +252,8 @@ class SkillToolsEnvTests(unittest.TestCase):
 
     def test_design_rules_skill_is_public_safe_and_used_by_autoroute(self):
         skills = os.path.join(ROOT, "skills")
-        with open(os.path.join(skills, "powerlab-pcb-design-rules", "SKILL.md"), encoding="utf-8") as f:
-            rules = f.read()
-        self.assertIn("### 2.6 KiCad setup", rules)
+        rules = design_rules()
+        self.assertIn("### 2.6 KiCad setup", design_rules("fab-and-drc.md"))
         self.assertNotIn(".kicad_wks", rules)  # the lab drawing-sheet rule stays out of the public panel
         with open(os.path.join(skills, "powerlab-autoroute", "SKILL.md"), encoding="utf-8") as f:
             self.assertIn("powerlab-pcb-design-rules", f.read())
@@ -253,8 +262,7 @@ class SkillToolsEnvTests(unittest.TestCase):
         # GND to the pours (no pad-to-pad tracks), power at class width, short paths:
         # the panel addition must survive a re-copy of the lab's rules file
         skills = os.path.join(ROOT, "skills")
-        with open(os.path.join(skills, "powerlab-pcb-design-rules", "SKILL.md"), encoding="utf-8") as f:
-            rules = f.read()
+        rules = design_rules("layout.md")
         self.assertIn("Never route a pour net between pads", rules)
         self.assertIn("Power rails are copper areas, not traces", rules)
         self.assertIn("Enter a pad straight and end at its centre", rules)
@@ -968,7 +976,7 @@ class DesignReviewTests(unittest.TestCase):
             checklist = f.read()
         for rule in ids:
             self.assertIn(f"**{rule}**", checklist)
-        rules = self.skill("powerlab-pcb-design-rules")
+        rules = design_rules()
         # Lab rules brought in line with the handbook (also in odtu/Powerlab's file)
         for rule in ("**0.5 A per 0.3 mm via**", "**Ø 8 mm keepout**", "place the hot loop first",
                      "TVS and ESD diodes go at the connector", "Power input protection sits at the input connector",
@@ -3174,8 +3182,7 @@ class PanelDefaultsTests(unittest.TestCase):
         self.assertIn("never with shell commands", c["PANEL_NOTE"])
 
     def test_board_minimums_are_the_pcbway_floor(self):
-        with open(os.path.join(ROOT, "skills", "powerlab-pcb-design-rules", "SKILL.md"), encoding="utf-8") as f:
-            rules = f.read()
+        rules = design_rules("fab-and-drc.md")
         self.assertIn("| Minimum track width | 0.15 mm |", rules)
         self.assertIn("| Default | 0.15 mm | 0.2 mm |", rules)  # signals at 0.15 mm, spaced 0.2 mm
 

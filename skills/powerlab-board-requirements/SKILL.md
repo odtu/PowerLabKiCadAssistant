@@ -92,7 +92,7 @@ Start the design with these requirements?
 When a requirement changes later, update the file and say which decisions it changes.
 
 ## 3. Turn the requirements into design decisions
-Apply them with the `powerlab-pcb-design-rules` skill. The section numbers below are from it. Write each decision under "Design decisions", and tell the user about any that costs extra (§2.0) before using it.
+Apply them with the `powerlab-pcb-design-rules` skill. The section numbers below are from it: §2 is in its `fab-and-drc.md`, §3 in `layout.md`. Write each decision under "Design decisions", and tell the user about any that costs extra (§2.0) before using it.
 - **Size:** the outline comes first (§3.1), with ≥ 0.3 mm loose mechanical fits (§2.1). Price scales with area, so keep it compact unless the size is fixed.
 - **Layers:** 2 unless routing, EMI or the power stage really needs 4 (§2.0, §3.1). A strict EMI target with fast switching edges is a good reason for 4 with a solid GND plane; say so.
 - **Temperature:**
