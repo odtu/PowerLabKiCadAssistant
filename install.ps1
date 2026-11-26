@@ -301,6 +301,13 @@ foreach ($pair in @(@("plugin\powerlab_assistant", $PanelDest), @("plugin\powerl
 }
 Ok "Panel, PCB button -> $PanelDest"
 Ok "Schematic button  -> $ButtonDest"
+# A test build added a "PowerLab Assistant" shortcut (Start menu, desktop) that ran open_panel.py;
+# it is gone: remove it where an update finds it (only that one, not a shortcut of the same name).
+$shell = New-Object -ComObject WScript.Shell
+foreach ($folder in @([Environment]::GetFolderPath("Programs"), [Environment]::GetFolderPath("Desktop"))) {
+    $old = Join-Path $folder "PowerLab Assistant.lnk"
+    if ((Test-Path $old) -and ($shell.CreateShortcut($old).Arguments -like "*open_panel.py*")) { Remove-Item -Force $old }
+}
 $null = Save-Config
 
 # ---- 4b. Skills and the tools they need ------------------------------------

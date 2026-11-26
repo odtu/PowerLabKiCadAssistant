@@ -163,7 +163,11 @@ class RoutingRulesTextTests(unittest.TestCase):
             return f.read()
 
     def test_lab_rules(self):
-        rules = self.read("powerlab-pcb-design-rules")
+        folder = os.path.join(ROOT, "skills", "powerlab-pcb-design-rules")
+        rules = ""
+        for name in ("layout.md", "fab-and-drc.md"):  # the skill's parts (#119)
+            with open(os.path.join(folder, name), encoding="utf-8") as f:
+                rules += f.read()
         self.assertIn("**Straight pieces only at 0°, 45° and 90°; bends at 45° or as arcs.**", rules)
         self.assertIn("**Arcs are fine anywhere and preferred on high-speed traces**", rules)
         self.assertIn("**Same-net pads next to each other connect directly**", rules)

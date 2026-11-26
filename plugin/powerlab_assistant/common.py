@@ -81,6 +81,9 @@ def clean_env():
     first += [d for d in EXTRA_PATH if d not in path.split(os.pathsep)]
     if first:
         env["PATH"] = os.pathsep.join(first + [path])
+    datasheets = config.datasheet_dir()  # the kicad datasheet tools' library, as the panel sees it
+    if datasheets:
+        env["POWERLAB_DATASHEETS"] = datasheets
     return env
 
 

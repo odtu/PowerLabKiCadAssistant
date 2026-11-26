@@ -59,7 +59,9 @@ def models(result, chosen=""):
     used = (result or {}).get("modelUsage") or {}
     if not used:
         return "", []
-    main = next((m for m in used if chosen and m.split("[")[0] == chosen), None)
+    # chosen is an id or a family alias ("opus" runs claude-opus-5-5).
+    main = next((m for m in used if chosen and (m.split("[")[0] == chosen
+                                               or m.startswith(f"claude-{chosen}-"))), None)
     if main is None:
         main = max(used, key=lambda m: int((used[m] or {}).get("outputTokens") or 0))
     return main, [m for m in used if m != main]

@@ -396,7 +396,7 @@ def menu_bar(pid):
 # internat/<lang>/kicad.mo) turn those into what is on screen. Which language KiCad uses
 # is read off its menu bar: the catalogue whose "&File" is there.
 
-EDITOR_KINDS = ("Schematic Editor", "PCB Editor")
+EDITOR_KINDS = ("Schematic Editor", "PCB Editor", "Symbol Editor", "Footprint Editor")
 _catalogs = {}  # language folder -> {msgid: translation}
 _languages = {}  # KiCad pid -> its catalogue ({} for English)
 
@@ -799,6 +799,23 @@ def _runtime():
     if _objc is None:
         _objc = _ObjC()
     return _objc
+
+
+def set_dock_icon(path):
+    """The panel runs on KiCad's Python, so the Dock showed Python's rocket for it. Show the
+    PowerLab icon instead (NSApp's applicationIconImage, for as long as the process runs).
+    Returns True if it was set."""
+    try:
+        objc = _runtime()
+        image = objc.send(objc.send(objc.cls("NSImage"), "alloc"), "initWithContentsOfFile:",
+                          objc.string(path), argtypes=(ctypes.c_void_p,))
+        if not image:
+            return False
+        app = objc.send(objc.cls("NSApplication"), "sharedApplication")
+        objc.send(app, "setApplicationIconImage:", image, restype=None, argtypes=(ctypes.c_void_p,))
+        return True
+    except (OSError, AttributeError, TypeError):
+        return False
 
 
 def clipboard_sequence():

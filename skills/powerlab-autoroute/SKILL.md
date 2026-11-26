@@ -5,7 +5,7 @@ description: Route a KiCad PCB the METU Power Lab way, with the PowerLab router 
 
 # Routing: the PowerLab router or by hand
 
-**The lab design rules come first.** Before anything else, load the `powerlab-pcb-design-rules` skill. Every width, clearance, via and routing-order decision below comes from it: §2.6 for constraints and net classes, §3.3 for pours and high-current copper, §3.4 for routing, §3.5 for vias. A router only routes as well as the rules it is given.
+**The lab design rules come first.** Before anything else, load the `powerlab-pcb-design-rules` skill and read its `fab-and-drc.md` (§2) and `layout.md` (§3). Every width, clearance, via and routing-order decision below comes from it: §2.6 for constraints and net classes, §3.3 for pours and high-current copper, §3.4 for routing, §3.5 for vias. A router only routes as well as the rules it is given.
 
 ## 0. Ask first: by hand or the PowerLab router
 Ask this before anything else, as one `<choices>` question, unless the user already said which:

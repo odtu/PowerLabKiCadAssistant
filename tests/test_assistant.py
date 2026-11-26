@@ -4,6 +4,7 @@
 """
 
 import base64
+import json
 import math
 import os
 import re
@@ -17,6 +18,16 @@ import unittest
 from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def design_rules(*parts):
+    """powerlab-pcb-design-rules: SKILL.md and its part files (#119), or just the parts named."""
+    folder = os.path.join(ROOT, "skills", "powerlab-pcb-design-rules")
+    text = ""
+    for name in parts or ("SKILL.md", "schematic.md", "fab-and-drc.md", "layout.md"):
+        with open(os.path.join(folder, name), encoding="utf-8") as f:
+            text += f.read()
+    return text
 
 # Outside KiCad (e.g. GitHub Actions) there's no pcbnew or wx. The code under test
 # only needs them at import time, so stand-ins are enough.
@@ -241,9 +252,8 @@ class SkillToolsEnvTests(unittest.TestCase):
 
     def test_design_rules_skill_is_public_safe_and_used_by_autoroute(self):
         skills = os.path.join(ROOT, "skills")
-        with open(os.path.join(skills, "powerlab-pcb-design-rules", "SKILL.md"), encoding="utf-8") as f:
-            rules = f.read()
-        self.assertIn("### 2.6 KiCad setup", rules)
+        rules = design_rules()
+        self.assertIn("### 2.6 KiCad setup", design_rules("fab-and-drc.md"))
         self.assertNotIn(".kicad_wks", rules)  # the lab drawing-sheet rule stays out of the public panel
         with open(os.path.join(skills, "powerlab-autoroute", "SKILL.md"), encoding="utf-8") as f:
             self.assertIn("powerlab-pcb-design-rules", f.read())
@@ -252,8 +262,7 @@ class SkillToolsEnvTests(unittest.TestCase):
         # GND to the pours (no pad-to-pad tracks), power at class width, short paths:
         # the panel addition must survive a re-copy of the lab's rules file
         skills = os.path.join(ROOT, "skills")
-        with open(os.path.join(skills, "powerlab-pcb-design-rules", "SKILL.md"), encoding="utf-8") as f:
-            rules = f.read()
+        rules = design_rules("layout.md")
         self.assertIn("Never route a pour net between pads", rules)
         self.assertIn("Power rails are copper areas, not traces", rules)
         self.assertIn("Enter a pad straight and end at its centre", rules)
@@ -368,7 +377,7 @@ class ChatHistoryTests(unittest.TestCase):
         except ImportError as exc:
             self.skipTest(f"panel needs wx.html2: {exc}")
         names = ("say", "save_chat", "open_chat", "handle", "finished", "show_image", "set_activity",
-                 "show_review", "show_plan")
+                 "show_review", "show_plan", "board_synced")
 
         class Fake:
             pass
@@ -380,16 +389,48 @@ class ChatHistoryTests(unittest.TestCase):
         panel.session_id, panel.chat_cwd, panel.events = None, None, []
         panel.retry, panel.stale_session, panel.proc = None, False, None
         panel.got_result, panel.watched, panel.image_reads = False, {}, {}
+        panel.kicad_tools = {}
         panel.review_writes, panel.review_mds, panel.plan_writes = {}, [], {}
         panel.last_text, panel.limits, panel.started, panel.effort = "", [], 0.0, "high"
         panel.activity, panel.activity_sent = ("waiting", ""), time.time()
         panel.thinking_tokens = 0
         panel.thought, panel.thought_started, panel.summaries_on = "", 0.0, False
+        panel.model, panel.settings = "", {}
         panel.emitted = []
         panel.emit = lambda kind, **data: panel.emitted.append(dict(data, kind=kind))
         panel.load_page = lambda: panel.emitted.clear()
         panel.SetTitle = lambda title: setattr(panel, "title", title)
         return panel
+
+    def test_board_saved_by_kicad_is_not_reported_as_changed_on_disk(self):
+        """KiCad saving the board itself (or reloading it after a live-via-file edit) isn't a
+        reason to ask for File → Revert; a write KiCad didn't see still is."""
+        import json
+        panel = self.fake_panel()
+        board = os.path.join(self.tmp.name, "demo.kicad_pcb")
+        with open(board, "w") as f:
+            f.write("(kicad_pcb)")
+        os.utime(board, (1000, 1000))
+        panel.watched = {board: 1000.0}
+
+        def run(tool_id, tool, result):
+            panel.handle({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": tool_id, "name": tool, "input": {}}]}})
+            panel.handle({"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": tool_id,
+                 "content": [{"type": "text", "text": json.dumps(result)}]}]}})
+
+        os.utime(board, (2000, 2000))  # KiCad saves
+        run("t1", "mcp__kicad__save_board", {"success": True, "_backend": "ipc", "_realtime": True})
+        self.assertEqual(panel.watched[board], 2000.0)
+        os.utime(board, (3000, 3000))  # KiCad saves, the file is edited, KiCad reloads
+        run("t2", "mcp__kicad__replace_component", {"success": True, "_realtime": True,
+                                                     "liveNote": "KiCad reloaded it."})
+        self.assertEqual(panel.watched[board], 3000.0)
+        os.utime(board, (4000, 4000))  # written behind KiCad's back
+        run("t3", "mcp__kicad__route_trace", {"success": True, "_backend": "swig", "_realtime": False})
+        run("t4", "mcp__kicad__move_component", {"success": True, "_backend": "ipc", "_realtime": True})
+        self.assertEqual(panel.watched[board], 3000.0)  # still differs: the warning stays
 
     def write_old(self, editor, session_id, events):
         """A chat saved by 0.5, when each editor had its own panel and chat."""
@@ -935,7 +976,7 @@ class DesignReviewTests(unittest.TestCase):
             checklist = f.read()
         for rule in ids:
             self.assertIn(f"**{rule}**", checklist)
-        rules = self.skill("powerlab-pcb-design-rules")
+        rules = design_rules()
         # Lab rules brought in line with the handbook (also in odtu/Powerlab's file)
         for rule in ("**0.5 A per 0.3 mm via**", "**Ø 8 mm keepout**", "place the hot loop first",
                      "TVS and ESD diodes go at the connector", "Power input protection sits at the input connector",
@@ -1354,8 +1395,12 @@ class OnePanelTests(unittest.TestCase):
         self.source.poll_clipboard = lambda: None
         window = types.SimpleNamespace(
             foreground_title=lambda pid=0: self.foreground,
-            find_editor=lambda kind="Schematic Editor", pid=0: 1 if "schematic" in self.open else None,
+            find_editor=lambda kind="Schematic Editor", pid=0: (
+                kind if kind == "Schematic Editor" and "schematic" in self.open or kind in self.windows
+                else None),
+            window_text=lambda window: self.windows.get(window, ""),
             current_sheet=lambda hwnd: "esp/Power")
+        self.windows = {}  # other KiCad windows: what find_editor looks for -> their title
         old, sources.kicad_window = sources.kicad_window, window
         self.addCleanup(setattr, sources, "kicad_window", old)
 
@@ -1390,6 +1435,104 @@ class OnePanelTests(unittest.TestCase):
         self.assertIn("Root schematic:", snap.context)
         self.open = set()
         self.assertEqual(self.source.snapshot().chips, ["No schematic or board open"])
+
+    def test_follows_the_symbol_and_footprint_editors(self):
+        # KiCad 10 has no plugin buttons there, so the panel opened from another editor follows.
+        with open(os.path.join(self.project, "sym-lib-table"), "w", encoding="utf-8") as f:
+            f.write('(sym_lib_table\n  (version 7)\n'
+                    '  (lib (name "Lab")(type "KiCad")(uri "${KIPRJMOD}/lib/Lab.kicad_sym")(options "")(descr ""))\n)\n')
+        self.windows = {"Symbol Editor": "*Lab:LM5106 — Symbol Editor",
+                        "Footprint Editor": "R5 [from esp.kicad_pcb] — Footprint Editor"}
+        self.foreground = "*Lab:LM5106 — Symbol Editor"
+        snap = self.source.snapshot()
+        self.assertEqual(self.source.editor, "symbol")
+        self.assertEqual(snap.chips, ["Symbol: Lab:LM5106"])
+        self.assertIn("The user is working in the symbol editor.", snap.state)
+        self.assertIn("Symbol editor: editing Lab:LM5106 from library file "
+                      + os.path.join(self.project, "lib", "Lab.kicad_sym") + ", with unsaved changes",
+                      snap.state)
+        self.assertIn("Footprint editor: editing R5's own footprint, opened from the board", snap.state)
+        self.assertIn("symbol and footprint editors have no API", snap.context)
+        self.assertIn("Selected footprints in the PCB editor: C5, U2", snap.state)  # still seen
+        self.foreground = "R5 [from esp.kicad_pcb] — Footprint Editor"
+        self.assertEqual(self.source.snapshot().chips, ["Footprint: R5"])
+        # The footprint editor closes: back to the editors the panel can see.
+        del self.windows["Footprint Editor"]
+        self.foreground = "PowerLab Assistant"
+        snap = self.source.snapshot()
+        self.assertEqual(self.source.editor, "pcb")
+        self.assertNotIn("Footprint editor", snap.state)
+
+    def test_library_editor_alone_uses_the_project_managers_project(self):
+        self.open = set()
+        self.windows = {"Symbol Editor": "[no symbol loaded] — Symbol Editor",
+                        "KiCad 10.0": "esp — KiCad 10.0"}
+        self.foreground = self.windows["Symbol Editor"]
+        cfg = os.path.join(self.project, "cfg")
+        os.makedirs(cfg)
+        with open(os.path.join(cfg, "kicad.json"), "w", encoding="utf-8") as f:
+            json.dump({"system": {"file_history": [os.path.join(self.project, "esp.kicad_pro")]}}, f)
+        self.source.editor = "schematic"  # its button opened the panel; it's closed since
+        with mock.patch.object(sources.config, "KICAD_CONFIG", cfg):
+            snap = self.source.snapshot()
+        self.assertEqual(snap.cwd, self.project)
+        self.assertEqual(snap.chips, ["Symbol Editor"])
+        self.assertIn("The user is working in the symbol editor.", snap.state)
+        self.assertIn("Symbol editor: open, no symbol loaded", snap.state)
+        self.assertIn("Board file: " + os.path.join(self.project, "esp.kicad_pcb"), snap.context)
+
+
+class LibraryEditorTitleTests(unittest.TestCase):
+    """The symbol and footprint editors' window titles are all the panel learns from them."""
+
+    def test_titles(self):
+        item = sources.library_item
+        self.assertEqual(item("Device:R — Symbol Editor"),
+                         {"item": "Device:R", "lib": "Device", "name": "R", "modified": False,
+                          "tag": "", "copy": False})
+        r = item("*Device:R [Read Only Library] — Symbol Editor")
+        self.assertEqual((r["lib"], r["modified"], r["tag"]), ("Device", True, "Read Only Library"))
+        r = item("U3 [from esp.kicad_pcb] — Footprint Editor")
+        self.assertEqual((r["item"], r["lib"], r["copy"]), ("U3", "", True))
+        r = item("*MyPad [Unsaved] — Footprint Editor")
+        self.assertEqual((r["item"], r["lib"], r["copy"], r["modified"]), ("MyPad", "", False, True))
+        self.assertIsNone(item("[no symbol loaded] — Symbol Editor"))
+        self.assertIsNone(item("[keine Fußabdruck geladen] — Footprint Editor"))  # any language
+
+    def test_library_file_project_table_first_then_global(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project, cfg = os.path.join(tmp, "p"), os.path.join(tmp, "cfg")
+            os.makedirs(project)
+            os.makedirs(cfg)
+            with open(os.path.join(project, "fp-lib-table"), "w", encoding="utf-8") as f:
+                f.write('(fp_lib_table (version 7)\n  (lib (name "Mine")(type "KiCad")'
+                        '(uri "${KIPRJMOD}/Mine.pretty")(options "")(descr ""))\n)')
+            with open(os.path.join(tmp, "kicad-fp-lib-table"), "w", encoding="utf-8") as f:
+                f.write('(fp_lib_table\n\t(version 7)\n'
+                        '\t(lib (name Resistor_SMD) (type KiCad) (uri ${KICAD10_FOOTPRINT_DIR}/Resistor_SMD.pretty)'
+                        ' (options "") (descr ""))\n)')
+            with open(os.path.join(cfg, "fp-lib-table"), "w", encoding="utf-8") as f:
+                f.write('(fp_lib_table (version 7)\n'
+                        '  (lib (name "KiCad") (type "Table") (uri "%s") (options "") (descr ""))\n'
+                        % os.path.join(tmp, "kicad-fp-lib-table").replace("\\", "/") +
+                        '  (lib (name "Lab")(type "KiCad")(uri "${LABFP}/Lab.pretty")(options "")(descr ""))\n'
+                        '  (lib (name "Mine")(type "KiCad")(uri "/elsewhere/Mine.pretty")(options "")(descr ""))\n'
+                        '  (lib (name "Odd")(type "KiCad")(uri "${NOT_SET_ANYWHERE}/Odd.pretty")(options "")(descr ""))\n)')
+            with open(os.path.join(cfg, "kicad_common.json"), "w", encoding="utf-8") as f:
+                json.dump({"environment": {"vars": {"LABFP": os.path.join(tmp, "lab")}}}, f)
+            with mock.patch.object(sources.config, "KICAD_CONFIG", cfg):
+                self.assertEqual(sources.library_file("fp-lib-table", "Mine", project),
+                                 os.path.join(project, "Mine.pretty"))
+                self.assertEqual(sources.library_file("fp-lib-table", "Lab", project),
+                                 os.path.join(tmp, "lab", "Lab.pretty"))
+                fp_dir = os.path.join(tmp, "share", "footprints")
+                with mock.patch.object(sources, "kicad_path_vars",
+                                       lambda project_dir="": {"KICAD10_FOOTPRINT_DIR": fp_dir}):
+                    self.assertEqual(sources.library_file("fp-lib-table", "Resistor_SMD", project),
+                                     os.path.join(fp_dir, "Resistor_SMD.pretty"))  # KiCad's own table
+                self.assertEqual(sources.library_file("fp-lib-table", "Odd"),
+                                 "${NOT_SET_ANYWHERE}/Odd.pretty")  # left as KiCad has it
+                self.assertIsNone(sources.library_file("fp-lib-table", "Nowhere", project))
 
 
 class TwoKiCadsTests(unittest.TestCase):
@@ -2995,7 +3138,7 @@ class PanelDefaultsTests(unittest.TestCase):
 
     def test_default_is_opus_high_effort(self):
         c = self.constants()
-        self.assertEqual(c["DEFAULT_MODEL"], "claude-opus-5-5")
+        self.assertEqual(c["DEFAULT_MODEL"], "opus")  # an alias: always the newest Opus
         self.assertEqual(c["DEFAULT_EFFORT"], "high")
         self.assertIn(c["DEFAULT_EFFORT"], c["EFFORTS"])
         self.assertEqual(c["MODELS"][0][0], c["DEFAULT_MODEL"])
@@ -3039,8 +3182,7 @@ class PanelDefaultsTests(unittest.TestCase):
         self.assertIn("never with shell commands", c["PANEL_NOTE"])
 
     def test_board_minimums_are_the_pcbway_floor(self):
-        with open(os.path.join(ROOT, "skills", "powerlab-pcb-design-rules", "SKILL.md"), encoding="utf-8") as f:
-            rules = f.read()
+        rules = design_rules("fab-and-drc.md")
         self.assertIn("| Minimum track width | 0.15 mm |", rules)
         self.assertIn("| Default | 0.15 mm | 0.2 mm |", rules)  # signals at 0.15 mm, spaced 0.2 mm
 

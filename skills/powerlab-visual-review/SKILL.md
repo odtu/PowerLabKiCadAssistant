@@ -30,7 +30,7 @@ A rendered view shows all of these at a glance. On the lab's ESC3Phase board, re
      - **Close-ups:** add `region: {x, y, size}` (board mm; or `{x0, y0, x1, y1}`) to render one block, e.g. 15–25 mm round an IC. A whole-board view looks fine even when parts are packed pad to pad, so render a close-up of every block you place or route, and look at it.
    - **3D:** `kicad-cli pcb render --side top --output <views>/NN-3d-top.png <board>.kicad_pcb` (and `--side bottom`). Use it for placement, part bodies colliding, connectors facing outward, polarity marks, and missing 3D models.
 3. **Look at it** with the Read tool. The panel shows every image you open to the user too, so open the views you want them to see. Usually that's the final one per step, not every attempt.
-4. **Review it against the design rules** (`powerlab-pcb-design-rules`), and write down what you see in one or two short lines, e.g. "C5 is 4 mm from U1's VDD pin, move it closer":
+4. **Review it against the design rules** (`powerlab-pcb-design-rules`, its `layout.md` for §3), and write down what you see in one or two short lines, e.g. "C5 is 4 mm from U1's VDD pin, move it closer":
    - **Placement (§3.2):**
      - every part where its connections are shortest, packed as tightly as assembly allows; passives on the other side under their pins where that's shorter; blocks that talk to each other stacked on the two sides. Distances in the rules are targets: closer is better, a little further is fine when closer would push other parts away
      - decoupling caps right at their IC pins, smallest value closest

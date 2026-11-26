@@ -16,7 +16,7 @@ import time
 import wx
 import wx.html2
 
-from . import attachments, config, history, i18n, library, plan, report, review, updates, usage
+from . import attachments, config, history, i18n, library, models, plan, report, review, sessions, updates, usage
 from .common import CREATE_NO_WINDOW, find_gh, open_console, open_path, open_terminal, clean_env
 
 # Tools Claude may use without asking. Headless runs can't show permission
@@ -86,7 +86,7 @@ ALIVE_EVERY = 3  # seconds; resend an unchanged activity this often, so the page
 # summary. Claude Code has no setting for that in headless runs, so it goes in the request
 # body. Haiku 4.5 rejects it (no adaptive thinking); Fable 5.1 is untested.
 THINKING_SUMMARIES = '{"thinking": {"type": "adaptive", "display": "summarized"}}'
-SUMMARY_MODELS = ("claude-opus-5-5", "claude-sonnet-5-5")
+SUMMARY_MODELS = ("opus", "sonnet")  # aliases (models.py)
 LIVE_THOUGHT_CHARS = 1500  # the end of the thinking so far, shown while Claude thinks
 # Resuming a session sends its whole conversation again with every message. A chat reopened
 # later (its prompt cache long gone), or one past this size, continues in a new session that
@@ -151,6 +151,22 @@ PANEL_NOTE = (
     "'Board file' path.\n"
     "Images you open with the Read tool are shown to the user in the panel automatically, "
     "so never try to open them in another program.\n"
+    "Save tokens: every step re-sends the whole conversation, and everything you read stays "
+    "in it until the chat ends. So:\n"
+    "- Batch: wire a sheet with the batch tools (batch_connect, batch_add_and_connect, "
+    "batch_add_components, batch_add_no_connects), a whole block per call, never one "
+    "add_schematic_wire or label call per wire; move parts with batch_move_components, not "
+    "one move_component per part.\n"
+    "- PDFs, datasheets and the user's own documents alike: never Read their pages, which "
+    "come in as page images. Use read_datasheet with pdf: map first, then text of only the "
+    "pages you need; render just the figure or table you must see, as a clip. Write what you "
+    "take from a document into the project (a board's requirements go in "
+    "design-requirements.md) and use that later instead of reading the PDF again.\n"
+    "- Render the schematic or board only to check a step: a region "
+    "(get_schematic_view_region, get_board_2d_view with region) rather than a whole sheet, "
+    "and keep views small.\n"
+    "- Ask tools for what you need (a region, a net, a filter) instead of listing the whole "
+    "board again.\n"
     "When you name parts, nets or places on the board, make them links the user can click "
     "to see them in KiCad: [U6 and Q2](kicad:refs=U6,Q2), [the GLC track](kicad:net=GLC), "
     "or a spot in mm, [here](kicad:at=120.5,80.2). The panel selects them in the PCB editor "
@@ -190,7 +206,8 @@ PANEL_NOTE = (
     "blocks them). If a kicad tool fails or gives a wrong result, get the job done with other "
     "tools if you can, and tell the user to send it with the panel's Report a problem button.\n"
     "For any schematic or PCB design, placement, routing, design-rule or review work, load "
-    "the powerlab-pcb-design-rules skill first and follow it.\n"
+    "the powerlab-pcb-design-rules skill first, read the part files its index names for the "
+    "task, and follow them.\n"
     "When the user starts a new board, schematic or project from scratch, load the "
     "powerlab-board-requirements skill and agree the requirements with them before creating "
     "anything. If the project folder has a design-requirements.md, read it before design work "
@@ -214,17 +231,27 @@ PANEL_NOTE = (
     "design-review\\design-review.md in the project folder. The panel shows it to the user "
     "and saves it as a PDF. After routing, do this right away without asking first; only "
     "then ask the user to look at the board and the review.\n"
+    "For any question about a part's ratings, pins, curves, package or reference circuit, "
+    "and to check a symbol or footprint against its datasheet, load the "
+    "powerlab-datasheet-lookup skill: fetch_datasheet gets the PDF into the user's datasheet "
+    "library (from the maker, else LCSC's copy with its date, else through the user's browser), "
+    "and read_datasheet reads it. Never quote a spec from memory.\n"
+    "To find, choose, compare or replace a part, load the powerlab-component-research skill: "
+    "the lab library first, then search_lcsc_catalog, every shortlisted part checked in its "
+    "datasheet.\n"
     "You can make mistakes: for anything that ends up in hardware (footprints, pinouts, "
     "ratings, design rules), say what the user should double-check against the datasheet."
 )
 
 # Model picker: (id passed to --model, menu label, short button label, hint).
 # "" means Claude Code's own default.
+# Claude Code's family aliases: each runs the newest model of its family (models.py), and the
+# picker shows the version it last reported ("Opus 5.5"), else the family name below.
 MODELS = [
-    ("claude-opus-5-5", "Opus 5.5", "Opus 5.5", "Most capable for complex work (panel default)"),
-    ("claude-sonnet-5-5", "Sonnet 5.5", "Sonnet 5.5", "Fast and capable for everyday tasks"),
-    ("claude-haiku-4-5-20251001", "Haiku 4.5", "Haiku 4.5", "Fastest for quick answers"),
-    ("claude-fable-5-1", "Fable 5.1", "Fable 5.1", "May need usage credits on your account"),
+    ("opus", "Opus", "Opus", "Most capable for complex work (panel default)"),
+    ("sonnet", "Sonnet", "Sonnet", "Fast and capable for everyday tasks"),
+    ("haiku", "Haiku", "Haiku", "Fastest for quick answers"),
+    ("fable", "Fable", "Fable", "May need usage credits on your account"),
     ("", "Claude Code default", "Default model", "Whatever Claude Code itself is set to"),
 ]
 # PANEL_NOTE is written for Windows (the PowerShell tool, backslash paths). Elsewhere Claude
@@ -272,14 +299,47 @@ PANEL_NOTE = platform_note(PANEL_NOTE)
 # runs off the GUI thread there. Windows keeps its (fast, Win32) poll on the GUI thread.
 POLL_IN_BACKGROUND = config.IS_MAC
 
-DEFAULT_MODEL = "claude-opus-5-5"
-DEFAULT_EFFORT = "high"  # --effort; settings.json "effort" overrides (low, medium, high, xhigh, max)
+DEFAULT_MODEL = "opus"
+DEFAULT_EFFORT = "high"  # --effort; settings.json "efforts" (per model) or "effort" overrides
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
+NO_EFFORT = {"claude-haiku-4-5-20251001"}  # Haiku 4.5 has no effort setting: the API refuses it
+
+
+def model_efforts(model):
+    """The effort levels a model id takes (none for Haiku 4.5)."""
+    return () if model in NO_EFFORT else EFFORTS
+
+
+def model_items(resolved):
+    """The picker's entries: the alias, its name with the version it runs, its efforts."""
+    return [{"id": i, "label": models.label(i, resolved) if i else l,
+             "short": models.label(i, resolved) if i else s, "hint": h,
+             "efforts": list(model_efforts(models.resolve(i, resolved) or i))}
+            for i, l, s, h in MODELS]
 HTML_PATH = os.path.join(os.path.dirname(__file__), "panel.html")
 DETAIL_KEYS = ("name", "symbol_name", "footprint_name", "library", "reference", "net",
                "file_path", "path", "pattern", "query", "url", "command")
 BOARD_CHANGED = ("Board changed on disk. Use File → Revert in KiCad to load it "
                  "(unsaved KiCad edits will be lost).")
+
+
+def kicad_has_board_file(tool, content):
+    """Whether a kicad tool's result says KiCad's open board now matches the board file: KiCad
+    saved it itself (save_board, live), or saved, had the file edited and reloaded it (a
+    live-via-file command's liveNote). After that, the file changing isn't news to KiCad."""
+    if isinstance(content, list):
+        content = "".join(b.get("text", "") for b in content if isinstance(b, dict))
+    try:
+        result = json.loads(content) if isinstance(content, str) else None
+    except ValueError:
+        return False
+    if not isinstance(result, dict) or not result.get("success") or result.get("_realtime") is not True:
+        return False
+    if any("did not reload" in str(w) for w in result.get("warnings") or []):
+        return False
+    return tool == "mcp__kicad__save_board" or bool(result.get("liveNote"))
+
+
 SCHEMATIC_CHANGED = ("Claude changed the schematic, but you have unsaved edits in KiCad, so it "
                      "wasn't reloaded automatically. Reloading drops those edits.")
 
@@ -478,7 +538,12 @@ class ClaudePanel(wx.Frame):
         # A window of its own (not KiCad's), so it floats over both editors. Not a tool window
         # on macOS: there that's a panel that hides whenever its app isn't the active one, and
         # the panel's app is in the background while the user works in KiCad.
-        style = wx.DEFAULT_FRAME_STYLE | wx.STAY_ON_TOP | (wx.FRAME_TOOL_WINDOW if config.IS_WINDOWS else 0)
+        # Kept above other windows only while the pin in the header is on (settings "on_top";
+        # on by default on Windows, as before, off on macOS, where a floating window covered
+        # every other app too).
+        on_top = config.settings().get("on_top", config.IS_WINDOWS)
+        style = wx.DEFAULT_FRAME_STYLE | (wx.STAY_ON_TOP if on_top else 0) \
+            | (wx.FRAME_TOOL_WINDOW if config.IS_WINDOWS else 0)
         super().__init__(None, title="PowerLab Assistant", style=style)
         self.claude = claude
         self.source = source
@@ -490,6 +555,7 @@ class ClaudePanel(wx.Frame):
         self.stale_session = False
         self.fresh = False  # the next message continues the chat in a new session (continue_note)
         self.watched = {}
+        self.kicad_tools = {}  # tool id -> name, for kicad tools of this run (board_synced)
         self.started = 0.0
         self.last_text = ""
         self.got_result = False
@@ -639,8 +705,8 @@ class ClaudePanel(wx.Frame):
         self.emit("suggestions", items=[{"label": l, "text": t} for l, t in self.source.suggestions])
         if config.IS_MAC:
             self.emit("permissions_available")
-        self.emit("models", current=self.model,
-                  items=[{"id": i, "label": l, "short": s, "hint": h} for i, l, s, h in MODELS])
+        self.emit_models()
+        self.emit("on_top", value=bool(self.GetWindowStyleFlag() & wx.STAY_ON_TOP))
         if self.settings.get("notice_version", 0) < config.NOTICE_VERSION:
             self.emit("notice")
         self.emit_attached()
@@ -698,6 +764,46 @@ class ClaudePanel(wx.Frame):
         self.fresh = False
         self.save_chat()
         self.load_page()
+
+    # ---- past conversations (sessions.py) -----------------------------------
+
+    def msg_history(self, msg):
+        """The project's past conversations, from Claude Code's own records."""
+        cwd = self.chat_cwd
+        self.emit("history_sheet", checking=True, items=[])
+        self.in_background(lambda: sessions.list_sessions(cwd) if cwd else [],
+                           lambda rows: self.emit("history_sheet", items=[] if isinstance(
+                               rows, Exception) else rows, current=self.session_id or ""))
+
+    def write_transcript(self, session_id, then):
+        cwd = self.chat_cwd
+
+        def done(path):
+            if isinstance(path, FileNotFoundError):
+                self.emit("note", level="warn", text="Claude Code no longer has this conversation "
+                          "(it deletes them after about a month).")
+                return
+            if isinstance(path, Exception):
+                self.problem("error", "Couldn't write the transcript.", "transcript failed",
+                             type(path).__name__)
+                return
+            then(path)
+
+        self.in_background(lambda: sessions.write_transcript(cwd, session_id), done)
+
+    def msg_history_open(self, msg):
+        """Write a conversation's transcript into the project's chat-history folder and open it."""
+        self.write_transcript(msg.get("id", ""), open_path)
+
+    def msg_history_continue(self, msg):
+        """A new chat with the transcript attached, and a first message ready to send."""
+        def then(path):
+            self.msg_new({})
+            self.attached = [path]
+            self.emit_attached()
+            self.emit("prefill", continue_from=os.path.basename(path))
+
+        self.write_transcript(msg.get("id", ""), then)
 
     def msg_open(self, msg):
         if os.path.isfile(msg.get("path", "")):
@@ -808,11 +914,31 @@ class ClaudePanel(wx.Frame):
     def msg_reload(self, msg):
         self.reload_editor()
 
+    def emit_models(self):
+        self.emit("models", current=self.model, effort=self.effort,
+                  items=model_items(self.settings.get("resolved")))
+
     def msg_model(self, msg):
         if msg.get("id") in [m[0] for m in MODELS]:
             self.settings["model"] = msg["id"]
             config.save_settings(self.settings)
-            self.emit("model", current=self.model)
+            self.emit("model", current=self.model, effort=self.effort)
+
+    def msg_effort(self, msg):
+        """Effort for the current model, from the next message on (even mid-chat)."""
+        if msg.get("level") in model_efforts(models.resolve(self.model, self.settings.get("resolved")) or self.model):
+            self.settings.setdefault("efforts", {})[self.model] = msg["level"]
+            config.save_settings(self.settings)
+        self.emit("model", current=self.model, effort=self.effort)
+
+    def msg_on_top(self, msg):
+        """The pin in the header: keep the panel above other windows, or not."""
+        on_top = bool(msg.get("value"))
+        style = self.GetWindowStyleFlag()
+        self.SetWindowStyleFlag(style | wx.STAY_ON_TOP if on_top else style & ~wx.STAY_ON_TOP)
+        self.settings["on_top"] = on_top
+        config.save_settings(self.settings)
+        self.emit("on_top", value=bool(self.GetWindowStyleFlag() & wx.STAY_ON_TOP))
 
     def msg_language(self, msg):
         if msg.get("code") in i18n.CODES:
@@ -1108,12 +1234,18 @@ class ClaudePanel(wx.Frame):
 
     @property
     def model(self):
-        return self.settings.get("model", DEFAULT_MODEL)
+        """The picker's alias ("opus"); a full id saved before aliases counts as its family."""
+        return models.alias_of(self.settings.get("model", DEFAULT_MODEL))
 
     @property
     def effort(self):
-        effort = self.settings.get("effort", DEFAULT_EFFORT)
-        return effort if effort in EFFORTS else DEFAULT_EFFORT
+        """The effort chosen for the current model ("" if it takes none). Each model keeps its
+        own; a model never chosen for starts from the old single setting, else high."""
+        levels = model_efforts(models.resolve(self.model, self.settings.get("resolved")) or self.model)
+        if not levels:
+            return ""
+        effort = self.settings.get("efforts", {}).get(self.model) or self.settings.get("effort", DEFAULT_EFFORT)
+        return effort if effort in levels else DEFAULT_EFFORT
 
     def api_env(self):
         """Point Claude's kicad tools at this panel's KiCad (another may be open)."""
@@ -1216,6 +1348,7 @@ class ClaudePanel(wx.Frame):
         if not resend:
             files, self.attached = self.attached, []
         extra = attachments.folders(files) + [VIEWS_DIR] + ([os.path.dirname(earlier)] if earlier else [])
+        extra += [d for d in [config.datasheet_dir()] if d]  # read_datasheet's renders, for Read
         for d in config.work_dirs() + [f for f in extra if f not in config.work_dirs()]:
             args += ["--add-dir", d]
         if self.session_id and not fresh:
@@ -1223,7 +1356,8 @@ class ClaudePanel(wx.Frame):
         self.fresh = False
         if self.model:
             args += ["--model", self.model]
-        args += ["--effort", self.effort]
+        if self.effort:  # read at every message: a change applies to the next one
+            args += ["--effort", self.effort]
         args += ["--allowedTools", ",".join(ALLOWED_TOOLS)]
         args += ["--disallowedTools", ",".join(DISALLOWED_TOOLS + install_denies())]
 
@@ -1234,6 +1368,7 @@ class ClaudePanel(wx.Frame):
         self.retry = (text, files) if self.session_id and not fresh else None
         report.note_event("send", self.source.editor)
         self.watched = {p: os.path.getmtime(p) for p in snap.watch if os.path.isfile(p)}
+        self.kicad_tools = {}
         self.started = time.time()
         self.last_text = ""
         self.got_result = False
@@ -1291,6 +1426,12 @@ class ClaudePanel(wx.Frame):
         if kind == "system" and msg.get("subtype") == "init":
             self.session_id = msg.get("session_id")
             self.save_chat()
+            ran = msg.get("model") or ""
+            if self.model in models.ALIASES and models.alias_of(ran) == self.model \
+                    and self.settings.get("resolved", {}).get(self.model) != ran:
+                self.settings.setdefault("resolved", {})[self.model] = ran  # a new release
+                config.save_settings(self.settings)
+                self.emit_models()
         elif kind == "system" and msg.get("subtype") == "api_retry":
             self.set_activity("retry")
         elif kind == "system" and msg.get("subtype") == "thinking_tokens":
@@ -1330,6 +1471,8 @@ class ClaudePanel(wx.Frame):
                     name, detail = describe_tool(block.get("name", ""), args)
                     self.say("tool", id=block.get("id"), name=name, detail=detail)
                     self.set_activity("tool", name)
+                    if block.get("name", "").startswith("mcp__kicad__"):
+                        self.kicad_tools[block.get("id")] = block["name"]
                     self.image_reads[block.get("id")] = (
                         tool_kind(block.get("name", "")),
                         args.get("file_path", "") if block.get("name") == "Read" else "")
@@ -1350,6 +1493,9 @@ class ClaudePanel(wx.Frame):
                         detail = " ".join(b.get("text", "") for b in detail if isinstance(b, dict))
                     detail = str(detail)[:200]
                 name, image = self.image_reads.pop(block.get("tool_use_id"), ("tool", ""))
+                tool = self.kicad_tools.pop(block.get("tool_use_id"), "")
+                if tool and not failed and kicad_has_board_file(tool, block.get("content")):
+                    self.board_synced()
                 slip = failed and (name in OWN_TOOLS or bool(REFUSED.search(detail)))
                 self.say("tool_done", id=block.get("tool_use_id"), error=failed and not slip,
                          **({"slip": True} if slip else {}), text=detail)
@@ -1384,12 +1530,11 @@ class ClaudePanel(wx.Frame):
                               f"claude result {msg.get('subtype', 'error')}")})
             turns = msg.get("num_turns") or 0
             secs = time.time() - self.started
-            labels = {i: l for i, l, _, _ in MODELS if i}
             main, helpers = usage.models(msg, self.model)
-            helpers = [labels.get(m, m) for m in helpers]
+            helpers = [models.pretty(m) for m in helpers]
             tokens, window = usage.context(msg)
             self.say("meta", text=f"{secs:.0f}s" + (f" · {turns} steps" if turns > 1 else "")
-                      + (f" · {labels.get(main, main)} · {self.effort} effort" if main else "")
+                      + (f" · {models.pretty(main)}" + (f" · {self.effort} effort" if self.effort else "") if main else "")
                       + (f" · Claude Code's helper: {', '.join(helpers)}" if helpers else ""))
             text, tip = usage.summary(self.limits, tokens, window)
             self.emit("usage", text=text, tip=tip)
@@ -1397,6 +1542,13 @@ class ClaudePanel(wx.Frame):
                 self.fresh = True
                 self.emit("note", level="info", text="This chat got long. To save tokens, your next "
                           "message continues it with only your last prompts and the project.")
+
+    def board_synced(self):
+        """KiCad wrote or reloaded the board file itself: its changes so far aren't a reason to
+        ask the user for File → Revert (BOARD_CHANGED), only later ones are."""
+        for path in self.watched:
+            if path.endswith(".kicad_pcb") and os.path.isfile(path):
+                self.watched[path] = os.path.getmtime(path)
 
     def ask_sign_in(self, text):
         """Claude Code isn't signed in, or its sign-in expired: once per message, offer the
