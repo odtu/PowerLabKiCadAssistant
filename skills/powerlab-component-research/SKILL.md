@@ -1,6 +1,6 @@
 ---
 name: powerlab-component-research
-description: Choose parts for a design the METU Power Lab way, from the lab library first, then the LCSC/JLCPCB catalogue, with every shortlisted value checked in its datasheet. Use when the user asks to find, choose, pick, select, suggest, recommend, compare or replace a component ("find me a 100 V MOSFET", "which buck converter for 48 V to 5 V 3 A", "suggest a gate driver", "cheaper alternative to…", "this part is out of stock, what else", "compare these three", "what should I use for the current sense"), asks what part fits a requirement, or needs a part the schematic doesn't have yet. Covers turning the need into hard requirements and margins, the lab library, catalogue search (parametric and free text), stock and price, datasheet checks, the comparison table, the recommendation, and getting the chosen part into the lab library and the design.
+description: Choose parts for a design the METU Power Lab way, from the lab library first, then the LCSC/JLCPCB catalogue and the distributors (Digi-Key, Mouser, Farnell), with every shortlisted value checked in its datasheet. Use when the user asks to find, choose, pick, select, suggest, recommend, compare or replace a component ("find me a 100 V MOSFET", "which buck converter for 48 V to 5 V 3 A", "suggest a gate driver", "cheaper alternative to…", "this part is out of stock, what else", "compare these three", "what should I use for the current sense"), asks what part fits a requirement, or needs a part the schematic doesn't have yet. Covers turning the need into hard requirements and margins, the lab library, catalogue search (parametric and free text), stock and price, datasheet checks, the comparison table, the recommendation, and getting the chosen part into the lab library and the design.
 ---
 
 # Component research
@@ -10,6 +10,8 @@ stock, and its symbol and footprint exist or can be made from the datasheet. Nev
 rating in the answer comes from its datasheet (load `powerlab-datasheet-lookup` for how to get and read it).
 
 Tools (kicad MCP): `search_symbols` (lab library: `library: "METUPowerLab"`), `search_lcsc_catalog` (catalogue),
+`digikey_search_parts`, `mouser_search_parts`, `farnell_search_parts` (distributors' stock, price, lifecycle;
+`digikey_test_connection` when Digi-Key reports a key problem),
 `fetch_datasheet` / `read_datasheet`, `search_parts_registry` (ready-made KiCad parts when the lab has none),
 `search_footprints`. Report progress part by part in short lines; the user watches.
 
@@ -49,18 +51,40 @@ Check it like any other candidate (§4).
   Check the other requirements in the results (`description`, `attributes`). If nothing matches all words, the tool
   drops words from the end and says what it searched for (`searchedFor`).
 - **Makers' own selectors** (WebSearch: TI, Infineon, onsemi, ST, Nexperia, Vishay parametric search) when the
-  catalogue is thin. A part found there still needs an LCSC listing or another buyable source.
+  catalogue is thin. A part found there still needs an LCSC or Digi-Key listing, or another buyable source.
 
-Catalogue values are LCSC's parsed parameters: some are missing or wrong. Use them to shortlist, never to decide.
-Drop parts with little stock for the quantity (stock below about 10 × the boards' need), and parts the maker
-marks not for new designs (NRND, obsolete: the datasheet's first page or the maker's page).
+**Distributors:** `digikey_search_parts`, `mouser_search_parts`, `farnell_search_parts` (store `tr.farnell.com` by
+default). LCSC is strong on Chinese makers and JLCPCB assembly; the three on Western makers and new parts that
+reach LCSC late:
+- **Candidates:** a phrase in the distributor's terms, e.g. "MOSFET N-CH 100V", "gate driver half-bridge 100V",
+  "current sense amplifier", "0402 100nF 50V X7R" (Digi-Key first, its parameters are the cleanest). Check the
+  requirements in `parameters`; `productsCount` says how many more there are (`offset` pages them).
+- **Every shortlisted part, by its part number,** wherever it was found, at all three: Digi-Key `keywords`,
+  Mouser `keywords` (its `partNumber` wants Mouser's own number), Farnell `partNumber`. Digi-Key `preferPackaging:
+  "CT"` (cut tape) for prototype quantities, `"TR"` for a reel. `active: false` (NRND, Obsolete, End of Life, Last
+  Time Buy, no longer manufactured) drops the part like the datasheet's mark would. Mouser also lists parts it
+  doesn't sell (`orderable: false`, no Mouser number or prices): that's "—" in its column, not stock 0. Farnell
+  lists a part once per packing: for prototypes quote the cut-tape row, not `reeled: true` (order code …RL, a
+  reeling charge on top); its `leadTimeDays` is the restocking time, given even when the part is in stock.
+- **Their `datasheet` link is usually the maker's current copy:** pass it as `fetch_datasheet`'s `url` (§4).
+- **Currencies differ:** Digi-Key and Mouser give the currency with each price, Farnell its store's. Compare in one
+  currency only when the user asks, and say the rate and its date.
+- **No keys:** if a search reports missing or rejected keys, say so in one line ("Mouser not searched: no API key in
+  the server's .env") and go on with the others. Never leave a distributor out without saying it.
+- **Turkish distributors** (Özdisan, Ekom) have no search the tools can use and give price and stock on request:
+  when the user wants local supply, say they can ask for a quote with the part numbers.
+
+Catalogue values are the distributors' parsed parameters: some are missing or wrong. Use them to shortlist, never to
+decide. Drop parts with little stock for the quantity (stock below about 10 × the boards' need at every
+distributor), and parts the maker marks not for new designs (NRND, obsolete: the datasheet's first page, the maker's
+page or a distributor's lifecycle status).
 
 Shortlist 3 to 5, different makers where possible. Say in one line why each made the list.
 
 ## 4. Check each shortlisted part in its datasheet
 
-`fetch_datasheet` with `part`, `maker`, `url` when known and `lcsc` (the catalogue's LCSC number, so the copy comes
-without the user). For each part read, with the page: every hard requirement (absolute maximum and recommended
+`fetch_datasheet` with `part`, `maker`, `url` when known (a distributor's `datasheet` link, usually the maker's file) and `lcsc`
+(the catalogue's LCSC number, so the copy comes without the user). For each part read, with the page: every hard requirement (absolute maximum and recommended
 operating conditions, the electrical characteristics at the design's conditions, not at 25 °C when it runs hot),
 the package's thermal resistance, and what the preferences need (Qg, Coss, quiescent current, efficiency curve at the
 load, …). Confirm table values on the rendered image (`read_datasheet` `render` with `clip`). A part that fails a
@@ -68,11 +92,15 @@ hard requirement leaves the list, with the reason.
 
 ## 5. Compare and recommend
 
-A compact table, one row per part, a source in each cell (`p N` of its datasheet; "LCSC" for stock and price):
+A compact table, one row per part, a source in each cell (`p N` of its datasheet; the distributor's column for stock
+and price):
 
-| Part | Maker | Key ratings… | Package | Stock (LCSC) | Price @ qty | Lab library | Datasheet |
+| Part | Maker | Key ratings… | Package | LCSC | Digi-Key | Mouser | Farnell | Lab library | Datasheet |
 
-- Price at the user's quantity from `priceTiers`; JLCPCB `basic` / `preferred` parts cost less to assemble there.
+- Each distributor cell: stock / price at the user's quantity with its currency (LCSC's `priceTiers`, the others'
+  `pricing`; for Digi-Key say which packaging, cut tape or reel). "—" where the distributor doesn't list the part,
+  "not searched" where its search wasn't available. JLCPCB `basic` / `preferred` parts cost less to assemble
+  there; a part LCSC doesn't have must be sent to the assembler or soldered by hand: say so.
 - **Lab library:** yes (name), no.
 - **Datasheet:** which copy and its date ("LCSC's copy, June 2020").
 - Then **one recommendation** with the reason in a sentence, and a runner-up (second source, or the cheaper part if

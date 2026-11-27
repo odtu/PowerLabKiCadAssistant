@@ -26,6 +26,24 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+diff --git a/.env.example b/.env.example
+index d54ff91..713c061 100644
+--- a/.env.example
++++ b/.env.example
+@@ -33,3 +33,13 @@ DIGIKEY_CLIENT_SECRET=your_client_secret_here
+ # DIGIKEY_LOCALE_SITE=US
+ # DIGIKEY_LOCALE_LANGUAGE=en
+ # DIGIKEY_LOCALE_CURRENCY=USD
++
++# PowerLab patch: Mouser and Farnell searches (mouser_search_parts, farnell_search_parts).
++# Mouser: a Search API key from your Mouser account's APIs page.
++# Farnell: a Product Search API key from partner.element14.com. FARNELL_STORE picks the
++# store and its currency (default tr.farnell.com; e.g. uk.farnell.com, de.farnell.com).
++# Read from here or the environment only, never from tool arguments.
++
++# MOUSER_API_KEY=your_mouser_search_api_key
++# FARNELL_API_KEY=your_element14_api_key
++# FARNELL_STORE=tr.farnell.com
 diff --git a/README.md b/README.md
 index 831a2f3..1f48fce 100644
 --- a/README.md
@@ -1794,6 +1812,330 @@ index fbf15a7..d22d381 100644
      def set_layer_constraints(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """Set per-layer minimum track width / clearance / via dimensions.
  
+diff --git a/python/commands/distributors.py b/python/commands/distributors.py
+new file mode 100644
+index 0000000..12754b9
+--- /dev/null
++++ b/python/commands/distributors.py
+@@ -0,0 +1,318 @@
++"""Mouser and Farnell part search for component research (PowerLab patch).
++
++mouser_search_parts and farnell_search_parts give stock, price breaks, lifecycle, the
++maker's datasheet link and the distributor's parameters for a part number or a few words,
++like digikey_search_parts does for Digi-Key:
++
++- Mouser Search API v1 (https://api.mouser.com, free key from the Mouser account's
++  APIs page): POST search/keyword or search/partnumber, the key as the `apiKey` query
++  parameter. At most 50 parts per call; Mouser allows 30 calls a minute, 1000 a day.
++- element14 Product Search API (https://api.element14.com/catalog/products, free key from
++  partner.element14.com): GET with `term` any:/manuPartNum:/id:, the store
++  (`storeInfo.id`, e.g. tr.farnell.com, uk.farnell.com) and `callInfo.apiKey`.
++
++Keys come from MOUSER_API_KEY / FARNELL_API_KEY in the server environment or the
++gitignored .env at the server's root, never from tool arguments, and never appear in a
++response (error texts are scrubbed of them). Distributor values are parsed parameters:
++shortlist with them, decide with the datasheet.
++"""
++
++import json
++import os
++import re
++import urllib.error
++import urllib.parse
++import urllib.request
++
++MOUSER_BASE = "https://api.mouser.com/api/v1"
++FARNELL_BASE = "https://api.element14.com/catalog/products"
++MOUSER_KEY_ENV = "MOUSER_API_KEY"
++FARNELL_KEY_ENV = "FARNELL_API_KEY"
++FARNELL_STORE_ENV = "FARNELL_STORE"
++FARNELL_STORE_DEFAULT = "tr.farnell.com"
++USER_AGENT = "PowerLabKiCadAssistant (component research; +https://github.com/odtu/PowerLabKiCadAssistant)"
++LIMIT_DEFAULT = 10
++MOUSER_LIMIT_MAX = 50
++FARNELL_LIMIT_MAX = 100
++_STORE_RE = re.compile(r"^[a-z0-9-]+(\.[a-z0-9-]+)+$")
++# Lifecycle words that take a part out of new designs (Mouser LifecycleStatus, Farnell productStatus).
++_NOT_ACTIVE = ("obsolete", "end of life", "eol", "not recommended", "nrnd", "no_longer", "no longer",
++               "discontinued", "last time buy")
++
++
++def _load_env_file():
++    """Best-effort load of the server root's .env (as commands/digikey.py does); the environment wins."""
++    here = globals().get("__file__")
++    if not here:
++        return
++    path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(here)))), ".env")
++    if not os.path.isfile(path):
++        return
++    try:
++        from dotenv import load_dotenv
++    except Exception:
++        return
++    load_dotenv(path, override=False)
++
++
++def _key(env):
++    _load_env_file()
++    return os.environ.get(env, "").strip()
++
++
++def _no_key(env, where):
++    return {
++        "success": False,
++        "message": f"{where} API key not configured. Put {env} in the server's environment or in the "
++                   f"gitignored .env at the KiCad MCP server's root, then restart the server. "
++                   f"Keys are never accepted as tool arguments.",
++        "requiredEnvironmentVariables": [env],
++    }
++
++
++def _scrub(text, key):
++    text = str(text)
++    return text.replace(key, "<key>") if key else text
++
++
++def _request(url, key, body=None, timeout=30):
++    """(json, None) or (None, error text without the key)."""
++    headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
++    data = None
++    if body is not None:
++        data = json.dumps(body).encode()
++        headers["Content-Type"] = "application/json"
++    req = urllib.request.Request(url, data=data, headers=headers, method="POST" if body is not None else "GET")
++    try:
++        with urllib.request.urlopen(req, timeout=timeout) as r:
++            return json.loads(r.read(16 * 1024 * 1024)), None
++    except urllib.error.HTTPError as e:
++        detail = ""
++        try:
++            detail = e.read(2000).decode("utf-8", "replace").strip()
++        except Exception:
++            pass
++        return None, _scrub(f"HTTP {e.code} {e.reason}" + (f": {detail[:300]}" if detail else ""), key)
++    except Exception as e:
++        return None, _scrub(f"{type(e).__name__}: {e}", key)
++
++
++def _limit(params, most):
++    try:
++        n = int(params.get("limit") or LIMIT_DEFAULT)
++    except (TypeError, ValueError):
++        n = LIMIT_DEFAULT
++    return max(1, min(most, n))
++
++
++def _offset(params):
++    try:
++        return max(0, int(params.get("offset") or 0))
++    except (TypeError, ValueError):
++        return 0
++
++
++def money(text):
++    """'$4.89' -> 4.89, '4,89 €' -> 4.89, '0,123 €' -> 0.123, '1.234,50' -> 1234.5, '1,234.50' -> 1234.5."""
++    s = re.sub(r"[^\d.,]", "", str(text or ""))
++    if not s:
++        return None
++    if "," in s and "." in s:
++        s = s.replace(",", "") if s.rfind(".") > s.rfind(",") else s.replace(".", "").replace(",", ".")
++    elif "," in s:
++        s = s.replace(",", ".") if s.count(",") == 1 else s.replace(",", "")  # '0,123 €' is a price
++    try:
++        return float(s)
++    except ValueError:
++        return None
++
++
++def count(text):
++    """'26320 In Stock' / '26.320' / 26320 -> 26320; None when there's no number."""
++    if isinstance(text, (int, float)):
++        return int(text)
++    m = re.search(r"\d[\d.,]*", str(text or ""))
++    return int(re.sub(r"[.,]", "", m.group(0))) if m else None
++
++
++def is_active(status):
++    s = str(status or "").lower()
++    return not any(word in s for word in _NOT_ACTIVE)
++
++
++# ---------------------------------------------------------------- Mouser
++
++def mouser_part(p):
++    pricing = []
++    for b in p.get("PriceBreaks") or []:
++        price = b.get("RawPrice") if isinstance(b.get("RawPrice"), (int, float)) else money(b.get("Price"))
++        pricing.append({"quantity": b.get("Quantity"), "unitPrice": price, "currency": b.get("Currency")})
++    stock = count(p.get("AvailabilityInStock"))
++    if stock is None:
++        stock = count(p.get("Availability")) if "stock" in str(p.get("Availability") or "").lower() else 0
++    lifecycle = p.get("LifecycleStatus") or None
++    number = p.get("MouserPartNumber")
++    if str(number or "").strip().upper() in ("", "N/A", "NA"):
++        number = None  # Mouser lists parts it doesn't sell: no number, no prices
++    out = {
++        "mpn": p.get("ManufacturerPartNumber"),
++        "manufacturer": p.get("Manufacturer"),
++        "mouserPartNumber": number,
++        "orderable": bool(number and pricing),
++        "description": p.get("Description"),
++        "category": p.get("Category"),
++        "lifecycle": lifecycle,
++        "active": is_active(lifecycle),
++        "stock": stock,
++        "availability": p.get("Availability"),
++        "leadTime": p.get("LeadTime") or None,
++        "minimumOrderQuantity": count(p.get("Min")),
++        "orderMultiple": count(p.get("Mult")),
++        "pricing": pricing,
++        "unitPrice": pricing[0]["unitPrice"] if pricing else None,
++        "datasheet": p.get("DataSheetUrl") or None,
++        "productUrl": p.get("ProductDetailUrl") or None,
++        "rohs": p.get("ROHSStatus") or None,
++    }
++    params = [{"name": a.get("AttributeName"), "value": a.get("AttributeValue")}
++              for a in p.get("ProductAttributes") or [] if a.get("AttributeName")]
++    if params:
++        out["parameters"] = params
++    return out
++
++
++def mouser_search(params):
++    """mouser_search_parts: keywords (words or a part number) or partNumber (exact, up to 10 joined by |)."""
++    keywords = str(params.get("keywords") or "").strip()
++    part = str(params.get("partNumber") or "").strip()
++    if not keywords and not part:
++        return {"success": False, "message": "Give keywords (words or a part number) or partNumber."}
++    key = _key(MOUSER_KEY_ENV)
++    if not key:
++        return _no_key(MOUSER_KEY_ENV, "Mouser")
++    query = "?" + urllib.parse.urlencode({"apiKey": key})
++    if part:
++        body = {"SearchByPartRequest": {"mouserPartNumber": part,
++                                        "partSearchOptions": "Exact" if params.get("exact", True) else "None"}}
++        url = MOUSER_BASE + "/search/partnumber" + query
++    else:
++        body = {"SearchByKeywordRequest": {
++            "keyword": keywords, "records": _limit(params, MOUSER_LIMIT_MAX), "startingRecord": _offset(params),
++            "searchOptions": "InStock" if params.get("inStock") else "None",
++            "searchWithYourSignUpLanguage": "false"}}
++        url = MOUSER_BASE + "/search/keyword" + query
++    data, error = _request(url, key, body)
++    if error:
++        return {"success": False, "message": f"Mouser search failed: {error}"}
++    errors = [e.get("Message") or e.get("Code") for e in (data or {}).get("Errors") or [] if isinstance(e, dict)]
++    if errors:
++        return {"success": False, "message": "Mouser: " + _scrub("; ".join(str(e) for e in errors), key)}
++    results = (data or {}).get("SearchResults") or {}
++    parts = [mouser_part(p) for p in results.get("Parts") or []]
++    if part:
++        parts = parts[:_limit(params, MOUSER_LIMIT_MAX)]
++    return {
++        "success": True,
++        "message": f"{len(parts)} result(s) for '{part or keywords}' at Mouser",
++        "searchedFor": part or keywords,
++        "productsCount": results.get("NumberOfResult"),
++        "products": parts,
++        "note": "Prices are in the currency of the Mouser account's country (each break's currency).",
++    }
++
++
++# ---------------------------------------------------------------- Farnell
++
++def farnell_part(p, store):
++    raw = p.get("prices") or []
++    if isinstance(raw, dict):  # v1.5 examples show a single object
++        raw = [raw]
++    pricing = [{"quantity": b.get("from"), "unitPrice": b.get("cost") if isinstance(b.get("cost"), (int, float))
++                else money(b.get("cost"))} for b in raw if isinstance(b, dict)]
++    stock = p.get("stock") if isinstance(p.get("stock"), dict) else {}
++    level = stock.get("level", p.get("inv"))
++    sheets = [d.get("url") for d in p.get("datasheets") or [] if isinstance(d, dict) and d.get("url")]
++    sku = p.get("sku")
++    status = p.get("productStatus")
++    out = {
++        "mpn": p.get("translatedManufacturerPartNumber"),
++        "manufacturer": p.get("brandName") or p.get("vendorName"),
++        "farnellPartNumber": sku,
++        "description": p.get("displayName"),
++        "status": status,
++        "active": is_active(status),
++        "stock": count(level) if level is not None else None,
++        "leadTimeDays": stock.get("leastLeadTime"),  # restocking lead time, given even when in stock
++        "minimumOrderQuantity": count(p.get("translatedMinimumOrderQuality")),
++        "reeled": bool(p.get("reeling")),  # Farnell's re-reel (sku ...RL): a reeling charge on top
++        "packSize": p.get("packSize"),
++        "unitOfMeasure": p.get("unitOfMeasure"),
++        "pricing": pricing,
++        "unitPrice": pricing[0]["unitPrice"] if pricing else None,
++        "datasheet": sheets[0] if sheets else None,
++        "productUrl": p.get("productURL") or (f"https://{store}/{urllib.parse.quote(str(sku))}" if sku else None),
++        "rohs": p.get("rohsStatusCode"),
++    }
++    params = [{"name": a.get("attributeLabel"),
++               "value": f"{a.get('attributeValue')}{(' ' + a['attributeUnit']) if a.get('attributeUnit') else ''}"}
++              for a in p.get("attributes") or [] if isinstance(a, dict) and a.get("attributeLabel")]
++    if params:
++        out["parameters"] = params
++    return out
++
++
++def _farnell_products(data):
++    """products[] from keywordSearchReturn / manufacturerPartNumberSearchReturn / premierFarnellPartNumberReturn."""
++    if not isinstance(data, dict):
++        return None, []
++    for name, value in data.items():
++        if name.endswith("Return") and isinstance(value, dict):
++            products = value.get("products") or []
++            if isinstance(products, dict):
++                products = [products]
++            return value.get("numberOfResults"), [p for p in products if isinstance(p, dict)]
++    return None, []
++
++
++def farnell_search(params):
++    """farnell_search_parts: keywords (any:), partNumber (manuPartNum:) or farnellPartNumber (id:)."""
++    keywords = str(params.get("keywords") or "").strip()
++    part = str(params.get("partNumber") or "").strip()
++    sku = str(params.get("farnellPartNumber") or "").strip()
++    if not (keywords or part or sku):
++        return {"success": False, "message": "Give keywords, partNumber (the maker's) or farnellPartNumber."}
++    _load_env_file()  # FARNELL_STORE may be in .env
++    store =str(params.get("store") or os.environ.get(FARNELL_STORE_ENV) or FARNELL_STORE_DEFAULT).strip().lower()
++    if not _STORE_RE.match(store):
++        return {"success": False, "message": f"Not a store id: {store!r} (e.g. tr.farnell.com, uk.farnell.com)"}
++    key = _key(FARNELL_KEY_ENV)
++    if not key:
++        return _no_key(FARNELL_KEY_ENV, "Farnell (element14)")
++    term = f"id:{sku}" if sku else f"manuPartNum:{part}" if part else f"any:{keywords}"
++    query = {
++        "term": term,
++        "storeInfo.id": store,
++        "resultsSettings.offset": _offset(params),
++        "resultsSettings.numberOfResults": _limit(params, FARNELL_LIMIT_MAX),
++        "resultsSettings.responseGroup": "large",
++        "callInfo.responseDataFormat": "JSON",
++        "callInfo.apiKey": key,
++    }
++    if params.get("inStock"):
++        query["resultsSettings.refinements.filters"] = "inStock"
++    data, error = _request(FARNELL_BASE + "?" + urllib.parse.urlencode(query), key)
++    if error:
++        return {"success": False, "message": f"Farnell search failed: {error}"}
++    if isinstance(data, dict) and data.get("Fault"):
++        return {"success": False, "message": "Farnell: " + _scrub(json.dumps(data["Fault"])[:400], key)}
++    total, products = _farnell_products(data)
++    parts = [farnell_part(p, store) for p in products]
++    return {
++        "success": True,
++        "message": f"{len(parts)} result(s) for '{sku or part or keywords}' at {store}",
++        "searchedFor": term,
++        "store": store,
++        "productsCount": total,
++        "products": parts,
++        "note": f"Prices are {store}'s, in that store's currency.",
++    }
 diff --git a/python/commands/dynamic_symbol_loader.py b/python/commands/dynamic_symbol_loader.py
 index 4fd6044..b205dd7 100644
 --- a/python/commands/dynamic_symbol_loader.py
@@ -17742,14 +18084,14 @@ index 6f9a813..a2d32a8 100644
              # Create outline polyline
              outline = PolyLine()
 diff --git a/python/kicad_interface.py b/python/kicad_interface.py
-index c6ac305..1a91384 100644
+index c6ac305..11af25a 100644
 --- a/python/kicad_interface.py
 +++ b/python/kicad_interface.py
 @@ -36,6 +36,7 @@ if sys.platform == "win32":
  
  import sexpdata
  from annotations import AnnotationLoader
-+from commands import datasheets, part_search, part_spacing, powerlab_route, routing_check, zone_edit  # PowerLab patch
++from commands import datasheets, distributors, part_search, part_spacing, powerlab_route, routing_check, zone_edit  # PowerLab patch
  from commands.schematic_handlers import SchematicHandlersMixin
  from commands.wire_manager import WireManager
  from resources.resource_definitions import RESOURCE_DEFINITIONS, handle_resource_read
@@ -17784,17 +18126,19 @@ index c6ac305..1a91384 100644
              "get_design_rules": self.design_rule_commands.get_design_rules,
              "run_drc": self.design_rule_commands.run_drc,
              "get_drc_violations": self.design_rule_commands.get_drc_violations,
-@@ -624,6 +630,9 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -624,6 +630,11 @@ class KiCADInterface(SchematicHandlersMixin):
              # Datasheet commands
              "enrich_datasheets": self._handle_enrich_datasheets,
              "get_datasheet_url": self._handle_get_datasheet_url,
 +            "fetch_datasheet": datasheets.fetch,  # PowerLab patch
 +            "read_datasheet": datasheets.read,  # PowerLab patch
 +            "search_lcsc_catalog": part_search.search,  # PowerLab patch
++            "mouser_search_parts": distributors.mouser_search,  # PowerLab patch
++            "farnell_search_parts": distributors.farnell_search,  # PowerLab patch
              # Schematic commands
              "create_schematic": self._handle_create_schematic,
              "load_schematic": self._handle_load_schematic,
-@@ -693,6 +702,8 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -693,6 +704,8 @@ class KiCADInterface(SchematicHandlersMixin):
              "add_schematic_hierarchical_label": self._handle_add_schematic_hierarchical_label,
              "add_schematic_text": self._handle_add_schematic_text,
              "list_schematic_texts": self._handle_list_schematic_texts,
@@ -17803,7 +18147,7 @@ index c6ac305..1a91384 100644
              "add_sheet_pin": self._handle_add_sheet_pin,
              "import_svg_logo": self._handle_import_svg_logo,
              # UI/Process management commands
-@@ -732,10 +743,16 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -732,10 +745,16 @@ class KiCADInterface(SchematicHandlersMixin):
              "remove_library_table_entry": remove_library_table_entry,
              "set_library_table_uri": set_library_table_uri,
              # Freerouting autoroute commands
@@ -17821,7 +18165,7 @@ index c6ac305..1a91384 100644
              # Eagle import commands
              "import_eagle_project": self.eagle_commands.import_eagle_project,
              # Schematic migration
-@@ -754,15 +771,21 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -754,15 +773,21 @@ class KiCADInterface(SchematicHandlersMixin):
      IPC_CAPABLE_COMMANDS = {
          # Routing commands
          "route_trace": "_ipc_route_trace",
@@ -17843,7 +18187,7 @@ index c6ac305..1a91384 100644
          # Board commands
          "add_text": "_ipc_add_text",
          "add_board_text": "_ipc_add_text",
-@@ -771,6 +794,10 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -771,6 +796,10 @@ class KiCADInterface(SchematicHandlersMixin):
          "add_board_outline": "_ipc_add_board_outline",
          "add_mounting_hole": "_ipc_add_mounting_hole",
          "get_layer_list": "_ipc_get_layer_list",
@@ -17854,7 +18198,7 @@ index c6ac305..1a91384 100644
          # Component commands
          "place_component": "_ipc_place_component",
          "move_component": "_ipc_move_component",
-@@ -779,11 +806,32 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -779,11 +808,32 @@ class KiCADInterface(SchematicHandlersMixin):
          "get_component_list": "_ipc_get_component_list",
          "get_component_properties": "_ipc_get_component_properties",
          "set_footprint_type": "_ipc_set_footprint_type",
@@ -17887,7 +18231,7 @@ index c6ac305..1a91384 100644
      # Commands that are implemented by the explicit IPC command handlers in
      # command_routes, rather than by the generic IPC_CAPABLE_COMMANDS fast path.
      IPC_DIRECT_COMMANDS = {
-@@ -1021,6 +1069,14 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -1021,6 +1071,14 @@ class KiCADInterface(SchematicHandlersMixin):
                  ):
                      self._downgrade_session_to_swig()
  
@@ -17902,7 +18246,7 @@ index c6ac305..1a91384 100644
              # Check if we can use IPC for this command (real-time UI sync).
              # A session pinned to SWIG never routes board commands over IPC,
              # even when IPC is connected — the GUI may hold a stale copy of
-@@ -1075,6 +1131,22 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -1075,6 +1133,22 @@ class KiCADInterface(SchematicHandlersMixin):
              if handler:
                  # Execute the command
                  result = handler(params)
@@ -17925,7 +18269,7 @@ index c6ac305..1a91384 100644
                  logger.debug(f"Command result: {result}")
  
                  # Add backend indicator
-@@ -1231,11 +1303,15 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -1231,11 +1305,15 @@ class KiCADInterface(SchematicHandlersMixin):
          "replace_board_outline",
          "delete_graphic",
          "update_graphic",
@@ -17941,7 +18285,7 @@ index c6ac305..1a91384 100644
          "refill_zones",
          "import_svg_logo",
          "sync_schematic_to_board",
-@@ -1848,6 +1924,576 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -1848,6 +1926,576 @@ class KiCADInterface(SchematicHandlersMixin):
          state = self._dirty_state(board_path)
          return {"success": True, "boardPath": board_path, **state}
  
@@ -18518,7 +18862,7 @@ index c6ac305..1a91384 100644
      def _handle_batch_move_components(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """Batch move wrapper that preserves the external-edit save guard."""
          if getattr(self, "session_backend", None) == "ipc" and not self._ipc_session_alive():
-@@ -4667,6 +5313,59 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -4667,6 +5315,59 @@ class KiCADInterface(SchematicHandlersMixin):
              logger.error(traceback.format_exc())
              return {"success": False, "message": str(e)}
  
@@ -18578,7 +18922,7 @@ index c6ac305..1a91384 100644
      def _handle_get_elements_in_region(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """List all wires, labels, and symbols within a rectangular region"""
          logger.info("Getting elements in schematic region")
-@@ -4677,7 +5376,8 @@ class KiCADInterface(SchematicHandlersMixin):
+@@ -4677,7 +5378,8 @@ class KiCADInterface(SchematicHandlersMixin):
  
              schematic_path = params.get("schematicPath")
              if not schematic_path:
@@ -18588,7 +18932,7 @@ index c6ac305..1a91384 100644
  
              x1 = float(params.get("x1", 0))
              y1 = float(params.get("y1", 0))
-@@ -4948,6 +5648,10 @@ print("ok")
+@@ -4948,6 +5650,10 @@ print("ok")
                          }
                      self.board = reloaded
                      self._update_command_handlers()
@@ -18599,7 +18943,7 @@ index c6ac305..1a91384 100644
                      logger.info("Zone fill subprocess succeeded")
                      return {
                          "success": True,
-@@ -4982,47 +5686,30 @@ print("ok")
+@@ -4982,47 +5688,30 @@ print("ok")
      # =========================================================================
  
      def _ipc_route_trace(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -18666,7 +19010,7 @@ index c6ac305..1a91384 100644
  
      def _ipc_route_arc_trace(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for route_arc_trace - adds copper arc with real-time UI update"""
-@@ -5079,6 +5766,65 @@ print("ok")
+@@ -5079,6 +5768,65 @@ print("ok")
              logger.error(f"IPC route_arc_trace error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -18732,7 +19076,7 @@ index c6ac305..1a91384 100644
      def _ipc_add_via(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for add_via - adds via with real-time UI update"""
          try:
-@@ -5131,21 +5877,37 @@ print("ok")
+@@ -5131,21 +5879,37 @@ print("ok")
              net = params.get("net")
              clearance = params.get("clearance", 0.5)
              min_width = params.get("minWidth", 0.25)
@@ -18777,7 +19121,7 @@ index c6ac305..1a91384 100644
  
              success = self.ipc_board_api.add_zone(
                  points=formatted_points,
-@@ -5156,6 +5918,7 @@ print("ok")
+@@ -5156,6 +5920,7 @@ print("ok")
                  priority=priority,
                  fill_mode=fill_type,
                  name=name,
@@ -18785,7 +19129,7 @@ index c6ac305..1a91384 100644
              )
  
              return {
-@@ -5179,6 +5942,65 @@ print("ok")
+@@ -5179,6 +5944,65 @@ print("ok")
              logger.error(f"IPC add_copper_pour error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -18851,7 +19195,7 @@ index c6ac305..1a91384 100644
      def _ipc_refill_zones(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for refill_zones - refills all zones with real-time UI update"""
          try:
-@@ -5204,12 +6026,18 @@ print("ok")
+@@ -5204,12 +6028,18 @@ print("ok")
              layer = params.get("layer", "F.SilkS")
              size = params.get("size", 1.0)
              rotation = params.get("rotation", 0)
@@ -18872,7 +19216,7 @@ index c6ac305..1a91384 100644
                  "success": success,
                  "message": (
                      f"Added text '{text}' (visible in KiCAD UI)"
-@@ -5217,6 +6045,10 @@ print("ok")
+@@ -5217,6 +6047,10 @@ print("ok")
                      else "Failed to add text"
                  ),
              }
@@ -18883,7 +19227,7 @@ index c6ac305..1a91384 100644
          except Exception as e:
              logger.error(f"IPC add_text error: {e}")
              return {"success": False, "message": str(e)}
-@@ -5349,6 +6181,19 @@ print("ok")
+@@ -5349,6 +6183,19 @@ print("ok")
                  x = x * 0.0254
                  y = y * 0.0254
  
@@ -18903,7 +19247,7 @@ index c6ac305..1a91384 100644
              success = self.ipc_board_api.move_component(
                  reference=reference, x=x, y=y, rotation=rotation
              )
-@@ -5356,7 +6201,9 @@ print("ok")
+@@ -5356,7 +6203,9 @@ print("ok")
              return {
                  "success": success,
                  "message": (
@@ -18914,7 +19258,7 @@ index c6ac305..1a91384 100644
                      if success
                      else "Failed to move component"
                  ),
-@@ -5456,11 +6303,306 @@ print("ok")
+@@ -5456,11 +6305,306 @@ print("ok")
              return {"success": False, "message": str(e)}
  
      def _ipc_delete_trace(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -19226,7 +19570,7 @@ index c6ac305..1a91384 100644
  
      def _ipc_query_traces(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for query_traces - reads traces from the live KiCAD board."""
-@@ -5558,11 +6700,20 @@ print("ok")
+@@ -5558,11 +6702,20 @@ print("ok")
          and correctly generates PCB_SHAPE arcs for rounded corners.
          """
          shape = params.get("shape", "rectangle")
@@ -19247,7 +19591,7 @@ index c6ac305..1a91384 100644
              return self.board_commands.add_board_outline(params)
  
          try:
-@@ -5614,6 +6765,50 @@ print("ok")
+@@ -5614,6 +6767,50 @@ print("ok")
              logger.error(f"IPC add_board_outline error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -19298,7 +19642,7 @@ index c6ac305..1a91384 100644
      def _ipc_add_mounting_hole(self, params: Dict[str, Any]) -> Dict[str, Any]:
          """IPC handler for add_mounting_hole - adds mounting hole with real-time UI update"""
          try:
-@@ -5833,6 +7028,100 @@ print("ok")
+@@ -5833,6 +7030,100 @@ print("ok")
              logger.error(f"IPC set_footprint_type error: {e}")
              return {"success": False, "message": str(e)}
  
@@ -21004,10 +21348,10 @@ index 0000000..2d30edb
 +    return max((abs(_turn(_sub(pts[i], pts[i - 1]), _sub(pts[i + 1], pts[i])))
 +                for i in range(1, len(pts) - 1)), default=0.0)
 diff --git a/src/command-timeout.ts b/src/command-timeout.ts
-index dfd876c..76430a0 100644
+index dfd876c..221273b 100644
 --- a/src/command-timeout.ts
 +++ b/src/command-timeout.ts
-@@ -35,6 +35,20 @@ export const LONG_RUNNING_COMMANDS = [
+@@ -35,6 +35,22 @@ export const LONG_RUNNING_COMMANDS = [
    "list_schematic_labels",
    "get_schematic_view",
    "digikey_check_library_availability",
@@ -21025,10 +21369,12 @@ index dfd876c..76430a0 100644
 +  "batch_edit_schematic_components", // PowerLab patch (#91)
 +  "fetch_datasheet", // PowerLab patch: a download, or waits for the user's browser download
 +  "search_lcsc_catalog", // PowerLab patch: up to two web requests of 30 s each
++  "mouser_search_parts", // PowerLab patch: a web request of up to 30 s
++  "farnell_search_parts", // PowerLab patch: a web request of up to 30 s
  ] as const;
  
  /**
-@@ -66,6 +80,13 @@ export function computeCommandTimeout(command: string, params?: unknown): number
+@@ -66,6 +82,13 @@ export function computeCommandTimeout(command: string, params?: unknown): number
      return Math.max(budgetMs, LONG_COMMAND_TIMEOUT_MS);
    }
  
@@ -21284,10 +21630,10 @@ index d3737bc..b227256 100644
    // Suggest Placement Tool
    // ------------------------------------------------------
 diff --git a/src/tools/datasheet.ts b/src/tools/datasheet.ts
-index 94dffc6..7466cbf 100644
+index 94dffc6..6de7011 100644
 --- a/src/tools/datasheet.ts
 +++ b/src/tools/datasheet.ts
-@@ -109,4 +109,98 @@ Example: get_datasheet_url("C179739")
+@@ -109,4 +109,140 @@ Example: get_datasheet_url("C179739")
        };
      },
    );
@@ -21351,6 +21697,48 @@ index 94dffc6..7466cbf 100644
 +    },
 +    async (args: any) => {
 +      const result = await callKicadScript("search_lcsc_catalog", args);
++      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
++    },
++  );
++
++  // PowerLab patch: Mouser and Farnell searches for component research (commands/distributors.py)
++  server.tool(
++    "mouser_search_parts",
++    "Search Mouser (Search API v1) by words or a part number for stock, price breaks, lifecycle, lead time, the maker's datasheet link and Mouser's parameters. " +
++      "keywords: words in Mouser's terms ('MOSFET N-Channel 100V') or a part number; partNumber: exact part-number search (up to 10 joined by |). " +
++      "Needs MOUSER_API_KEY in the server environment or its .env (never as an argument); without it the answer says so. " +
++      "At most 50 parts a call; Mouser allows 30 calls a minute and 1000 a day. Values are Mouser's parsed parameters: check shortlisted parts in their datasheets.",
++    {
++      keywords: z.string().optional().describe("Words or a part number, e.g. 'gate driver half-bridge 100V' or 'BSC093N15NS5'"),
++      partNumber: z.string().optional().describe("Exact part number search instead of keywords (up to 10 joined by |)"),
++      exact: z.boolean().optional().describe("partNumber: exact match only (default true)"),
++      inStock: z.boolean().optional().describe("keywords: only parts in stock"),
++      limit: z.number().optional().describe("Parts returned (default 10, at most 50)"),
++      offset: z.number().optional().describe("keywords: skip this many results (paging)"),
++    },
++    async (args: any) => {
++      const result = await callKicadScript("mouser_search_parts", args);
++      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
++    },
++  );
++
++  server.tool(
++    "farnell_search_parts",
++    "Search Farnell / element14 (Product Search API) by words, the maker's part number or a Farnell order code, for stock, price breaks, status, lead time, the datasheet link and Farnell's parameters. " +
++      "store picks the Farnell store and its currency (default FARNELL_STORE from the environment, else tr.farnell.com; e.g. uk.farnell.com, de.farnell.com, www.newark.com). " +
++      "Needs FARNELL_API_KEY in the server environment or its .env (never as an argument); without it the answer says so. " +
++      "Values are Farnell's parsed parameters: check shortlisted parts in their datasheets.",
++    {
++      keywords: z.string().optional().describe("Words, e.g. 'MOSFET N-channel 100V'"),
++      partNumber: z.string().optional().describe("The maker's part number, e.g. 'BSC093N15NS5ATMA1'"),
++      farnellPartNumber: z.string().optional().describe("A Farnell order code (sku)"),
++      store: z.string().optional().describe("Store id, e.g. tr.farnell.com, uk.farnell.com"),
++      inStock: z.boolean().optional().describe("Only parts in stock"),
++      limit: z.number().optional().describe("Parts returned (default 10, at most 100)"),
++      offset: z.number().optional().describe("Skip this many results (paging)"),
++    },
++    async (args: any) => {
++      const result = await callKicadScript("farnell_search_parts", args);
 +      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
 +    },
 +  );
@@ -21721,7 +22109,7 @@ index d9942f7..392ad7d 100644
    server.tool(
      "export_dsn",
 diff --git a/src/tools/registry.ts b/src/tools/registry.ts
-index 902f7b1..286d919 100644
+index 902f7b1..bf909a6 100644
 --- a/src/tools/registry.ts
 +++ b/src/tools/registry.ts
 @@ -36,7 +36,10 @@ export const toolCategories: ToolCategory[] = [
@@ -21778,8 +22166,8 @@ index 902f7b1..286d919 100644
 +    // PowerLab patch: a datasheet library the panel reads, catalogue search, and the LCSC URL tools
 +    name: "datasheet",
 +    description:
-+      "Component research and datasheets: search the LCSC/JLCPCB catalogue by text or parameters (stock, price), keep manufacturer PDFs in a local library (download, LCSC's copy, or the user's browser download when a site blocks programs), read their sections, search them and render pages or tables as images",
-+    tools: ["search_lcsc_catalog", "fetch_datasheet", "read_datasheet", "get_datasheet_url", "enrich_datasheets"],
++      "Component research and datasheets: search the LCSC/JLCPCB catalogue by text or parameters (stock, price), Mouser and Farnell (stock, price, lifecycle; API keys in the server's .env), keep manufacturer PDFs in a local library (download, LCSC's copy, or the user's browser download when a site blocks programs), read their sections, search them and render pages or tables as images",
++    tools: ["search_lcsc_catalog", "fetch_datasheet", "read_datasheet", "get_datasheet_url", "enrich_datasheets", "mouser_search_parts", "farnell_search_parts"],
 +  },
    {
      name: "digikey",

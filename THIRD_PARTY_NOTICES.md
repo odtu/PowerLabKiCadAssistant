@@ -47,6 +47,9 @@ Nothing is downloaded or redistributed from these; the kicad tools send them req
 | Service | Used for | Terms |
 |---|---|---|
 | [jlcsearch](https://jlcsearch.tscircuit.com) by [tscircuit](https://github.com/tscircuit/jlcsearch) | `search_lcsc_catalog`: parts, stock and prices from the LCSC/JLCPCB catalogue | Free public service; its code is MIT. Catalogue data is LCSC's |
+| [Digi-Key Product Information API](https://developer.digikey.com) | `digikey_search_parts`: stock, prices, lifecycle and parameters | Digi-Key's API terms, under the user's own API app; only with the user's keys |
+| [Mouser Search API](https://www.mouser.com/api-search/) | `mouser_search_parts`: stock, prices, lifecycle and parameters | Mouser's API terms, under the user's own key; only with that key |
+| [element14 Product Search API](https://partner.element14.com) (Farnell) | `farnell_search_parts`: stock, prices, status and parameters | element14's API terms, under the user's own key; only with that key |
 | [LCSC](https://www.lcsc.com) product pages and datasheet files | `fetch_datasheet`: LCSC's copy of a datasheet when the maker refuses programs | LCSC's site terms; datasheets stay their makers' copyright and are kept only in the user's own library |
 | Part makers' sites (TI, onsemi, …) | `fetch_datasheet`: datasheet PDFs | Each maker's site terms and copyright |
 

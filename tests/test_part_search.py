@@ -166,7 +166,7 @@ class WiringTests(unittest.TestCase):
         self.assertIn('+            "search_lcsc_catalog": part_search.search,  # PowerLab patch', patch)
         self.assertIn('"search_lcsc_catalog", "fetch_datasheet", "read_datasheet"', patch)  # registry
         self.assertIn('+  "search_lcsc_catalog", // PowerLab patch', patch)  # long-running
-        self.assertIn("+from commands import datasheets, part_search,", patch)
+        self.assertIn("+from commands import datasheets, distributors, part_search,", patch)
 
     def test_skill_panel_and_privacy(self):
         with open(os.path.join(REPO, "skills", "powerlab-component-research", "SKILL.md"), encoding="utf-8") as f:

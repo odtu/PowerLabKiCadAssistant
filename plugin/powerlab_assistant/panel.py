@@ -237,8 +237,8 @@ PANEL_NOTE = (
     "library (from the maker, else LCSC's copy with its date, else through the user's browser), "
     "and read_datasheet reads it. Never quote a spec from memory.\n"
     "To find, choose, compare or replace a part, load the powerlab-component-research skill: "
-    "the lab library first, then search_lcsc_catalog, every shortlisted part checked in its "
-    "datasheet.\n"
+    "the lab library first, then search_lcsc_catalog and the distributors (digikey_search_parts, "
+    "mouser_search_parts, farnell_search_parts), every shortlisted part checked in its datasheet.\n"
     "You can make mistakes: for anything that ends up in hardware (footprints, pinouts, "
     "ratings, design rules), say what the user should double-check against the datasheet."
 )
